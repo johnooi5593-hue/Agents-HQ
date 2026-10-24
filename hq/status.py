@@ -6,6 +6,7 @@ import json, os, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLIP_EXT = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
+SPECIAL = ("scripts", "radar", "pulse")
 
 
 def files(path, exts=None):
@@ -15,8 +16,8 @@ def files(path, exts=None):
     return [n for n in names if exts is None or os.path.splitext(n)[1].lower() in exts]
 
 
-def out_folders():
-    base = os.path.join(ROOT, "out")
+def work_folders(base):
+    """Every folder under out/ (or approved/) with what it contains."""
     result = {}
     if not os.path.isdir(base):
         return result
@@ -24,9 +25,9 @@ def out_folders():
         full = os.path.join(base, name)
         if name.startswith(".") or not os.path.isdir(full):
             continue
-        have = set(files(full))
-        if name in ("scripts", "radar", "pulse"):
-            result[name] = {"files": sorted(have)}
+        have = files(full)
+        if name in SPECIAL:
+            result[name] = {"files": have}
             continue
         result[name] = {
             "edit": "edit.mp4" in have,
@@ -34,15 +35,17 @@ def out_folders():
             "captions": "captions.srt" in have,
             "notes": "notes.md" in have,
             "post_copy": "post.md" in have,
+            "files": have,
         }
     return result
 
 
-def brain():
-    counts = {}
+def brain_entities():
+    """The entities in brain/memory.jsonl with their observations (deleted observations applied)."""
+    entities = {}
     path = os.path.join(ROOT, "brain", "memory.jsonl")
     if not os.path.isfile(path):
-        return counts
+        return entities
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -53,20 +56,26 @@ def brain():
             except ValueError:
                 continue
             if row.get("type") == "entity":
-                counts[row["name"]] = len(row.get("observations", []))
-    return counts
+                entities[row["name"]] = list(row.get("observations", []))
+    return entities
 
 
-status = {
-    "inbox": {
-        "clips": files(os.path.join(ROOT, "inbox"), CLIP_EXT),
-        "radar": files(os.path.join(ROOT, "inbox", "radar")),
-        "stats": files(os.path.join(ROOT, "inbox", "stats"), {".csv"}),
-    },
-    "out": out_folders(),
-    "done": len(files(os.path.join(ROOT, "done"), CLIP_EXT)),
-    "brain": brain(),
-}
-status["waiting_for_approval"] = sorted(k for k, v in status["out"].items() if k not in ("scripts", "radar", "pulse") and v.get("edit"))
-json.dump(status, sys.stdout, ensure_ascii=False)
-print()
+def collect():
+    out = work_folders(os.path.join(ROOT, "out"))
+    return {
+        "inbox": {
+            "clips": files(os.path.join(ROOT, "inbox"), CLIP_EXT),
+            "radar": files(os.path.join(ROOT, "inbox", "radar")),
+            "stats": files(os.path.join(ROOT, "inbox", "stats"), {".csv"}),
+        },
+        "out": out,
+        "approved": work_folders(os.path.join(ROOT, "approved")),
+        "done": len(files(os.path.join(ROOT, "done"), CLIP_EXT)),
+        "brain": {k: len(v) for k, v in brain_entities().items()},
+        "waiting_for_approval": sorted(k for k, v in out.items() if k not in SPECIAL and v.get("edit")),
+    }
+
+
+if __name__ == "__main__":
+    json.dump(collect(), sys.stdout, ensure_ascii=False)
+    print()

@@ -28,7 +28,8 @@ Brand rules, lessons and ideas live in the memory MCP server (`memory`, file `br
 - `inbox/` raw clips waiting to be edited (this can be a cloud-synced folder); `inbox/radar/` comments, notes and links; `inbox/stats/` exported analytics CSVs
 - `out/` finished work waiting for approval: `out/<clip-name>/`, `out/scripts/`, `out/radar/`, `out/pulse/`
 - `done/` raw clips whose edit is finished
-- `hq/` HQ tooling (`hq/status.py` prints the state of the folders as one JSON line)
+- `approved/` work the owner approved in the app; it is theirs to publish, leave it alone
+- `hq/` HQ tooling: `hq/status.py` prints the state of the folders as one JSON line; `hq/server.py` and `hq/app.html` are the Agents HQ app the owner opens in a browser, which sends you these same messages
 
 ## Rules
 - One command per Bash call, no `&&` chains. Use only the commands the permission rules allow (`.claude/settings.json`).

@@ -10,6 +10,7 @@ out/*
 !out/.gitkeep
 done/*
 !done/.gitkeep
+approved/
 .claude/skills/reel/scripts/models/
 .claude/settings.local.json
 __pycache__/
