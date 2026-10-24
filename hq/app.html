@@ -100,7 +100,7 @@
     <a class="item" href="#brain" data-view="brain">Brain</a>
     <a class="item" href="#console" data-view="console">Console</a>
     <div class="lead" id="lead"><span class="pulse"></span><span id="lead-text">lead idle</span></div>
-    <div class="foot">Nothing is posted. You approve, you publish.</div>
+    <div class="foot">Nothing is posted. You approve, you publish.<form method="post" action="/logout" id="logout" hidden><button class="small" type="submit" style="margin-top:8px">Log out</button></form></div>
   </nav>
 
   <main>
@@ -215,6 +215,7 @@
     $("#d-rules").textContent = s.brain["Brand rules"] || 0;
     $("#d-brain-hint").textContent = `${s.brain["Lessons"] || 0} lessons, ${s.brain["Ideas"] || 0} ideas in the brain`;
     for (const k of ["clips", "radar", "stats"]) $("#f-" + k).innerHTML = s.inbox[k].map((f) => `<li>${esc(f)}</li>`).join("");
+    $("#logout").hidden = !s.auth;
     $("#lead").className = "lead" + (s.desk.busy ? " busy" : ""); $("#lead-text").textContent = s.desk.busy ? "lead working" : "lead idle";
     $("#say-btn").disabled = s.desk.busy; document.querySelectorAll(".quick button").forEach((b) => (b.disabled = s.desk.busy));
     renderWork(s);
@@ -248,6 +249,7 @@
       if (s.desk.current && s.desk.current !== currentRun && s.desk.busy) attach(s.desk.current);
       else if (!seenRun && !currentRun && s.desk.runs.length) attach(s.desk.runs[s.desk.runs.length - 1].id, true);   // show the last reply on load
     } catch (e) { $("#lead-text").textContent = "app not reachable"; }
+    if (lastStatus === null) { try { const r = await fetch("/api/status"); if (r.status === 401) location.href = "/login"; } catch (e) {} }
   };
 
   // runs

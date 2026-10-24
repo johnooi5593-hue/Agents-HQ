@@ -1,0 +1,9 @@
+.git
+out
+done
+approved
+inbox/*
+!inbox/.gitkeep
+__pycache__
+deploy/.env
+hq/screenshot-desk.png

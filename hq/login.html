@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents HQ · Log in</title>
+<style>
+  :root { --bg: #0f1115; --panel: #171a21; --line: #2a2f3a; --text: #e8eaf0; --muted: #8b93a7; --accent: #ffd400; --bad: #f87171; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { min-height: 100%; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 28px 26px; width: 100%; max-width: 360px; }
+  .brand { font-weight: 700; font-size: 20px; display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .brand .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+  p { color: var(--muted); margin: 0 0 18px; }
+  input { font: inherit; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; margin-bottom: 12px; }
+  input:focus { outline: none; border-color: var(--accent); }
+  button { font: inherit; width: 100%; cursor: pointer; background: var(--accent); color: #1a1500; border: 0; border-radius: 8px; padding: 11px; font-weight: 600; }
+  .err { color: var(--bad); min-height: 1.4em; margin-top: 10px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form class="box" id="f">
+    <div class="brand"><span class="dot"></span>Agents HQ</div>
+    <p>Your team is waiting. Enter the HQ password.</p>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" autofocus required>
+    <button type="submit">Log in</button>
+    <div class="err" id="err"></div>
+  </form>
+</div>
+<script>
+  document.getElementById("f").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = document.getElementById("err"); err.textContent = "";
+    const r = await fetch("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: document.getElementById("pw").value }) });
+    if (r.ok) location.href = "/"; else err.textContent = (await r.json()).error || "could not log in";
+  });
+</script>
+</body>
+</html>

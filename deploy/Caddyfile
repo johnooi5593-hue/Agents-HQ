@@ -1,0 +1,3 @@
+{$HQ_DOMAIN} {
+	reverse_proxy hq:7331
+}

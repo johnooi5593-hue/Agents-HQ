@@ -1,0 +1,30 @@
+# Agents HQ on Fly.io. One time:
+#   fly launch --no-deploy --copy-config --name <your-app-name>
+#   fly volumes create hq_data --size 10
+#   fly secrets set HQ_PASSWORD=<password> ANTHROPIC_API_KEY=<key> HQ_SECRET=<long random string>
+#   fly deploy
+app = "agents-hq"
+primary_region = "sin"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[env]
+  HQ_HOST = "0.0.0.0"
+  HQ_PORT = "7331"
+  HQ_SECURE = "1"
+  HQ_TRUST_PROXY = "1"
+
+[[mounts]]
+  source = "hq_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 7331
+  force_https = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

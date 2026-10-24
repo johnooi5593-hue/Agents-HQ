@@ -41,7 +41,9 @@ Agents-HQ/
 ├── out/                       finished work waiting for your OK
 ├── approved/                  what you approved in the app, ready for you to publish
 ├── done/                      raw clips whose edit is finished
-└── setup.sh                   one-time setup
+├── setup.sh                   one-time setup
+├── deploy/                    hosted version: Dockerfile, entrypoint, docker-compose with HTTPS (Caddy), .env.example
+└── fly.toml                   hosted version on Fly.io
 ```
 
 ## Who does what
@@ -89,6 +91,40 @@ Or double-click `Open Agents HQ.command` (Mac) or `Open Agents HQ.bat` (Windows)
 | **Console** | Everything the lead and the staff do, as it happens |
 
 The buttons at the bottom (Standup, Edit clips, What's next, Stats, Script…, Post copy…) and the message box all talk to the lead. The lead is Claude Code running headless in this folder (`claude -p`) with the project's permission rules, so the app can do exactly what the terminal can, and nothing more. Each message continues the same conversation, so "OK" or "make the hook shorter" works. The app only listens on your own machine (127.0.0.1).
+
+## Host it, so your phone can reach it
+
+The hosted version is the same app behind a login, packed into one Docker image with Claude Code, ffmpeg and the speech-to-text engine inside. You need three things: a place to run it, an [Anthropic API key](https://console.anthropic.com/) (the server can't use your Claude app login, so the lead's work is billed to the API key), and a password you choose.
+
+**On Fly.io** (simplest; HTTPS and a URL come with it):
+
+```bash
+fly launch --no-deploy --copy-config --name my-agents-hq
+fly volumes create hq_data --size 10
+fly secrets set HQ_PASSWORD='a long password' ANTHROPIC_API_KEY='sk-ant-...' HQ_SECRET="$(openssl rand -hex 32)"
+fly deploy
+```
+
+Open `https://my-agents-hq.fly.dev` on your phone and log in. The config is in `fly.toml` (2 GB machine, always on, data on a 10 GB volume).
+
+**On your own server** (any VPS with Docker, plus a domain pointed at it):
+
+```bash
+cp deploy/.env.example deploy/.env      # fill in the password, API key and domain
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+Caddy gets the HTTPS certificate for your domain by itself and forwards to the app.
+
+**What the hosted version does differently**
+
+- Every page and call needs the password. The login is kept in a signed, HttpOnly cookie for 30 days; wrong passwords back off per address after five tries. Log out from the sidebar.
+- The app refuses to start on a public address without `HQ_PASSWORD`.
+- Your folders (`inbox/`, `out/`, `done/`, `approved/`, `brain/`) live on the volume at `/data`, so they survive updates and restarts.
+- Uploads are capped at 2 GB (`HQ_MAX_UPLOAD_MB`).
+- Everything else is the same: the lead runs Claude Code headless with this repository's permission rules, and nothing is posted.
+
+Keep the password long: whoever has it can run your team on your API key. Set a spend limit on the key in the Anthropic console.
 
 ## Use it from the terminal
 

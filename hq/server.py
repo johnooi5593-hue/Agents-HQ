@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agents HQ app: a local web app over the Claude Code team in this folder.
+"""Agents HQ app: a web app over the Claude Code team in this folder.
 
 usage: python3 hq/server.py            (opens http://localhost:7331 in your browser)
        HQ_PORT=8000 python3 hq/server.py --no-browser
@@ -7,9 +7,17 @@ usage: python3 hq/server.py            (opens http://localhost:7331 in your brow
 Every button in the app sends a message to the lead, which runs Claude Code headless (`claude -p`) in this folder
 with the same permission rules as the terminal (`.claude/settings.json`). Uploads go to inbox/, finished work is
 served from out/, and Approve moves a folder from out/ to approved/. Nothing is posted anywhere.
-Only your own machine can reach the app: it listens on 127.0.0.1 only.
+
+By default only your own machine can reach the app (it listens on 127.0.0.1). The hosted version sets
+HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept in a signed cookie.
+  HQ_PASSWORD       the owner's password (required when HQ_HOST is not loopback)
+  HQ_SECRET         cookie signing secret; random at every start if unset, so a restart logs everyone out
+  HQ_SECURE=1       mark the cookie Secure (set when the app is served over HTTPS; X-Forwarded-Proto also works)
+  HQ_MAX_UPLOAD_MB  largest upload accepted (default 2048)
+  HQ_TRUST_PROXY=1  behind a reverse proxy (Caddy, Fly): read the client address from X-Forwarded-For
 """
-import json, mimetypes, os, re, shutil, subprocess, sys, threading, uuid, webbrowser
+import hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs
 
@@ -19,6 +27,13 @@ sys.path.insert(0, HERE)
 from status import CLIP_EXT, brain_entities, collect  # noqa: E402
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
+HOST = os.environ.get("HQ_HOST", "127.0.0.1")
+PASSWORD = os.environ.get("HQ_PASSWORD") or None
+SECRET = (os.environ.get("HQ_SECRET") or secrets.token_hex(32)).encode()
+SECURE = os.environ.get("HQ_SECURE", "") not in ("", "0", "false")
+TRUST_PROXY = os.environ.get("HQ_TRUST_PROXY", "") not in ("", "0", "false")
+MAX_UPLOAD = int(os.environ.get("HQ_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+SESSION_DAYS = 30
 CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,120}$")
 UPLOAD_DIRS = {"clips": "inbox", "radar": os.path.join("inbox", "radar"), "stats": os.path.join("inbox", "stats")}
@@ -161,6 +176,42 @@ class Desk:
 desk = Desk()
 
 
+# login: a signed, expiring token in an HttpOnly cookie; wrong passwords back off per address
+def make_token():
+    exp = str(int(time.time()) + SESSION_DAYS * 86400)
+    return exp + "." + hmac.new(SECRET, exp.encode(), hashlib.sha256).hexdigest()
+
+
+def token_ok(token):
+    exp, _, sig = (token or "").partition(".")
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    return hmac.compare_digest(sig, hmac.new(SECRET, exp.encode(), hashlib.sha256).hexdigest())
+
+
+class Throttle:
+    def __init__(self):
+        self.fails, self.lock = {}, threading.Lock()
+
+    def wait(self, ip):
+        with self.lock:
+            n, until = self.fails.get(ip, (0, 0))
+            return max(0, int(until - time.time()))
+
+    def failed(self, ip):
+        with self.lock:
+            n = self.fails.get(ip, (0, 0))[0] + 1
+            delay = 0 if n < 5 else min(3600, 30 * 2 ** (n - 5))
+            self.fails[ip] = (n, time.time() + delay)
+
+    def passed(self, ip):
+        with self.lock:
+            self.fails.pop(ip, None)
+
+
+throttle = Throttle()
+
+
 def safe_join(base, rel):
     """Absolute path of rel under base, or None if it escapes."""
     full = os.path.realpath(os.path.join(base, rel))
@@ -175,14 +226,48 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
     # helpers
-    def send_json(self, obj, code=200):
+    def send_json(self, obj, code=200, extra=()):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in extra:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def redirect(self, to, extra=()):
+        self.send_response(303)
+        self.send_header("Location", to)
+        for k, v in extra:
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def cookie_header(self, value, max_age):
+        secure = SECURE or (TRUST_PROXY and self.headers.get("X-Forwarded-Proto", "").lower() == "https")
+        return ("Set-Cookie", f"hq_session={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax" + ("; Secure" if secure else ""))
+
+    def authed(self):
+        if not PASSWORD:
+            return True
+        jar = cookies.SimpleCookie(self.headers.get("Cookie", ""))
+        return "hq_session" in jar and token_ok(jar["hq_session"].value)
+
+    def client_ip(self):
+        fwd = self.headers.get("X-Forwarded-For", "") if TRUST_PROXY else ""
+        return (fwd.split(",")[0].strip() if fwd else "") or self.client_address[0]
+
+    def guard(self, page=False):
+        """True when the request may go on; otherwise the refusal has been sent."""
+        if self.authed():
+            return True
+        if page:
+            self.redirect("/login")
+        else:
+            self.send_json({"error": "login required"}, 401)
+        return False
 
     def read_json(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -224,11 +309,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         path, qs = unquote(url.path), parse_qs(url.query)
+        if path == "/login":
+            return self.redirect("/") if not PASSWORD or self.authed() else self.send_file(os.path.join(HERE, "login.html"))
         if path in ("/", "/index.html"):
-            return self.send_file(os.path.join(HERE, "app.html"))
+            return self.guard(page=True) and self.send_file(os.path.join(HERE, "app.html"))
+        if not self.guard():
+            return
         if path == "/api/status":
             s = collect()
-            s["desk"], s["staff"] = desk.state(), STAFF
+            s["desk"], s["staff"], s["auth"] = desk.state(), STAFF, bool(PASSWORD)
             return self.send_json(s)
         if path == "/api/brain":
             return self.send_json(brain_entities())
@@ -252,6 +341,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = unquote(urlparse(self.path).path)
+        if path == "/login":
+            ip = self.client_ip()
+            wait = throttle.wait(ip)
+            if wait:
+                return self.send_json({"error": f"too many wrong passwords, try again in {wait} s"}, 429)
+            given = self.read_json().get("password") or ""
+            if not PASSWORD or not hmac.compare_digest(given.encode(), PASSWORD.encode()):
+                throttle.failed(ip)
+                sys.stderr.write(f"login failed from {ip}\n")
+                return self.send_json({"error": "wrong password"}, 401)
+            throttle.passed(ip)
+            sys.stderr.write(f"login ok from {ip}\n")
+            return self.send_json({"ok": True}, 200, [self.cookie_header(make_token(), SESSION_DAYS * 86400)])
+        if path == "/logout":
+            return self.redirect("/login", [self.cookie_header("", 0)])
+        if not self.guard():
+            return
         if path == "/api/run":
             prompt = (self.read_json().get("prompt") or "").strip()
             if not prompt:
@@ -275,10 +381,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = unquote(urlparse(self.path).path)
+        if not self.guard():
+            return
         m = re.match(r"^/api/inbox/(clips|radar|stats)/([^/]+)$", path)
         if not m:
             return self.send_json({"error": "not found"}, 404)
         kind, name = m[1], m[2]
+        if int(self.headers.get("Content-Length") or 0) > MAX_UPLOAD:
+            return self.send_json({"error": f"file larger than {MAX_UPLOAD // (1024 * 1024)} MB"}, 413)
         if not SAFE_NAME.match(name) or os.path.splitext(name)[1].lower() not in UPLOAD_EXT[kind]:
             return self.send_json({"error": f"{kind} accepts {' '.join(sorted(UPLOAD_EXT[kind]))} files with a plain name"}, 400)
         folder = os.path.join(ROOT, UPLOAD_DIRS[kind])
@@ -300,9 +410,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
+        sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
+    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://localhost:{PORT}"
-    print(f"Agents HQ is open at {url}   (Ctrl+C to close)")
+    print(f"Agents HQ is open at {url}   (Ctrl+C to close)" + ("   login required" if PASSWORD else ""))
     if "--no-browser" not in sys.argv:
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()
     try:
