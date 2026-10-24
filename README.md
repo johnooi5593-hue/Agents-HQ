@@ -31,11 +31,12 @@ Agents-HQ/
 │   │   └── pixel/scripts/     thumbnail.py
 │   ├── commands/              the desk (/standup, /edit-clips, /script, /whats-next, /post-copy, /stats, /teach)
 │   └── settings.json          what the team may do alone, what it must ask, what it may never do
-├── .mcp.json                  the memory MCP server (the shared brain)
+├── .mcp.json                  the memory MCP server (the shared brain), started through hq/brain.sh
 ├── brain/memory.jsonl         brand rules, lessons, ideas
 ├── hq/server.py               the Agents HQ app: a local web server over the team (no dependencies)
 ├── hq/app.html                the app's screen
 ├── hq/status.py               one JSON line with the state of inbox, out, done and the brain
+├── hq/brain.sh                starts the memory server on brain/memory.jsonl, whatever folder Claude Code was started from
 ├── inbox/                     raw clips; inbox/radar/ comments and notes; inbox/stats/ analytics CSVs
 ├── out/                       finished work waiting for your OK
 ├── approved/                  what you approved in the app, ready for you to publish
