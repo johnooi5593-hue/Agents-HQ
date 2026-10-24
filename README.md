@@ -60,6 +60,8 @@ bash setup.sh
 
 `setup.sh` installs numpy, pillow and a local speech-to-text engine (faster-whisper, or sherpa-onnx Whisper as a fallback), creates the folders and prints the HQ status. Speech-to-text runs on your machine; nothing is uploaded.
 
+The first time you run `claude` in the folder, accept the trust dialog and approve the `memory` MCP server. Until a folder is trusted, Claude Code ignores the allow list in `.claude/settings.json` and asks before every step. Headless runs (`claude -p`) show no dialog, so trust the folder interactively once first.
+
 ## Use it
 
 Start Claude Code in this folder (`claude`) and use the desk:
