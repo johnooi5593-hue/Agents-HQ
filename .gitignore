@@ -1,0 +1,16 @@
+inbox/*
+!inbox/.gitkeep
+!inbox/radar/
+!inbox/stats/
+inbox/radar/*
+!inbox/radar/.gitkeep
+inbox/stats/*
+!inbox/stats/.gitkeep
+out/*
+!out/.gitkeep
+done/*
+!done/.gitkeep
+.claude/skills/reel/scripts/models/
+.claude/settings.local.json
+__pycache__/
+.env

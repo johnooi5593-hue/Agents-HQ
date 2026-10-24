@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(python3 hq/status.py:*)",
+      "Bash(python3 .claude/skills/reel/scripts/cut.py:*)",
+      "Bash(python3 .claude/skills/reel/scripts/captions.py:*)",
+      "Bash(python3 .claude/skills/reel/scripts/frames.py:*)",
+      "Bash(python3 .claude/skills/pixel/scripts/thumbnail.py:*)",
+      "Bash(mkdir -p out/:*)",
+      "Bash(mv inbox/*)",
+      "Read",
+      "Edit(out/**)",
+      "Edit(done/**)",
+      "Write(out/**)",
+      "mcp__memory",
+      "Skill",
+      "Agent"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Edit(.claude/**)",
+      "Edit(CLAUDE.md)",
+      "Edit(brain/**)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Read(.env)"
+    ]
+  },
+  "enableAllProjectMcpServers": true
+}
