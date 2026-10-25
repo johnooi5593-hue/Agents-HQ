@@ -60,18 +60,26 @@ def brain_entities():
     return entities
 
 
+def brain_notes():
+    """Every observation in the brain, counted: the number under THE BRAIN in the office."""
+    return sum(len(v) for v in brain_entities().values())
+
+
 def collect():
     out = work_folders(os.path.join(ROOT, "out"))
+    brain = brain_entities()
     return {
         "inbox": {
             "clips": files(os.path.join(ROOT, "inbox"), CLIP_EXT),
             "radar": files(os.path.join(ROOT, "inbox", "radar")),
             "stats": files(os.path.join(ROOT, "inbox", "stats"), {".csv"}),
+            "messages": files(os.path.join(ROOT, "inbox", "messages")),
         },
         "out": out,
         "approved": work_folders(os.path.join(ROOT, "approved")),
         "done": len(files(os.path.join(ROOT, "done"), CLIP_EXT)),
-        "brain": {k: len(v) for k, v in brain_entities().items()},
+        "brain": {k: len(v) for k, v in brain.items()},
+        "brain_notes": sum(len(v) for v in brain.values()),
         "waiting_for_approval": sorted(k for k, v in out.items() if k not in SPECIAL and v.get("edit")),
     }
 

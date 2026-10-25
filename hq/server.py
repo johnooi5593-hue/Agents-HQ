@@ -8,6 +8,9 @@ Every button in the app sends a message to the lead, which runs Claude Code head
 with the same permission rules as the terminal (`.claude/settings.json`). Uploads go to inbox/, finished work is
 served from out/, and Approve moves a folder from out/ to approved/. Nothing is posted anywhere.
 
+The API is listed in docs/build-contract.md ("Backend API"): status, teams (hq/teams.json plus live counts), agents,
+the hook feed, the board (hq/tasks.json), notifications, the calendar, the brain, runs, uploads and approvals.
+
 By default only your own machine can reach the app (it listens on 127.0.0.1). The hosted version sets
 HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept in a signed cookie.
   HQ_PASSWORD       the owner's password (required when HQ_HOST is not loopback)
@@ -16,7 +19,7 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
   HQ_MAX_UPLOAD_MB  largest upload accepted (default 2048)
   HQ_TRUST_PROXY=1  behind a reverse proxy (Caddy, Fly): read the client address from X-Forwarded-For
 """
-import hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+import datetime, hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs
@@ -24,7 +27,7 @@ from urllib.parse import unquote, urlparse, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from status import CLIP_EXT, brain_entities, collect  # noqa: E402
+from status import CLIP_EXT, brain_entities, brain_notes, collect  # noqa: E402
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
 HOST = os.environ.get("HQ_HOST", "127.0.0.1")
@@ -36,18 +39,127 @@ MAX_UPLOAD = int(os.environ.get("HQ_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 SESSION_DAYS = 30
 CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,120}$")
-UPLOAD_DIRS = {"clips": "inbox", "radar": os.path.join("inbox", "radar"), "stats": os.path.join("inbox", "stats")}
-UPLOAD_EXT = {"clips": CLIP_EXT, "radar": {".txt", ".md", ".csv", ".json"}, "stats": {".csv"}}
-TEAM_ORDER = ["Research", "Inbox", "Scripts", "Dev", "Shop", "Social", "Creative", "Analytics"]
+UPLOAD_DIRS = {"clips": "inbox", "radar": os.path.join("inbox", "radar"), "stats": os.path.join("inbox", "stats"),
+               "messages": os.path.join("inbox", "messages")}
+UPLOAD_EXT = {"clips": CLIP_EXT, "radar": {".txt", ".md", ".csv", ".json"}, "stats": {".csv"},
+              "messages": {".txt", ".md", ".eml", ".json", ".csv", ".html"}}
+FALLBACK_TEAM_ORDER = ["Research", "Scripts", "Social", "Creative", "Analytics", "Shop", "Dev", "Inbox"]
 EVENTS = os.path.join(HERE, "events.jsonl")
 TASKS = os.path.join(HERE, "tasks.json")
+TEAMS_FILE = os.path.join(HERE, "teams.json")
+MCP_FILE = os.path.join(ROOT, ".mcp.json")
+STATIC = {"/hud.js", "/hud.css", "/office3d.js"}
 STATUSES = ("todo", "doing", "review", "done")
+KINDS = ("task", "approval", "post", "meeting")
+SCHEDULED_KINDS = ("post", "meeting")
+TASK_DEFAULTS = {"team": "", "agent": "", "note": "", "kind": "task", "subtitle": "", "progress": None, "date": None, "time": None, "done_at": None}
+ACRONYMS = {"seo": "SEO", "qa": "QA", "ai": "AI", "ux": "UX", "ui": "UI", "pr": "PR", "hq": "HQ"}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+TASK_LOCK = threading.Lock()
+
+
+# small helpers
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def parse_iso(s):
+    """An aware datetime from an ISO string such as 2026-10-25T03:09:06.957Z, or None."""
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+
+
+def iso_ms(s):
+    """Milliseconds since the epoch for an ISO string, or now when it does not parse."""
+    d = parse_iso(s)
+    return int(d.timestamp() * 1000) if d else int(time.time() * 1000)
+
+
+def is_today(s):
+    d = parse_iso(s)
+    return bool(d) and d.astimezone().date() == datetime.date.today()
+
+
+def label_of(name):
+    """clip-editor -> Clip Editor, seo-specialist -> SEO Specialist."""
+    return " ".join(ACRONYMS.get(p, p.capitalize()) for p in re.split(r"[-_\s]+", name or "") if p)
+
+
+def team_key(team):
+    return re.sub(r"\s+", "-", (team or "office").strip().lower())
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def qs_int(qs, key, default=0):
+    try:
+        return max(0, int(qs.get(key, [default])[0]))
+    except (TypeError, ValueError):
+        return default
+
+
+# teams: hq/teams.json plus what is live
+def load_teams():
+    try:
+        with open(TEAMS_FILE, encoding="utf-8") as f:
+            return [t for t in json.load(f).get("teams", []) if isinstance(t, dict) and t.get("key") and t.get("name")]
+    except (OSError, ValueError):
+        return []
+
+
+def team_order():
+    return [t["name"] for t in load_teams()] or list(FALLBACK_TEAM_ORDER)
+
+
+def mcp_servers():
+    """The server names in .mcp.json, slugged, so a tool named like one counts as connected."""
+    try:
+        with open(MCP_FILE, encoding="utf-8") as f:
+            return {slug(k) for k in json.load(f).get("mcpServers", {})}
+    except (OSError, ValueError):
+        return set()
+
+
+def tool_status(tool, servers):
+    if tool.get("via") == "skill":
+        script = tool.get("script") or ""
+        return "connected" if script and os.path.isfile(os.path.join(ROOT, script)) else "not connected"
+    names = {slug(tool.get("name"))} | {slug(a) for a in tool.get("mcp", []) if isinstance(a, str)}
+    return "connected" if names & servers else "not connected"
+
+
+def teams_payload(agent_list=None, running=None):
+    """Every team in the fixed order with its live agent and running counts."""
+    agent_list = agents()["agents"] if agent_list is None else agent_list
+    running = events()["running"] if running is None else running
+    servers, out = mcp_servers(), []
+    for t in load_teams():
+        members = sorted((a for a in agent_list if a["team"] == t["name"]), key=lambda a: (a["role"] != "head", a["name"]))
+        team = dict(t)
+        team["lead_label"] = label_of(t.get("lead", ""))
+        team["tools"] = [{**tool, "status": tool_status(tool, servers)} for tool in t.get("tools", []) if isinstance(tool, dict)]
+        team["skills"] = [s for s in t.get("skills", []) if isinstance(s, dict)]
+        team["agents"] = [a["name"] for a in members]
+        team["agent_count"] = len(members)
+        team["running"] = sum(running.get(a["name"], 0) for a in members)
+        out.append(team)
+    return out
 
 
 def agents():
     """Every agent in .claude/agents/*.md: frontmatter fields the office needs."""
     out = []
     folder = os.path.join(ROOT, ".claude", "agents")
+    colors = {t["name"]: t.get("color", "") for t in load_teams()}
     for fn in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
         if not fn.endswith(".md"):
             continue
@@ -65,9 +177,12 @@ def agents():
             elif ":" in line and not line.startswith(" "):
                 k, _, v = line.partition(":")
                 fm[k.strip()] = v.strip()
-        out.append({"name": fm.get("name", fn[:-3]), "team": fm.get("team", "Office"), "role": fm.get("role", "worker"), "model": fm.get("model", ""),
-                    "description": fm.get("description", ""), "tools": [t.strip() for t in fm.get("tools", "").split(",") if t.strip()], "skills": skills, "color": fm.get("color", "")})
-    teams = [t for t in TEAM_ORDER if any(a["team"] == t for a in out)] + sorted({a["team"] for a in out} - set(TEAM_ORDER))
+        name, team = fm.get("name", fn[:-3]), fm.get("team", "Office")
+        out.append({"name": name, "label": label_of(name), "team": team, "teamKey": team_key(team), "teamColor": colors.get(team, ""),
+                    "role": fm.get("role", "worker"), "model": fm.get("model", ""), "description": fm.get("description", ""),
+                    "tools": [t.strip() for t in fm.get("tools", "").split(",") if t.strip()], "skills": skills, "color": fm.get("color", "")})
+    order = team_order()
+    teams = [t for t in order if any(a["team"] == t for a in out)] + sorted({a["team"] for a in out} - set(order))
     return {"agents": out, "teams": teams}
 
 
@@ -95,18 +210,260 @@ def events(after=0):
     return {"events": lines[after:], "offset": after, "total": len(lines), "running": running}
 
 
+# the board: hq/tasks.json, shared with hq/tasks.js
+def normalize_task(t):
+    for k, v in TASK_DEFAULTS.items():
+        t.setdefault(k, v)
+    if t.get("status") not in STATUSES:
+        t["status"] = "todo"
+    if t.get("kind") not in KINDS:
+        t["kind"] = "task"
+    return t
+
+
 def load_tasks():
     try:
         with open(TASKS, encoding="utf-8") as f:
-            return json.load(f)
+            db = json.load(f)
     except (OSError, ValueError):
-        return {"tasks": []}
+        db = {"tasks": []}
+    if not isinstance(db, dict):
+        db = {"tasks": []}
+    db["tasks"] = [normalize_task(t) for t in db.get("tasks", []) if isinstance(t, dict)]
+    return db
 
 
 def save_tasks(db):
     with open(TASKS, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2)
         f.write("\n")
+
+
+def clean_date(s):
+    s = (s or "").strip() if isinstance(s, str) else ""
+    if not DATE_RE.match(s):
+        return None
+    try:
+        datetime.date.fromisoformat(s)
+    except ValueError:
+        return None
+    return s
+
+
+def clean_time(s):
+    s = (s or "").strip() if isinstance(s, str) else ""
+    return s if TIME_RE.match(s) else None
+
+
+def clean_progress(p):
+    if p is None or p == "":
+        return None
+    try:
+        return max(0, min(100, int(float(p))))
+    except (TypeError, ValueError):
+        return None
+
+
+def set_status(t, status):
+    t["status"], t["updated"] = status, now_iso()
+    if status == "done":
+        t["done_at"] = t.get("done_at") or now_iso()
+        if t.get("progress") is not None:
+            t["progress"] = 100
+    else:
+        t["done_at"] = None
+
+
+def approve_folder(name):
+    """Move out/<name> to approved/<name>. Returns (http code, payload)."""
+    src = safe_join(os.path.join(ROOT, "out"), name) if name else None
+    if not name or not SAFE_NAME.match(name) or not src or not os.path.isdir(src):
+        return 404, {"error": "no such work folder"}
+    os.makedirs(os.path.join(ROOT, "approved"), exist_ok=True)
+    dst = os.path.join(ROOT, "approved", name)
+    if os.path.exists(dst):
+        return 409, {"error": "already approved"}
+    shutil.move(src, dst)
+    return 200, {"approved": name}
+
+
+def task_action(body):
+    """POST /api/tasks: add, move, remove, approve, progress. Returns (http code, payload)."""
+    action = body.get("action")
+    with TASK_LOCK:
+        db = load_tasks()
+        task = next((t for t in db["tasks"] if t.get("id") == body.get("id")), None)
+        if action == "add" and isinstance(body.get("title"), str) and body["title"].strip():
+            nid = "t" + str(max([0] + [int(t["id"][1:]) for t in db["tasks"] if str(t.get("id", "t"))[1:].isdigit()]) + 1)
+            new = {"id": nid, "title": body["title"].strip()[:200], "team": str(body.get("team") or "")[:40], "agent": str(body.get("agent") or "")[:60],
+                   "status": body.get("status") if body.get("status") in STATUSES else "todo", "kind": body.get("kind") if body.get("kind") in KINDS else "task",
+                   "note": str(body.get("note") or "")[:500], "subtitle": str(body.get("subtitle") or "")[:200], "progress": clean_progress(body.get("progress")),
+                   "date": clean_date(body.get("date")), "time": clean_time(body.get("time")), "created": now_iso(), "updated": now_iso(),
+                   "done_at": now_iso() if body.get("status") == "done" else None}
+            db["tasks"].append(normalize_task(new)); save_tasks(db)
+            return 201, {"added": new}
+        if action == "move" and task and body.get("status") in STATUSES:
+            set_status(task, body["status"]); save_tasks(db)
+            return 200, {"moved": task}
+        if action == "remove":
+            n = len(db["tasks"]); db["tasks"] = [t for t in db["tasks"] if t.get("id") != body.get("id")]; save_tasks(db)
+            return 200, {"removed": n - len(db["tasks"])}
+        if action == "approve":
+            if not task:
+                return 404, {"error": "no such task"}
+            moved, warning = None, None
+            m = re.search(r"out:([^\s,;]+)", task.get("note") or "")
+            if m:                                   # the task waits on a work folder: approve that too
+                name = m[1].strip("/")
+                code, res = approve_folder(name)
+                if code in (200, 409):
+                    moved = name
+                else:
+                    warning = f"{res['error']}: out/{name}"
+            set_status(task, "done"); save_tasks(db)
+            out = {"approved": task, "moved": moved}
+            if warning:
+                out["warning"] = warning
+            return 200, out
+        if action == "progress":
+            if not task:
+                return 404, {"error": "no such task"}
+            if "progress" in body:
+                p = clean_progress(body["progress"])
+                if p is None and body["progress"] not in (None, ""):
+                    return 400, {"error": "progress must be a number from 0 to 100"}
+                task["progress"] = p
+            if "subtitle" in body:
+                task["subtitle"] = str(body.get("subtitle") or "")[:200]
+            task["updated"] = now_iso(); save_tasks(db)
+            return 200, {"progress": task}
+    return 400, {"error": "action: add (title, team, kind?, date?, time?, subtitle?), move (id, status), remove (id), approve (id) or progress (id, progress, subtitle)"}
+
+
+def calendar_payload(month):
+    """Tasks with a date in the month, by day."""
+    month = month or datetime.date.today().strftime("%Y-%m")
+    if not MONTH_RE.match(month):
+        return None
+    days = {}
+    for t in load_tasks()["tasks"]:
+        if isinstance(t.get("date"), str) and t["date"].startswith(month + "-"):
+            days.setdefault(t["date"], []).append(t)
+    for rows in days.values():
+        rows.sort(key=lambda t: (t.get("time") is None, t.get("time") or "", t.get("created") or ""))
+    return {"month": month, "days": dict(sorted(days.items()))}
+
+
+BRAIN_ENTITIES = ("Company", "Brand rules", "Lessons", "Ideas")
+
+
+def brain_payload():
+    """GET /api/brain: the four contract entities, each [] until brain/memory.jsonl has it, plus any other entity found."""
+    brain = {name: [] for name in BRAIN_ENTITIES}
+    brain.update(brain_entities())
+    return brain
+
+
+def status_payload():
+    s = collect()
+    ag, running, tasks = agents()["agents"], events()["running"], load_tasks()["tasks"]
+    s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
+    s["brain_notes"] = sum(s.get("brain", {}).values())
+    s["counts"] = {"agents": len(ag), "running": sum(running.values()),
+                   "tasks_running": sum(1 for t in tasks if t["status"] == "doing"),
+                   "tasks_waiting": sum(1 for t in tasks if t["status"] == "review"),
+                   "tasks_done_today": sum(1 for t in tasks if t["status"] == "done" and is_today(t.get("done_at")))}
+    return s
+
+
+class Notifier:
+    """The bell: an append-only list for the server's lifetime, derived from the hook feed and board changes.
+    Seeded on the first call from the last 50 hook events and the board; the HUD polls with after=total."""
+    GAP_MS = 10_000
+
+    def __init__(self):
+        self.items, self.lock, self.seeded = [], threading.Lock(), False
+        self.offset, self.last_ts = 0, 0        # how far into events.jsonl we have read, and the newest ts seen
+        self.bursts = {}                         # team -> {"last": ts, "agents": [names]} of starts not yet reported
+        self.board = {}                          # task id -> (status, kind, date, time) last seen
+
+    def _item(self, fresh, team, body, kind, ts, **extra):
+        team = team or "Office"
+        fresh.append({"id": 0, "ts": ts, "team": team, "teamKey": team_key(team), "title": team, "body": body, "kind": kind,
+                      "text": f"{team} · {body}", **extra})
+
+    def _close(self, team, burst, fresh):
+        if len(burst["agents"]) >= 2:
+            self._item(fresh, team, f"{len(burst['agents'])} sub-agents started", "started", burst["last"], agents=burst["agents"])
+
+    def refresh(self):
+        with self.lock:
+            fresh, now = [], int(time.time() * 1000)
+            # the hook feed: bursts of starts in one team
+            team_of = {a["name"]: a["team"] for a in agents()["agents"]}
+            feed = events()
+            lines = feed["events"]
+            if not self.seeded:
+                new = lines[-50:]
+            elif feed["total"] >= self.offset:
+                new = lines[self.offset:]
+            else:                                # the hook trimmed the file: keep what is newer than what we saw
+                new = [e for e in lines if e.get("ts", 0) > self.last_ts]
+            self.offset = feed["total"]
+            for e in new:
+                ts = e.get("ts", 0) or now
+                self.last_ts = max(self.last_ts, ts)
+                team = team_of.get(e.get("agent")) if e.get("event") == "start" else None
+                if not team:
+                    continue
+                b = self.bursts.get(team)
+                if b and ts - b["last"] <= self.GAP_MS:
+                    b["last"] = ts; b["agents"].append(e.get("agent"))
+                else:
+                    if b:
+                        self._close(team, b, fresh)
+                    self.bursts[team] = {"last": ts, "agents": [e.get("agent")]}
+            for team, b in list(self.bursts.items()):
+                if now - b["last"] > self.GAP_MS:
+                    self._close(team, b, fresh); del self.bursts[team]
+            # the board
+            today, seen = datetime.date.today().isoformat(), set()
+            for t in load_tasks()["tasks"]:
+                tid = t.get("id"); seen.add(tid)
+                cur, prev = (t["status"], t["kind"], t.get("date"), t.get("time")), self.board.get(tid)
+                self.board[tid] = cur
+                team, title = t.get("team") or "Office", t.get("title", "")
+                when = t["time"] or t["date"]
+                if not self.seeded:                  # what is still worth a bell when the server starts
+                    if cur[0] == "review":
+                        self._item(fresh, team, f"{title} ready for your OK", "waiting", iso_ms(t.get("updated")), task=tid)
+                    elif cur[0] == "done" and is_today(t.get("done_at")):
+                        self._item(fresh, team, f"{title} done", "done", iso_ms(t.get("done_at")), task=tid)
+                    if cur[1] in SCHEDULED_KINDS and cur[2] and cur[2] >= today:
+                        self._item(fresh, team, f"{title} scheduled · {when}", "scheduled", iso_ms(t.get("updated")), task=tid)
+                    continue
+                if prev is None or prev[0] != cur[0]:
+                    if cur[0] == "review":
+                        self._item(fresh, team, f"{title} ready for your OK", "waiting", iso_ms(t.get("updated")), task=tid)
+                    elif cur[0] == "done":
+                        self._item(fresh, team, f"{title} done", "done", iso_ms(t.get("done_at") or t.get("updated")), task=tid)
+                if (prev is None or prev[1:] != cur[1:]) and cur[1] in SCHEDULED_KINDS and cur[2]:
+                    self._item(fresh, team, f"{title} scheduled · {when}", "scheduled", iso_ms(t.get("updated")), task=tid)
+            for tid in [k for k in self.board if k not in seen]:
+                del self.board[tid]
+            if not self.seeded:
+                fresh.sort(key=lambda i: i["ts"]); self.seeded = True
+            for i in fresh:
+                i["id"] = len(self.items) + 1; self.items.append(i)
+            return len(self.items)
+
+    def payload(self, after=0):
+        total = self.refresh()
+        with self.lock:
+            return {"items": self.items[after:], "offset": after, "total": total}
+
+
+notifier = Notifier()
 
 
 def auto_update():
@@ -300,6 +657,7 @@ throttle = Throttle()
 
 def safe_join(base, rel):
     """Absolute path of rel under base, or None if it escapes."""
+    base = os.path.realpath(base)
     full = os.path.realpath(os.path.join(base, rel))
     return full if full == base or full.startswith(base + os.sep) else None
 
@@ -358,9 +716,10 @@ class Handler(BaseHTTPRequestHandler):
     def read_json(self):
         n = int(self.headers.get("Content-Length") or 0)
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
+            obj = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return {}
+        return obj if isinstance(obj, dict) else {}
 
     def send_file(self, path):
         size = os.path.getsize(path)
@@ -391,6 +750,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 left -= len(chunk)
 
+    def send_static(self, full):
+        return self.send_file(full) if full and os.path.isfile(full) else self.send_json({"error": "not found"}, 404)
+
     # routes
     def do_GET(self):
         url = urlparse(self.path)
@@ -402,20 +764,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard():
             return
         if path == "/api/status":
-            s = collect()
-            s["desk"], s["auth"], s["running"] = desk.state(), bool(PASSWORD), events()["running"]
-            s["tasks"] = load_tasks()["tasks"]
-            return self.send_json(s)
+            return self.send_json(status_payload())
+        if path == "/api/teams":
+            return self.send_json({"teams": teams_payload(), "brain_notes": brain_notes()})
         if path == "/api/agents":
             return self.send_json(agents())
         if path == "/api/events":
-            return self.send_json(events(int(qs.get("after", ["0"])[0])))
+            return self.send_json(events(qs_int(qs, "after")))
         if path == "/api/tasks":
             return self.send_json(load_tasks())
-        if path in ("/office3d.js", "/vendor/three.min.js"):
-            return self.send_file(os.path.join(HERE, path.lstrip("/")))
+        if path == "/api/notifications":
+            return self.send_json(notifier.payload(qs_int(qs, "after")))
+        if path == "/api/calendar":
+            cal = calendar_payload(qs.get("month", [""])[0])
+            return self.send_json(cal) if cal else self.send_json({"error": "month must be YYYY-MM"}, 400)
         if path == "/api/brain":
-            return self.send_json(brain_entities())
+            return self.send_json(brain_payload())
+        if path == "/api/brain/notes":
+            return self.send_json({"notes": brain_notes()})
         if path == "/api/runs":
             return self.send_json(desk.state())
         m = re.match(r"^/api/runs/([0-9a-f]{8})$", path)
@@ -423,15 +789,16 @@ class Handler(BaseHTTPRequestHandler):
             run = desk.runs.get(m[1])
             if not run:
                 return self.send_json({"error": "no such run"}, 404)
-            after = int(qs.get("after", ["0"])[0])
+            after = qs_int(qs, "after")
             return self.send_json({**run.summary(), "events": run.events[after:], "offset": after})
         m = re.match(r"^/files/(out|approved)/(.+)$", path)
         if m:
-            base = os.path.join(ROOT, m[1])
-            full = safe_join(base, m[2])
-            if not full or not os.path.isfile(full):
-                return self.send_json({"error": "not found"}, 404)
-            return self.send_file(full)
+            return self.send_static(safe_join(os.path.join(ROOT, m[1]), m[2]))
+        if path in STATIC:
+            return self.send_static(os.path.join(HERE, path.lstrip("/")))
+        m = re.match(r"^/vendor/(.+)$", path)
+        if m:
+            return self.send_static(safe_join(os.path.join(HERE, "vendor"), m[1]))
         return self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -442,7 +809,7 @@ class Handler(BaseHTTPRequestHandler):
             if wait:
                 return self.send_json({"error": f"too many wrong passwords, try again in {wait} s"}, 429)
             given = self.read_json().get("password") or ""
-            if not PASSWORD or not hmac.compare_digest(given.encode(), PASSWORD.encode()):
+            if not PASSWORD or not isinstance(given, str) or not hmac.compare_digest(given.encode(), PASSWORD.encode()):
                 throttle.failed(ip)
                 sys.stderr.write(f"login failed from {ip}\n")
                 return self.send_json({"error": "wrong password"}, 401)
@@ -454,7 +821,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard():
             return
         if path == "/api/run":
-            prompt = (self.read_json().get("prompt") or "").strip()
+            prompt = (self.read_json().get("prompt") or "")
+            prompt = prompt.strip() if isinstance(prompt, str) else ""
             if not prompt:
                 return self.send_json({"error": "empty message"}, 400)
             run = desk.start(prompt)
@@ -462,42 +830,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "the lead is still working on the previous message"}, 409)
             return self.send_json(run.summary(), 202)
         if path == "/api/tasks":
-            body, db = self.read_json(), load_tasks()
-            action = body.get("action")
-            if action == "add" and (body.get("title") or "").strip():
-                nid = "t" + str(max([0] + [int(t["id"][1:]) for t in db["tasks"] if t.get("id", "t")[1:].isdigit()]) + 1)
-                task = {"id": nid, "title": body["title"].strip()[:200], "team": (body.get("team") or "")[:40], "agent": (body.get("agent") or "")[:60],
-                        "status": body.get("status") if body.get("status") in STATUSES else "todo", "note": (body.get("note") or "")[:500],
-                        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-                db["tasks"].append(task); save_tasks(db)
-                return self.send_json({"added": task}, 201)
-            if action == "move":
-                for t in db["tasks"]:
-                    if t.get("id") == body.get("id") and body.get("status") in STATUSES:
-                        t["status"], t["updated"] = body["status"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()); save_tasks(db)
-                        return self.send_json({"moved": t})
-            if action == "remove":
-                n = len(db["tasks"]); db["tasks"] = [t for t in db["tasks"] if t.get("id") != body.get("id")]; save_tasks(db)
-                return self.send_json({"removed": n - len(db["tasks"])})
-            return self.send_json({"error": "action: add (title, team), move (id, status) or remove (id)"}, 400)
+            code, payload = task_action(self.read_json())
+            if code < 400:
+                notifier.refresh()               # so the bell rings on the next poll, not the one after
+            return self.send_json(payload, code)
         if path == "/api/approve":
             name = self.read_json().get("name") or ""
-            src = safe_join(os.path.join(ROOT, "out"), name)
-            if not name or not SAFE_NAME.match(name) or not src or not os.path.isdir(src):
-                return self.send_json({"error": "no such work folder"}, 404)
-            os.makedirs(os.path.join(ROOT, "approved"), exist_ok=True)
-            dst = os.path.join(ROOT, "approved", name)
-            if os.path.exists(dst):
-                return self.send_json({"error": "already approved"}, 409)
-            shutil.move(src, dst)
-            return self.send_json({"approved": name})
+            code, payload = approve_folder(name if isinstance(name, str) else "")
+            return self.send_json(payload, code)
         return self.send_json({"error": "not found"}, 404)
 
     def do_PUT(self):
         path = unquote(urlparse(self.path).path)
         if not self.guard():
             return
-        m = re.match(r"^/api/inbox/(clips|radar|stats)/([^/]+)$", path)
+        m = re.match(r"^/api/inbox/(clips|radar|stats|messages)/([^/]+)$", path)
         if not m:
             return self.send_json({"error": "not found"}, 404)
         kind, name = m[1], m[2]

@@ -1,0 +1,490 @@
+{
+  "_comment": "Static team metadata for the Agents HQ app, in the office's fixed order (clockwise from the top). The server (hq/server.py) serves it at /api/teams and recomputes each tool's status: 'connected' when a server named like one of its mcp aliases is in .mcp.json, or when its skill script exists.",
+  "teams": [
+    {
+      "key": "research",
+      "name": "Research",
+      "color": "#3b82f6",
+      "color_light": "#85b2f9",
+      "color_wall": "#334669",
+      "icon": "🔍",
+      "tagline": "github radar · markets · trends",
+      "lead": "research-director",
+      "tools": [
+        {
+          "name": "GitHub",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "github"
+          ]
+        },
+        {
+          "name": "Web search",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "web-search",
+            "websearch",
+            "brave-search",
+            "tavily",
+            "exa"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "market-sizing",
+          "note": "customers, segments, pricing benchmarks and demand signals, with sources",
+          "agent": "market-analyst"
+        },
+        {
+          "name": "competitor-gap",
+          "note": "profiles competitors and finds the gap we can own",
+          "agent": "competitor-analyst"
+        },
+        {
+          "name": "trend-scan",
+          "note": "what changed in the last 30 to 90 days in a niche",
+          "agent": "trend-scout"
+        },
+        {
+          "name": "radar-ideas",
+          "note": "comments and notes in inbox/radar/ ranked into video ideas",
+          "agent": "trend-scout",
+          "skill": "radar"
+        },
+        {
+          "name": "research-brief",
+          "note": "three workers' files merged into one brief with sources",
+          "agent": "research-director"
+        }
+      ]
+    },
+    {
+      "key": "scripts",
+      "name": "Scripts",
+      "color": "#d4a017",
+      "color_light": "#e4c46f",
+      "color_wall": "#54492d",
+      "icon": "✏️",
+      "tagline": "hooks · scripts · fact-check",
+      "lead": "script-writer",
+      "tools": [
+        {
+          "name": "Notion",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "notion"
+          ]
+        },
+        {
+          "name": "Web search",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "web-search",
+            "websearch",
+            "brave-search",
+            "tavily",
+            "exa"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "script-draft",
+          "note": "a script in the owner's voice: hook, beats, on-screen text",
+          "agent": "script-writer",
+          "skill": "quill"
+        },
+        {
+          "name": "hook-writer",
+          "note": "ten ranked opening lines, 12 words or fewer",
+          "agent": "hook-writer"
+        },
+        {
+          "name": "seo",
+          "note": "the keywords people search for; titles, descriptions and outlines around them",
+          "agent": "seo-specialist"
+        },
+        {
+          "name": "fact-check",
+          "note": "every claim in a script checked before it is reported",
+          "agent": "script-writer"
+        }
+      ]
+    },
+    {
+      "key": "social",
+      "name": "Social",
+      "color": "#d946ef",
+      "color_light": "#e78cf5",
+      "color_wall": "#5a3868",
+      "icon": "💬",
+      "tagline": "posts · calendar · replies",
+      "lead": "social-media-manager",
+      "tools": [
+        {
+          "name": "Calendar",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "calendar",
+            "google-calendar",
+            "gcal"
+          ]
+        },
+        {
+          "name": "Instagram",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "instagram"
+          ]
+        },
+        {
+          "name": "YouTube",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "youtube"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "content-calendar",
+          "note": "posts planned on the calendar; nothing is posted without the owner's OK",
+          "agent": "social-media-manager"
+        },
+        {
+          "name": "community-replies",
+          "note": "replies to comments and DMs, and what needs the owner",
+          "agent": "community-manager"
+        },
+        {
+          "name": "email-sequence",
+          "note": "newsletters and sequences with subject lines and preview text",
+          "agent": "email-marketer"
+        },
+        {
+          "name": "outreach",
+          "note": "personalised outreach to partners, sponsors and collaborators",
+          "agent": "outreach-writer"
+        }
+      ]
+    },
+    {
+      "key": "creative",
+      "name": "Creative",
+      "color": "#7c5cff",
+      "color_light": "#ae9aff",
+      "color_wall": "#46416f",
+      "icon": "▶️",
+      "tagline": "rough cuts · captions · thumbnails",
+      "lead": "creative-director",
+      "tools": [
+        {
+          "name": "Google Drive",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "google-drive",
+            "gdrive",
+            "drive"
+          ]
+        },
+        {
+          "name": "CapCut",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "capcut"
+          ]
+        },
+        {
+          "name": "Canva",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "canva"
+          ]
+        },
+        {
+          "name": "Slack",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "slack"
+          ]
+        },
+        {
+          "name": "rough cut",
+          "via": "skill",
+          "status": "connected",
+          "script": ".claude/skills/reel/scripts/cut.py"
+        },
+        {
+          "name": "captions",
+          "via": "skill",
+          "status": "connected",
+          "script": ".claude/skills/reel/scripts/captions.py"
+        },
+        {
+          "name": "thumbnails",
+          "via": "skill",
+          "status": "connected",
+          "script": ".claude/skills/pixel/scripts/thumbnail.py"
+        }
+      ],
+      "skills": [
+        {
+          "name": "rough-cut",
+          "note": "every pause and filler word cut from the raw clip",
+          "agent": "clip-editor",
+          "skill": "reel"
+        },
+        {
+          "name": "captions-burn-in",
+          "note": "3 words per line, the spoken word highlighted",
+          "agent": "clip-editor",
+          "skill": "reel"
+        },
+        {
+          "name": "resize-for-reels",
+          "note": "vertical 9:16 export with safe margins",
+          "agent": "clip-editor",
+          "skill": "reel"
+        },
+        {
+          "name": "thumbnail-maker",
+          "note": "the frame, the words and the placement for the cover",
+          "agent": "thumbnail-designer",
+          "skill": "pixel"
+        },
+        {
+          "name": "brand-check",
+          "note": "every creative deliverable against the brand rules",
+          "agent": "brand-checker"
+        }
+      ]
+    },
+    {
+      "key": "analytics",
+      "name": "Analytics",
+      "color": "#14b8a6",
+      "color_light": "#6dd3c8",
+      "color_wall": "#214c4e",
+      "icon": "📊",
+      "tagline": "retention · reports · lessons",
+      "lead": "analytics-lead",
+      "tools": [
+        {
+          "name": "YouTube Analytics",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "youtube-analytics",
+            "youtube"
+          ]
+        },
+        {
+          "name": "Sheets",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "sheets",
+            "google-sheets",
+            "gsheets"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "weekly-report",
+          "note": "what the numbers mean and what to change",
+          "agent": "analytics-lead"
+        },
+        {
+          "name": "retention-read",
+          "note": "exported CSVs cleaned, metrics and trends computed",
+          "agent": "data-analyst",
+          "skill": "pulse"
+        },
+        {
+          "name": "csv-lessons",
+          "note": "analytics CSVs turned into lessons the other teams follow",
+          "agent": "data-analyst",
+          "skill": "pulse"
+        },
+        {
+          "name": "strategy-options",
+          "note": "a goal turned into options, a recommendation and the first three steps",
+          "agent": "strategist"
+        }
+      ]
+    },
+    {
+      "key": "shop",
+      "name": "Shop",
+      "color": "#ef4444",
+      "color_light": "#f58b8b",
+      "color_wall": "#5d363c",
+      "icon": "🛍",
+      "tagline": "listings · orders · support",
+      "lead": "shop-manager",
+      "tools": [
+        {
+          "name": "Shopify",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "shopify"
+          ]
+        },
+        {
+          "name": "Stripe",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "stripe"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "product-listing",
+          "note": "listings, landing-page and bio copy a customer reads",
+          "agent": "copywriter"
+        },
+        {
+          "name": "post-copy",
+          "note": "title, description, captions and pinned comment for a finished edit",
+          "agent": "copywriter",
+          "skill": "relay"
+        },
+        {
+          "name": "ad-variants",
+          "note": "paid ad variants, audiences and a small test plan with a budget",
+          "agent": "ads-specialist"
+        },
+        {
+          "name": "pricing-margins",
+          "note": "pricing, margins and budgets with every assumption written down",
+          "agent": "finance-analyst"
+        },
+        {
+          "name": "launch-timeline",
+          "note": "milestones, owners, dates, dependencies and risks",
+          "agent": "project-manager"
+        }
+      ]
+    },
+    {
+      "key": "dev",
+      "name": "Dev",
+      "color": "#22c55e",
+      "color_light": "#76db9b",
+      "color_wall": "#26513d",
+      "icon": "<>",
+      "tagline": "ships the code",
+      "lead": "engineering-lead",
+      "tools": [
+        {
+          "name": "GitHub",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "github"
+          ]
+        },
+        {
+          "name": "CI",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "ci",
+            "github-actions",
+            "actions"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "spec-split",
+          "note": "a feature or bug turned into a spec with acceptance criteria",
+          "agent": "engineering-lead"
+        },
+        {
+          "name": "frontend",
+          "note": "UI changes: HTML, CSS, JavaScript, components",
+          "agent": "frontend-dev"
+        },
+        {
+          "name": "backend",
+          "note": "server, API, data and tooling changes",
+          "agent": "backend-dev"
+        },
+        {
+          "name": "qa-test",
+          "note": "every acceptance criterion tested, bugs reproduced with exact steps",
+          "agent": "qa-tester"
+        },
+        {
+          "name": "code-review",
+          "note": "a diff reviewed for bugs, risks and simplifications: PASS or FIX",
+          "agent": "code-reviewer"
+        }
+      ]
+    },
+    {
+      "key": "inbox",
+      "name": "Inbox",
+      "color": "#f97316",
+      "color_light": "#fba86f",
+      "color_wall": "#5f4030",
+      "icon": "✉️",
+      "tagline": "email · brand deals · quotes",
+      "lead": "inbox-manager",
+      "tools": [
+        {
+          "name": "Gmail",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "gmail",
+            "google-mail",
+            "email"
+          ]
+        },
+        {
+          "name": "Notion",
+          "via": "MCP",
+          "status": "not connected",
+          "mcp": [
+            "notion"
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "name": "triage",
+          "note": "emails, DMs and requests sorted: reply, quote or the owner",
+          "agent": "inbox-manager"
+        },
+        {
+          "name": "customer-reply",
+          "note": "replies in the company's voice; refunds and legal go to the owner",
+          "agent": "customer-support"
+        },
+        {
+          "name": "proposal-quote",
+          "note": "scope, deliverables, price, timeline, next step",
+          "agent": "proposal-writer"
+        }
+      ]
+    }
+  ]
+}
