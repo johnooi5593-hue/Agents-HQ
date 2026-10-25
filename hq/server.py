@@ -18,6 +18,8 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
   HQ_SECURE=1       mark the cookie Secure (set when the app is served over HTTPS; X-Forwarded-Proto also works)
   HQ_MAX_UPLOAD_MB  largest upload accepted (default 2048)
   HQ_TRUST_PROXY=1  behind a reverse proxy (Caddy, Fly): read the client address from X-Forwarded-For
+  HQ_LOCAL_TRUST=1  phone access from the desktop app: requests from this computer itself need no login, every other
+                    device (a phone on Wi-Fi or Tailscale) does. Never combine with HQ_TRUST_PROXY.
 """
 import datetime, hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 from http import cookies
@@ -35,6 +37,7 @@ PASSWORD = os.environ.get("HQ_PASSWORD") or None
 SECRET = (os.environ.get("HQ_SECRET") or secrets.token_hex(32)).encode()
 SECURE = os.environ.get("HQ_SECURE", "") not in ("", "0", "false")
 TRUST_PROXY = os.environ.get("HQ_TRUST_PROXY", "") not in ("", "0", "false")
+LOCAL_TRUST = os.environ.get("HQ_LOCAL_TRUST", "") not in ("", "0", "false")   # the desktop app: this computer's own window skips the login
 MAX_UPLOAD = int(os.environ.get("HQ_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 SESSION_DAYS = 30
 CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
@@ -695,6 +698,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def authed(self):
         if not PASSWORD:
+            return True
+        if LOCAL_TRUST and not TRUST_PROXY and self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1") \
+                and not self.headers.get("X-Forwarded-For"):
             return True
         jar = cookies.SimpleCookie(self.headers.get("Cookie", ""))
         return "hq_session" in jar and token_ok(jar["hq_session"].value)
