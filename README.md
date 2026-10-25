@@ -134,7 +134,7 @@ Or on any VPS with Docker: `cp deploy/.env.example deploy/.env`, fill it in, `do
 
 ## Safety
 
-- Agents may run the skill scripts and the board, write under `work/`, `out/`, `done/`, search the web, and read. Editing the charter, the agents, the skills, the brain file or the app asks you first (`.claude/settings.json`).
+- The office runs on full auto: nothing asks for permission (`defaultMode: bypassPermissions` in `.claude/settings.json`). Only the hard blocks remain: `rm`, `curl`, `wget`, force pushes and reading `.env` are never allowed. If you'd rather be asked before the office edits its own agents or skills, change `defaultMode` to `default`.
 - `rm`, `curl`, `wget`, force pushes and reading `.env` are blocked. `git push` asks.
 - Every deliverable is reviewed by a checker or a team head before you see it. Nothing is posted; you publish.
 - Installing agents or skills from other people? Read them first, or ask the chief of staff to list every file, command and network call in one.
