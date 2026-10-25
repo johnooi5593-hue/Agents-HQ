@@ -1,0 +1,198 @@
+# Builds the Agents HQ Windows app (desktop/) on every push to main and publishes
+# it as the rolling "latest" release, so the download links in the README always
+# point at the newest build.
+#
+# There is no second "build-<n>" release per build on purpose: it would upload the
+# same ~150 MB twice on every push and leave a permanent tag and release behind
+# each time. Add one later if a fixed link to one build is ever needed.
+name: Windows app
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+# Only the build job needs to write (the "latest" tag and the release); the checks run with a read-only token.
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-app
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check the app code
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Syntax check
+        run: |
+          node --check desktop/main.js
+          node --check desktop/lib.js
+          node --check desktop/preload.js
+
+      # The unit tests probe the real tools. The Ubuntu runner image has git, node and python but no ffmpeg.
+      - name: Install ffmpeg (the unit tests probe the real tools)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Unit tests
+        run: node desktop/test-lib.js
+
+  build:
+    name: Build and release
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      # Electron and the NSIS tools are downloaded once per lock file instead of on every build.
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      # The office that ships inside the app: the repository without the repo metadata,
+      # the app itself, build output and the owner's own folders. electron-builder copies
+      # desktop/bundle into the app's resources as "office".
+      - name: Bundle the office
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $src = $env:GITHUB_WORKSPACE
+          $dst = Join-Path $src 'desktop\bundle'
+
+          # robocopy returns 0 to 7 for success (1 = files copied) and 8 or more for errors.
+          function Copy-Tree {
+            param([string[]]$RobocopyArgs)
+            & robocopy @RobocopyArgs
+            $code = $LASTEXITCODE
+            if ($code -ge 8) { throw "robocopy failed with exit code $code" }
+            Write-Host "robocopy finished with exit code $code (below 8 is success)"
+          }
+
+          if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
+          New-Item -ItemType Directory -Path $dst -Force | Out-Null
+
+          # 1. Everything except .git, desktop, out, done, approved and inbox (handled below).
+          #    node_modules and __pycache__ are skipped at any depth.
+          Copy-Tree @(
+            $src, $dst, '/E',
+            '/XD', (Join-Path $src '.git'), (Join-Path $src 'desktop'), (Join-Path $src 'out'),
+                   (Join-Path $src 'done'), (Join-Path $src 'approved'), (Join-Path $src 'inbox'),
+                   'node_modules', '__pycache__',
+            '/XF', '.DS_Store', 'Thumbs.db', 'desktop.ini', '*.pyc',
+            '/NP', '/NFL', '/NDL'
+          )
+
+          # 2. inbox: only the folder skeleton (the .gitkeep files), never any clips or exports.
+          Copy-Tree @(
+            (Join-Path $src 'inbox'), (Join-Path $dst 'inbox'), '.gitkeep', '/E',
+            '/NP', '/NFL', '/NDL'
+          )
+
+          # 3. Make sure the bundle is a working office and nothing leaked in.
+          foreach ($must in 'CLAUDE.md', 'hq\server.py', 'hq\app.html', '.claude\settings.json', 'inbox\.gitkeep') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dst $must))) { throw "The bundle is missing $must" }
+          }
+          foreach ($never in '.git', 'desktop', 'out', 'done', 'approved', 'node_modules') {
+            if (Test-Path -LiteralPath (Join-Path $dst $never)) { throw "The bundle must not contain $never" }
+          }
+          $all = Get-ChildItem -LiteralPath $dst -Recurse -File -Force
+          $mb = [math]::Round((($all | Measure-Object Length -Sum).Sum / 1MB), 1)
+          Write-Host "Bundled $($all.Count) files ($mb MB) into desktop\bundle"
+          exit 0
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci
+
+      # Not code-signed: CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder from
+      # looking for a certificate. --publish never in the script, so no GH_TOKEN is needed.
+      - name: Build the installer and the portable exe
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:win
+
+      - name: Check the build output
+        run: |
+          $dist = 'desktop/dist'
+          Get-ChildItem -LiteralPath $dist |
+            Format-Table Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }, LastWriteTime -AutoSize |
+            Out-String | Write-Host
+          $missing = @('Agents-HQ-Setup.exe', 'Agents-HQ-Portable.exe') |
+            Where-Object { -not (Test-Path -LiteralPath (Join-Path $dist $_)) }
+          if ($missing) { throw "Missing in desktop/dist: $($missing -join ', ')" }
+          Write-Host 'Both exe files are there.'
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Agents-HQ-Windows
+          path: |
+            desktop/dist/Agents-HQ-Setup.exe
+            desktop/dist/Agents-HQ-Portable.exe
+          if-no-files-found: error
+          compression-level: 0
+
+      # The release steps only run for main, so a manual run on another branch still
+      # builds and uploads the exes without moving the public download links.
+      - name: Move the "latest" tag to this commit
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Publish the release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Agents HQ for Windows (latest build)
+          make_latest: true
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: |
+            desktop/dist/Agents-HQ-Setup.exe
+            desktop/dist/Agents-HQ-Portable.exe
+          body: |
+            Agents HQ for Windows, built from the newest `main` (commit ${{ github.sha }}, build #${{ github.run_number }}). Every build replaces this release, so the links below always give you the newest app.
+
+            **Install**
+
+            1. Download **Agents-HQ-Setup.exe** below and run it. No installer wanted? **Agents-HQ-Portable.exe** runs from any folder.
+            2. Windows SmartScreen will warn you, because the app is not code-signed. Click **More info**, then **Run anyway**.
+            3. The first start checks for Python, Node.js, ffmpeg, Git and Claude Code, and offers to install the ones that are missing.
+            4. Your office lives in `Documents\Agents HQ` (or `C:\Users\<you>\Agents HQ` when Documents is synced by OneDrive). The office updates itself every time it starts; the app does not yet: for a newer app, download **Agents-HQ-Setup.exe** from this page again.

@@ -87,6 +87,21 @@ python3 hq/server.py      # Windows: python hq/server.py
 
 Or double-click `Open Agents HQ.command` (Mac) or `Open Agents HQ.bat` (Windows). The browser opens http://localhost:7331. The app only listens on your own machine.
 
+## Windows app
+
+No terminal, no setup. One download:
+
+- **[Agents-HQ-Setup.exe](https://github.com/johnooi5593-hue/Agents-HQ/releases/latest/download/Agents-HQ-Setup.exe)**, the installer
+- [Agents-HQ-Portable.exe](https://github.com/johnooi5593-hue/Agents-HQ/releases/latest/download/Agents-HQ-Portable.exe), runs from any folder, nothing to install
+
+Windows SmartScreen will warn you the first time, because the app is not code-signed. Click **More info**, then **Run anyway**.
+
+The first start does the setup for you. It checks for Python, Node.js, ffmpeg, Git and Claude Code, and installs the missing ones with one click. It signs you in to Claude Code. It downloads your office into `Documents\Agents HQ` (or `C:\Users\<you>\Agents HQ` when Documents is synced by OneDrive). Then it opens the office.
+
+After that the office updates itself every time it starts. The app itself does not yet: when a new version is announced, download Agents-HQ-Setup.exe again from the link above. Editing mp4 clips still needs ffmpeg; the app installs it for you.
+
+Every push to `main` builds a new installer (`.github/workflows/windows-app.yml`), so the links above always give you the newest one.
+
 ## Use it
 
 | You type (or press) | What happens |

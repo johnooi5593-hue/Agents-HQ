@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>Agents HQ</title>
+<style>
+  /* the same dark look as the office: background #0b0f1a, panels rgba(17,20,30,.85), accent #ffd400 */
+  :root {
+    --bg: #0b0f1a; --panel: rgba(17, 20, 30, .85); --panel-2: #1e222b; --line: #2a2f3a;
+    --text: #e8eaf0; --muted: #8b93a7; --accent: #ffd400; --accent-ink: #1a1500;
+    --ok: #4ade80; --warn: #f59e0b; --bad: #f87171; --radius: 12px;
+    --font: Inter, "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg) radial-gradient(900px 500px at 50% -10%, rgba(255, 212, 0, .08), transparent 70%);
+    color: var(--text); font: 15px/1.5 var(--font); -webkit-font-smoothing: antialiased; user-select: none;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 36px 32px 28px; min-height: 100%; display: flex; flex-direction: column; gap: 20px; }
+
+  /* header: logo, name, status line */
+  header { display: flex; align-items: center; gap: 18px; }
+  .logo { width: 64px; height: 64px; border-radius: 16px; background: linear-gradient(160deg, #171a21, #0f1115); border: 1px solid var(--line); display: grid; place-items: center; position: relative; flex: none; }
+  .logo .orb { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 18px 4px rgba(255, 212, 0, .55), 0 0 40px 10px rgba(255, 212, 0, .18); }
+  .logo .hq { position: absolute; bottom: 5px; font-weight: 800; font-size: 11px; letter-spacing: .12em; color: #fff; }
+  header h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.01em; }
+  header .sub { color: var(--muted); margin-top: 2px; }
+  .status { margin-left: auto; text-align: right; max-width: 46%; }
+  .status .phase { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+  .status .phase .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .status .phase.ready .dot { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  .status .phase.busy .dot { background: var(--accent); box-shadow: 0 0 10px var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .status .phase.bad .dot { background: var(--bad); box-shadow: 0 0 10px var(--bad); }
+  .status .msg { color: var(--muted); font-size: 14px; margin-top: 4px; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+  /* the steps of the first run */
+  .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  .step .n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
+  .step.done { color: var(--text); } .step.done .n { background: var(--ok); color: #052e16; border-color: var(--ok); }
+  .step.now { color: var(--text); border-color: rgba(255, 212, 0, .5); } .step.now .n { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .step.bad .n { background: var(--bad); color: #450a0a; border-color: var(--bad); }
+
+  main { display: grid; grid-template-columns: minmax(380px, 5fr) minmax(360px, 6fr); gap: 20px; flex: 1; min-height: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .panel h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+
+  /* the checklist */
+  ul.tools { list-style: none; margin: 0; padding: 0; }
+  ul.tools li { display: grid; grid-template-columns: 26px 1fr auto; column-gap: 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+  ul.tools li:first-child { border-top: 0; padding-top: 2px; }
+  .mark { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 800; margin-top: 2px; background: var(--panel-2); color: var(--muted); }
+  li.ok .mark { background: rgba(74, 222, 128, .18); color: var(--ok); }
+  li.bad .mark { background: rgba(248, 113, 113, .18); color: var(--bad); }
+  li.warn .mark { background: rgba(245, 158, 11, .18); color: var(--warn); }
+  .tool .name { font-weight: 600; }
+  .tool .why { color: var(--muted); font-size: 13px; }
+  .tool .detail { color: var(--bad); font-size: 13px; margin-top: 2px; }
+  li.warn .tool .detail { color: var(--warn); }
+  .tool .hint { font-family: var(--mono); font-size: 12px; color: var(--text); background: #0b0d11; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; margin-top: 6px; display: inline-block; user-select: text; }
+  .ver { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; margin-top: 4px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li.ok .ver { color: var(--ok); }
+
+  /* buttons */
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+  button { font: inherit; font-weight: 600; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #3b4152; background: #262b36; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: #ffdf40; border-color: #ffdf40; }
+  button.wide { flex: 1 1 100%; padding: 13px 16px; font-size: 16px; }
+  .note { font-size: 14px; color: var(--muted); min-height: 1.4em; }
+  .note.bad { color: var(--bad); }
+
+  /* folder line */
+  .folder { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; margin-top: auto; }
+  .folder code { font-family: var(--mono); color: var(--text); user-select: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .folder a { color: var(--accent); cursor: pointer; text-decoration: none; white-space: nowrap; }
+  .folder a:hover { text-decoration: underline; }
+
+  /* the log */
+  .logpanel { min-height: 320px; }
+  .loghead { display: flex; align-items: center; gap: 10px; }
+  .loghead h2 { flex: 1; }
+  .loghead a { color: var(--muted); font-size: 13px; cursor: pointer; text-decoration: none; }
+  .loghead a:hover { color: var(--text); }
+  pre.log { flex: 1; margin: 0; background: #0b0d11; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; overflow: auto; white-space: pre-wrap; word-break: break-word; color: #b9c0d0; user-select: text; min-height: 200px; }
+  pre.log .app { color: var(--accent); }
+  pre.log .err { color: var(--bad); }
+  footer { color: var(--muted); font-size: 12.5px; text-align: center; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } .steps { grid-template-columns: 1fr 1fr; } .status { max-width: 100%; text-align: left; margin-left: 0; } header { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><div class="orb"></div><div class="hq">HQ</div></div>
+    <div>
+      <h1>Agents HQ</h1>
+      <div class="sub">Your office of 31 AI agents. This screen gets everything ready, then opens the office.</div>
+    </div>
+    <div class="status">
+      <div class="phase busy" id="phase"><span class="dot"></span><span id="phase-text">Starting</span></div>
+      <div class="msg" id="message">Checking the tools Agents HQ needs...</div>
+    </div>
+  </header>
+
+  <div class="steps" id="steps">
+    <div class="step" data-step="tools"><span class="n">1</span>Tools</div>
+    <div class="step" data-step="office"><span class="n">2</span>Office folder</div>
+    <div class="step" data-step="setup"><span class="n">3</span>First-run setup</div>
+    <div class="step" data-step="engine"><span class="n">4</span>Engine</div>
+    <div class="step" data-step="open"><span class="n">5</span>Open the office</div>
+  </div>
+
+  <main>
+    <section class="panel">
+      <h2>What Agents HQ needs</h2>
+      <ul class="tools" id="tools"></ul>
+      <div class="actions">
+        <button id="btn-install">Install missing tools</button>
+        <button id="btn-signin">Sign in to Claude Code</button>
+        <button id="btn-check">Check again</button>
+        <button id="btn-open" class="primary wide" disabled>Open Agents HQ</button>
+      </div>
+      <div class="note" id="note"></div>
+      <div class="folder">
+        <span>Office folder</span><code id="folder">...</code>
+        <a id="lnk-folder">Open folder</a>
+      </div>
+    </section>
+
+    <section class="panel logpanel">
+      <div class="loghead"><h2>Log</h2><a id="lnk-log">Open the full engine log</a><a id="lnk-clear">Clear</a></div>
+      <pre class="log" id="log"></pre>
+    </section>
+  </main>
+
+  <footer>Nothing is published or sent anywhere by itself. Finished work waits for your OK inside the office.</footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var api = window.desktop;
+  var $ = function (id) { return document.getElementById(id); };
+  var logEl = $("log"), toolsEl = $("tools"), noteEl = $("note");
+  var state = { phase: "checking", message: "", tools: [], busy: true, canOpen: false, engine: "stopped", officeDir: "", setupDone: false, platform: "" };
+  var MAX_LINES = 500, noteTimer = null;
+
+  if (!api) {
+    $("message").textContent = "This page only works inside the Agents HQ app.";
+    return;
+  }
+
+  // ---- the log panel: streamed lines, autoscroll unless the user scrolled up
+  function addLine(line) {
+    var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+    var span = document.createElement("span");
+    if (/^\[app\]/.test(line)) span.className = "app";
+    else if (/error|traceback|failed|not found|not recognized/i.test(line)) span.className = "err";
+    span.textContent = line + "\n";
+    logEl.appendChild(span);
+    while (logEl.childNodes.length > MAX_LINES) logEl.removeChild(logEl.firstChild);
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ---- the five steps of the first run
+  var STEP_ORDER = ["tools", "office", "setup", "engine", "open"];
+  function stepFor(s) {
+    if (s.phase === "checking" || s.phase === "missing") return { at: "tools", bad: s.phase === "missing" };
+    if (s.phase === "cloning") return { at: "office", bad: false };
+    if (s.phase === "setup") return { at: "setup", bad: false };
+    if (s.phase === "starting" || s.phase === "updating" || s.phase === "stopped") return { at: "engine", bad: s.phase === "stopped" };
+    if (s.phase === "error") return { at: s.engine === "running" ? "open" : "engine", bad: true };
+    return { at: "open", bad: false };                   // ready
+  }
+  function renderSteps(s) {
+    var cur = stepFor(s), idx = STEP_ORDER.indexOf(cur.at);
+    STEP_ORDER.forEach(function (name, i) {
+      var el = document.querySelector('.step[data-step="' + name + '"]');
+      el.className = "step" + (i < idx ? " done" : i === idx ? (cur.bad ? " now bad" : " now") : "");
+      if (name === "open" && s.phase === "ready" && s.canOpen) el.className = "step done";
+    });
+  }
+
+  // ---- the checklist
+  function renderTools(s) {
+    toolsEl.textContent = "";
+    if (!s.tools || !s.tools.length) {
+      var li = document.createElement("li");
+      li.innerHTML = '<span class="mark">…</span><div class="tool"><div class="name">Checking Git, Node.js, Python, ffmpeg and Claude Code…</div></div><div class="ver"></div>';
+      toolsEl.appendChild(li);
+      return;
+    }
+    s.tools.forEach(function (t) {
+      var li = document.createElement("li");
+      li.className = t.ok ? "ok" : (t.required ? "bad" : "warn");
+      var mark = document.createElement("span"); mark.className = "mark"; mark.textContent = t.ok ? "✓" : "✕";
+      var box = document.createElement("div"); box.className = "tool";
+      var name = document.createElement("div"); name.className = "name"; name.textContent = t.label;
+      var why = document.createElement("div"); why.className = "why"; why.textContent = t.why + (t.ok || t.required ? "" : " (optional for now)");
+      box.appendChild(name); box.appendChild(why);
+      if (!t.ok) {
+        var detail = document.createElement("div"); detail.className = "detail"; detail.textContent = t.detail || "Not found.";
+        box.appendChild(detail);
+        if (t.hint) { var hint = document.createElement("code"); hint.className = "hint"; hint.textContent = t.hint; box.appendChild(hint); }
+      }
+      var ver = document.createElement("div"); ver.className = "ver"; ver.textContent = t.ok ? t.version : "missing"; ver.title = t.version || "";
+      li.appendChild(mark); li.appendChild(box); li.appendChild(ver);
+      toolsEl.appendChild(li);
+    });
+  }
+
+  // ---- header, buttons, folder line
+  var PHASE_TEXT = { checking: "Checking tools", missing: "Tools missing", cloning: "Setting up the office folder", setup: "First-run setup", starting: "Starting the engine", ready: "Running", stopped: "Engine stopped", updating: "Updating", error: "Problem" };
+  function render(s) {
+    state = s;
+    var phase = $("phase");
+    phase.className = "phase " + (s.phase === "ready" ? "ready" : (s.phase === "missing" || s.phase === "stopped" || s.phase === "error") ? "bad" : "busy");
+    $("phase-text").textContent = PHASE_TEXT[s.phase] || s.phase;
+    $("message").textContent = s.message || "";
+    $("folder").textContent = s.officeDir || "";
+    $("folder").title = s.officeDir || "";
+    renderSteps(s);
+    renderTools(s);
+
+    var missing = (s.tools || []).filter(function (t) { return !t.ok; });
+    var claudeOk = (s.tools || []).some(function (t) { return t.name === "claude" && t.ok; });
+    $("btn-install").disabled = s.busy && s.phase !== "ready" ? false : missing.length === 0;
+    $("btn-install").title = missing.length ? "Opens a PowerShell window that installs: " + missing.map(function (t) { return t.label; }).join(", ") : "Everything is installed";
+    $("btn-signin").disabled = !claudeOk;
+    $("btn-signin").title = claudeOk ? "Opens a terminal running claude in the office folder, so you can sign in once" : "Install Claude Code first";
+    $("btn-signin").classList.toggle("primary", claudeOk && s.signedIn === false);   // the next thing to do when claude is there but not signed in
+    $("btn-check").disabled = !!s.busy;
+
+    var open = $("btn-open");
+    if (s.canOpen) { open.disabled = false; open.textContent = "Open Agents HQ"; }
+    else if (s.busy) { open.disabled = true; open.textContent = s.phase === "setup" ? "Setting up…" : s.phase === "cloning" ? "Downloading…" : "Starting…"; }
+    else if (s.phase === "stopped" || s.phase === "error") { open.disabled = false; open.textContent = "Restart"; }
+    else if (s.phase === "missing") { open.disabled = !s.requiredOk; open.textContent = "Start anyway"; }
+    else { open.disabled = true; open.textContent = "Open Agents HQ"; }
+  }
+
+  function note(text, bad) {
+    noteEl.textContent = text || "";
+    noteEl.className = "note" + (bad ? " bad" : "");
+    clearTimeout(noteTimer);
+    if (text) noteTimer = setTimeout(function () { noteEl.textContent = ""; }, 15000);
+  }
+  function call(name, label) {
+    return api[name]().then(function (res) {
+      if (res && typeof res.message === "string") note(res.message, res.ok === false);
+      else if (res && res.phase) render(res);
+    }).catch(function (e) {
+      note(label + " did not work: " + (e && e.message || e), true);
+    });
+  }
+
+  $("btn-install").addEventListener("click", function () { note("Opening PowerShell…"); call("installMissing", "Install"); });
+  $("btn-signin").addEventListener("click", function () { note("Opening a terminal…"); call("signIn", "Sign in"); });
+  $("btn-check").addEventListener("click", function () { note(""); call("check", "Check again"); });
+  $("btn-open").addEventListener("click", function () { note(""); call("start", "Open"); });
+  $("lnk-folder").addEventListener("click", function () { call("openFolder", "Open folder"); });
+  $("lnk-log").addEventListener("click", function () { call("openLog", "Open log"); });
+  $("lnk-clear").addEventListener("click", function () { logEl.textContent = ""; });
+
+  api.onLog(addLine);
+  api.onState(render);
+  api.getState().then(function (s) {
+    (s.log || []).forEach(addLine);
+    logEl.scrollTop = logEl.scrollHeight;
+    render(s);
+  }).catch(function (e) { note("Could not read the app state: " + (e && e.message || e), true); });
+})();
+</script>
+</body>
+</html>
