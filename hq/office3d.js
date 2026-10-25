@@ -12,6 +12,11 @@
 // fraction of the viewport (room beside an open left panel), { duration, zoom } tune the move. No text is drawn in the
 // scene for names: the HUD fills the CSS2D label elements through setLabel(kind, key, html) or positions its own
 // elements from project(kind, key). The running state comes from window.HQ.running() every frame.
+// Office life (the section of that name): idle agents stretch, fetch coffee, take calls, chat, visit other teams to
+// share lessons from GET /api/chatter and drop notes into the Brain; a working agent hurries back to its desk. Speech
+// bubbles are CSS2D labels of kind 'bubble'. API: life(on|off) → on, lifeOf(name) → { action, partner, talking, topic }
+// or null, lifeTalkers() → { name: true } of agents mid-conversation, lifeState(), lifeDebug({ speed, force: 'visit'|'coffee'|'phone'|'stretch'|'chat'|'note', agent, to, with,
+// graph, auto }), and the HUD callback onLife(event) ({ type: 'tip', from, fromKey, to, toKey, text, visitor, host }).
 (() => {
   'use strict';
   const host = document.getElementById('office3d');
@@ -244,7 +249,7 @@
     phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
   };
   const maxPixelRatio = () => Math.min(state.phone ? (state.lowFx ? 1 : 1.25) : 1.5, window.devicePixelRatio || 1);
-  const labels = { team: {}, agent: {}, brain: {}, sub: {} };
+  const labels = { team: {}, agent: {}, brain: {}, sub: {}, bubble: {} };
   const pickables = [];
   const anim = { dashboards: [], crawlers: [], glows: [], particles: null, rings: [], brain: {}, dust: null };
 
@@ -505,7 +510,7 @@
     seated.forEach((agent, k) => {
       const slot = slots[order[k % order.length]];
       if (k >= order.length) return;                                          // more than 5 agents: the rest have no desk (not the case today)
-      addSeat(room, agent, slot, props, cx, cz, k === 0 && head === agent);
+      addSeat(room, agent, slot, props, cx, cz, k === 0 && head === agent, order[k % order.length]);
     });
     // merged meshes
     const shellMesh = shell.mesh(); shellMesh.userData.room = team.key; scene.add(shellMesh); pickables.push(shellMesh);
@@ -526,7 +531,7 @@
   }
 
   // One desk unit: desk, chair, monitor(s), the seated character, a floor pool and ring, and the agent's label anchor.
-  function addSeat(room, agent, slot, props, cx, cz, isHead) {
+  function addSeat(room, agent, slot, props, cx, cz, isHead, slotKey) {
     const F = SLAB_H, rot = slot[2];
     const unit = new THREE.Matrix4().makeRotationY(rot).setPosition(cx + slot[0], F, cz + slot[1]);
     const o = { parent: unit };
@@ -564,7 +569,7 @@
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.95, 1.35, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
     ring.rotation.x = -Math.PI / 2; ring.position.set(cp.x, F + 0.05, cp.z); scene.add(ring);
     const anchor = makeAnchor('agent', agent.name, ch.group, new THREE.Vector3(0, 4.4, 0));
-    const seat = { agent, room, ch, screens, pool, ring, anchor, phase: hash(agent.name) % 100 / 10, running: false };
+    const seat = { agent, room, ch, screens, pool, ring, anchor, phase: hash(agent.name) % 100 / 10, running: false, unit, slotKey: slotKey || 'A', life: null };
     state.seats[agent.name] = seat; room.seats.push(seat);
   }
 
@@ -839,6 +844,742 @@
     }
   }
 
+  // ------------------------------------------------------------------ office life (idle agents get up, walk and talk)
+  // Every seated character has a small state machine. Idle agents (not in HQ.running()) mostly sit and work, now and
+  // then stretch at the desk, stand up to stretch, fetch a coffee (their room's machine or the lobby bar on the Brain
+  // platform), take a phone call pacing near the room's open edge, chat with a teammate at the coffee machine, visit
+  // another team to share a lesson, or walk to the Brain and drop a note into it (the Brain pulses). Timers are
+  // randomised and staggered and only LIFE.max agents are away at once (fewer on a phone). An agent that starts
+  // running hurries back along its path and sits down; a visit or chat partner sits back down too.
+  // Walking follows a waypoint graph built once: chair → stand spot beside the chair → the room's lanes → its door on
+  // the open edge (a short porch strip around the walls where a walkway meets a wall) → walkway → the ring on the Brain
+  // platform → another walkway → another room. Spots (stand, guest, coffee, phone, note, bar) are dead ends in the
+  // graph and are reserved, so nobody walks through or stands in someone else's spot.
+  // Bubbles are CSS2D labels of kind 'bubble' (one per character, filled through setLabel): text when the camera is
+  // close, a small 💬 above a talking pair from far away. Lines come from GET /api/chatter (lessons with the teams they
+  // help, ideas, brand rules, today's done tasks) and a pool of warm generic lines; nothing invents numbers or claims.
+  const LIFE_RING_R = 14.6, LIFE_PLAT_Y = 1.2, LIFE_BAR_A = 22.5 * DEG;
+  const LIFE = {
+    on: true, ready: false, auto: true, speed: 1, time: 0, max: 7, nodes: [], actors: [], by: {}, talks: [], topics: [], taken: {}, rooms: {}, ring: [], bar: [],
+    pulse: 0, pulsed: false, notes: [], wave: null, debug: null, recent: {}, chatterTimer: 0, talkers: {},   // talkers: who is mid-conversation (the HUD hides their name pills)
+  };
+  // Room-local lanes (x, z from the room centre) for a normal room and for the big Creative room, the lanes each desk
+  // slot's stand / guest spots connect to, the coffee counter against the left wall and two phone pacing spots.
+  const LIFE_LAYOUT = {
+    normal: {
+      lanes: { FL: [-5.5, 6.9], FM: [0, 6.9], FR: [6.9, 6.7], RM: [7.8, 0.4], MR: [4.0, 0.3], MM: [0, 0.3], ML: [-4.2, 0.3] },
+      edges: 'FL-FM FM-FR FR-RM RM-MR MR-MM MM-ML',
+      slots: { A: 'MM MR', B: 'FM FL', C: 'FM FR', D: 'ML', E: 'RM' },
+      counter: [-8.95, 6.0], coffee: [[-7.3, 6.0], [-5.4, 5.1]], coffeeLanes: 'FL',
+      phone: [[2.2, 8.5, 'FM'], [4.6, 8.5, 'FR']],
+    },
+    creative: {
+      lanes: { FL: [-8.5, 10.6], FM: [0, 10.6], FR: [11.0, 10.6], RF: [12.3, 6.0], RM: [12.3, 2.0], RB: [12.3, -3.5], MR: [7.6, 2.0], MM: [0, 2.0], ML: [-7.5, 2.0], LB: [-7.5, -2.6], AG: [0, -3.6], LF: [-11.4, 6.8] },
+      edges: 'FL-FM FM-FR FR-RF RF-RM RM-RB RM-MR MR-MM MM-ML ML-LB MM-AG ML-LF LF-FL',
+      slots: { A: 'AG', B: 'MM ML', C: 'MM MR', D: 'LB', E: 'RB' },
+      counter: [-12.95, 3.6], coffee: [[-11.0, 3.6], [-10.0, 1.2]], coffeeLanes: 'ML',
+      phone: [[-1.5, 12.3, 'FM'], [2.0, 12.3, 'FM']],
+    },
+  };
+  // How each clock position reaches its room (h = half the room side): points outside the slab ('w' on the walkway,
+  // 'p' on a porch strip around the back walls), then the door just inside the open edge and the lanes it joins.
+  // Rooms 3, 4 and 5 turn their walls toward the Brain, so a porch leads around to the open side.
+  const LIFE_ENTRY = [
+    (h) => ({ out: [[h + 1.41, h + 1.41, 'w']], door: [h - 3.6, h - 1.1], lanes: 'FR FM' }),
+    (h) => ({ out: [[0, h + 1.5, 'w']], door: [0, h - 1.4], lanes: 'FM' }),
+    (h) => ({ out: [[-h - 1.77, h + 1.77, 'w'], [-h + 1.0, h + 1.4, 'w']], door: [-h + 3.5, h - 2.0], lanes: 'FL' }),
+    (h) => ({ out: [[-h - 1.7, 0, 'w'], [-h - 1.7, h + 1.7, 'p'], [-h + 4.5, h + 1.7, 'p']], door: [-h + 4.5, h - 1.6], lanes: 'FL' }),
+    (h) => ({ out: [[-h - 1.7, -h - 1.7, 'w'], [-h - 1.7, h + 1.7, 'p'], [-h + 3.0, h + 1.7, 'p']], door: [-h + 3.0, h - 1.4], lanes: 'FL' }),
+    (h) => ({ out: [[0, -h - 1.7, 'w'], [h + 1.7, -h - 1.7, 'p'], [h + 1.7, 1.4, 'p']], door: [h - 1.3, 1.4], lanes: 'RM' }),
+    (h) => ({ out: [[h + 1.7, -h - 1.7, 'w'], [h + 1.7, 1.4, 'p']], door: [h - 1.3, 1.4], lanes: 'RM' }),
+    (h) => ({ out: [[h + 1.5, 0, 'w']], door: [h - 1.1, 0.8], lanes: 'RM' }),
+  ];
+  const WALK_SPEED = 2.4, HURRY_SPEED = 4.3, PACE_SPEED = 0.85;
+  const HIP_S = -Math.PI / 2 + 0.05, KNEE_S = Math.PI / 2 - 0.1, ARM_S = -1.45;
+  const _lo = new THREE.Vector3(), _lw = new THREE.Vector3(), _lc = new THREE.Vector3();
+  const wrapA = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const smooth = (a, b, x) => { const u = clamp((x - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
+  const escHTML = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // ---------- the lines (all warm and generic; the facts only ever come from /api/chatter) ----------
+  const LINES = {
+    tipOpen: ['Hey! Quick tip from {team} 👋', 'Got a sec? {team} learned something 💡', 'Hi! Bringing a fresh lesson from {team} ✨', 'Knock knock! {team} has a tip for you 🚪',
+      'Psst, a little {team} wisdom for you 🤫', 'Hey neighbour! {team} found this out 🔍', 'Hiya! Sharing what worked for {team} 🙌', 'Quick one from {team} before I forget 📝',
+      'Hey team! {team} wanted you to hear this 📣', 'Hello! Fresh from the {team} room 🍃', 'Mind if I share a {team} lesson? 😊', 'Hi friends! {team} tried something 🧪',
+      'Hey! Our {team} retro had a gem 💎', 'Tiny tip from {team}, might help 🌱', 'Hi! {team} thinks this helps you too 🤝', 'Hey hey! A note from {team} 🗒️',
+      'Good timing! {team} has a lesson 📬', 'Hi! I come bearing a {team} tip 🎁', 'Hey! {team} wrote this down for you ✍️', 'Oh hi! Got a {team} lesson to pass on 🔁',
+      '嗨！{team} has a tip 👋', 'Hey! Something {team} learned the hard way 😅', 'Hi! {team} says this one is worth it ⭐', 'Hello hello! {team} lesson incoming 🛬',
+      'Hey! Saving you a step, from {team} 🪜', 'Hi! {team} asked me to share this 💌'],
+    hiOpen: ['Hi neighbours! 👋', 'Just stopping by to say hi 😊', "Hey! How's your day going? ☀️", 'Hi! Stretching my legs a bit 🚶', 'Hello from down the walkway 👋',
+      'Hey! Mind if I hang out a sec? 🙂', 'Hi! Came over for a change of scenery 🌿', 'Hey team, quick hello 🙌', '嗨！Just visiting 😄', 'Hi! Took the long way to the coffee ☕',
+      'Knock knock, friendly visit 🚪', 'Hey! Your room looks so cozy 🪴'],
+    react: ['Ooh, trying that on our next {work}!', 'Nice, saving that 📌', "Oh that's good. Thank you! 🙏", 'Huh, never thought of that 🤔', 'Writing that down right now ✍️',
+      'That makes so much sense 💡', 'Love it. Passing it to the team 🙌', "Great tip! We'll try it today 🚀", 'Oh nice, that explains a lot 😮', 'Adding it to our checklist ✅',
+      'Ha, we needed this one 😅', 'Thanks! Our next {work} gets this 🎯', 'Smart. Stealing it 😄', 'Good one! 收到 👍', 'Ooh, I like that a lot ✨',
+      "Okay, that's going on a sticky note 🗒️", 'Perfect timing, thank you! ⏰', "That's a keeper 💎", "Noted! We'll test it 🧪", 'Oh wow, simple and smart 👏',
+      "Yes! Let's do that 🙌", 'Brilliant, thanks for walking over 🚶', "That'll save us time ⏱️", "I'll tell the others at standup 📣", 'Makes our {work} better, thanks! 🌟',
+      '辛苦啦！Thanks for sharing 😊'],
+    close: ['Coffee later? ☕', 'Anytime! See you around 👋', 'Happy to help 😊', 'Back to my desk. Bye! 👋', 'Let me know how it goes 🤞', 'Teamwork! 🙌', 'Catch you at lunch 🥪',
+      'Good luck with it! 🍀', 'See you on the walkway 🚶', 'Ping me if you try it 📨', "That's all, have fun! ✨", 'Gotta run, bye bye 👋', 'Okay, back to work 💪', 'Glad it helps 🌱',
+      'See you later, neighbours 🏡', 'Onward! 🚀', 'Cheers! 🥤', 'Talk soon 💬', '加油！👊', "I'll bring snacks next time 🍪", 'Shout if you need anything 📣', 'Bye for now 😊',
+      'High five! ✋', 'Keep it up, team 💜', 'Off I go! 🏃'],
+    small: ["How's your morning going? ☀️", 'This coffee is the best part of today ☕', '辛苦啦！Take a breather 😊', 'I love how calm the office is today 🌿', 'Did you see the Brain glow earlier? ✨',
+      'Stretch break, my back says thanks 🧘', 'The plants look happy today 🪴', 'Almost lunch? 🥪', "One sip and I'm back to it ☕", 'We should do a team walk later 🚶',
+      'Your desk setup looks so cozy 🖥️', 'Small steps, every day 🌱', 'Remember to drink water 💧', "Third coffee. Don't tell anyone 🤫", 'Nice to see you! 👋',
+      'The walkway lights look pretty today 💡', "加油！We've got this 💪", "Let's keep it simple today ✨", "Who picked this coffee? It's great ☕", 'Five minutes, then back to focus ⏳',
+      'I like our little office 🏠', 'Good vibes only today 😊', 'Taking a tiny break, back soon 🕊️', 'Breathe in, breathe out 🌬️', '早上好！Good morning 🌞', 'This view of the Brain never gets old 🧠'],
+    reply: ['Same here 😄', 'Haha, agreed!', 'Totally ☕', 'Right? 😊', 'So true 🌿', 'Yes please!', 'Love that 💜', 'Ha, me too', 'Good point 👍', '对呀！😄', "Couldn't agree more",
+      'Exactly!', 'Mm-hm ☕', 'You said it ✨', "That's the spirit 💪", 'Oh nice! 🙌', 'Ooh, tell me more', 'I needed to hear that 😊', 'Big yes 👍', '哈哈 so true', 'Count me in!',
+      'We should do that more 🌱', 'Agreed, 100% 💯', 'Ha! Fair 😄', 'Mood ☕'],
+    solo: ['Ahh, much better ☕', "Coffee o'clock ☕", 'Mmm, fresh brew ☕', 'Recharging… 🔋', 'One sip, then back to it', 'Little break, big help 🌿', '辛苦啦 to me ☕', 'Smells amazing ☕',
+      'Warm mug, happy me 😊', 'Brain fuel ☕🧠'],
+    busy: ["Oh, you're busy! Later 👋", "Looks like you're on it. Next time! 🙂", "Ah, deep in work. I'll come back ✌️", 'No worries, catch you later 😊'],
+    stretch: ['Stretch time 🙆', 'Ahh, that feels good 🧘', 'Shoulders, meet the ceiling 🙌', 'Quick stretch, back to it 💪'],
+    note: ['Saving this for everyone 🧠', 'Into the Brain it goes 📝', 'Noting that down for the team ✍️', 'One more note for the Brain ✨'],
+    idea: ['Idea I keep thinking about: {t} 💭', 'What if we made: {t}? 💡', 'Been dreaming up: {t} ✨', 'Idea board pick: {t} 📌'],
+    rule: ['Remember: {t}!', 'Friendly reminder: {t} 📏', 'Brand rule check: {t} ✅', 'Little reminder: {t} 😊'],
+  };
+  const WORK = { research: 'brief', scripts: 'script', social: 'post', creative: 'edit', analytics: 'report', shop: 'listing', dev: 'build', inbox: 'reply' };
+  function pickFresh(pool) {                                                   // a random line not used in the last few picks of that pool
+    const arr = LINES[pool], seen = LIFE.recent[pool] || (LIFE.recent[pool] = []);
+    let i = Math.floor(Math.random() * arr.length);
+    for (let k = 0; k < 6 && seen.includes(i); k++) i = Math.floor(Math.random() * arr.length);
+    seen.push(i); if (seen.length > Math.min(10, arr.length - 2)) seen.shift();
+    return arr[i];
+  }
+  const teamNameOf = (key) => (state.rooms[key] ? state.rooms[key].team.name : key || 'the office');
+  const fillLine = (tpl, L) => tpl.replace('{team}', teamNameOf(L.room)).replace('{work}', WORK[L.room] || 'work');
+  function shorten(text, n) {
+    const s = String(text || '').replace(/\s+/g, ' ').trim();
+    if (s.length <= n) return s;
+    const cut = s.slice(0, n - 1), sp = cut.lastIndexOf(' ');
+    return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,;:.–—-]+$/, '') + '…';
+  }
+  function ruleText(raw) {                                                     // "Titles: under 60 characters, …" → "titles under 60 characters, …"
+    let r = String(raw || '').split(/;|\.\s/)[0].replace(/\s*\([^)]*\)/g, '').replace(/^([A-Z][\w ]{0,24}):\s*/, '$1 ').split(/:\s/)[0].trim();
+    if (r.length > 1 && !/^[A-Z]{2}/.test(r)) r = r[0].toLowerCase() + r.slice(1);
+    return shorten(r, 52);
+  }
+  // A small-talk line from the brain (an idea, a brand rule, a task done today, a lesson) or a warm generic one.
+  function topicLine(L) {
+    const pool = LIFE.topics.filter((x) => x && x.text && (x.kind !== 'lesson' || !x.teamKey || x.teamKey === L.room));
+    if (pool.length && Math.random() < 0.6) {
+      const x = pool[Math.floor(Math.random() * pool.length)];
+      if (x.kind === 'idea') return { text: pickFresh('idea').replace('{t}', shorten(x.text, 36)), topic: x.text };
+      if (x.kind === 'rule') return { text: pickFresh('rule').replace('{t}', ruleText(x.text)), topic: x.text };
+      if (x.kind === 'done') return { text: x.teamKey === L.room ? `We just shipped: ${shorten(x.text, 42)} 🎉` : x.team ? `${x.team} just shipped: ${shorten(x.text, 38)} 🎉` : `Done today: ${shorten(x.text, 46)} ✅`, topic: x.text };
+      if (x.kind === 'lesson') return { text: `${x.team || 'We'} learned: ${shorten(x.text, 50)}`, topic: x.text };
+    }
+    return { text: pickFresh('small'), topic: '' };
+  }
+  function tipLines(V, H, lesson) {
+    return [{ who: 0, text: fillLine(pickFresh('tipOpen'), V) }, { who: 0, text: shorten(lesson.text, 70), tip: true }, { who: 1, text: fillLine(pickFresh('react'), H) }, { who: 0, text: pickFresh('close') }];
+  }
+  function socialLines(V, H, tl) {
+    return [{ who: 0, text: pickFresh('hiOpen') }, { who: 0, text: tl.text }, { who: 1, text: pickFresh('reply') }, { who: 0, text: pickFresh('close') }];
+  }
+  function chatLines(A, B, tl) {
+    const lines = [{ who: 0, text: tl.text }, { who: 1, text: pickFresh('reply') }];
+    if (Math.random() < 0.7) { lines.push({ who: 1, text: topicLine(B).text }); lines.push({ who: 0, text: pickFresh('reply') }); }
+    return lines;
+  }
+  function loadChatter() {
+    if (!LIFE.on || document.hidden || state.paused) return;
+    fetch('/api/chatter').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d && Array.isArray(d.topics)) LIFE.topics = d.topics; }).catch(() => {});
+  }
+
+  // ---------- the waypoint graph ----------
+  function lnode(x, y, z, o) {
+    o = o || {};
+    const n = { id: LIFE.nodes.length, p: new THREE.Vector3(x, y, z), adj: [], w: o.w || 0, spot: !!o.spot, room: o.room || null, faceTo: o.faceTo || null };
+    LIFE.nodes.push(n); return n.id;
+  }
+  function ledge(a, b) { if (a == null || b == null || a === b) return; const A = LIFE.nodes[a], B = LIFE.nodes[b]; if (!A.adj.includes(b)) A.adj.push(b); if (!B.adj.includes(a)) B.adj.push(a); }
+  let _rd = null, _rp = null, _rv = null;
+  function route(from, to) {                                                   // Dijkstra over ~300 nodes, only when an action starts or is cut short
+    const N = LIFE.nodes, n = N.length;
+    if (from == null || to == null) return null;
+    if (!_rd || _rd.length < n) { _rd = new Float64Array(n); _rp = new Int32Array(n); _rv = new Uint8Array(n); }
+    _rd.fill(Infinity, 0, n); _rp.fill(-1, 0, n); _rv.fill(0, 0, n); _rd[from] = 0;
+    for (;;) {
+      let u = -1, best = Infinity;
+      for (let i = 0; i < n; i++) if (!_rv[i] && _rd[i] < best) { best = _rd[i]; u = i; }
+      if (u < 0 || u === to) break;
+      _rv[u] = 1;
+      if (N[u].spot && u !== from) continue;                                   // a spot is a dead end: never walk through someone's spot
+      for (const v of N[u].adj) { const nd = best + N[u].p.distanceTo(N[v].p); if (nd < _rd[v]) { _rd[v] = nd; _rp[v] = u; } }
+    }
+    if (from !== to && _rp[to] < 0) return null;
+    const path = [to]; let c = to; while (c !== from) { c = _rp[c]; path.push(c); }
+    path.reverse(); path.dist = _rd[to]; return path;
+  }
+  const routeDist = (a, b) => { const r = route(a, b); return r ? r.dist : Infinity; };
+
+  function buildLife() {
+    const N = LIFE.nodes, F = SLAB_H;
+    const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+    const strip = (a, b, w) => { const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz); M.box(w, 0.32, len + w, (a.x + b.x) / 2, WALK_Y - 0.03 - 0.16, (a.z + b.z) / 2, 0x30343f, { ry: Math.atan2(dx, dz) }); };
+    // the ring lane on the Brain platform: 16 points between the inner disc and the rim (the bar's point sits inward)
+    for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8, r = k === 1 ? 14.3 : LIFE_RING_R; LIFE.ring.push(lnode(Math.cos(a) * r, LIFE_PLAT_Y, Math.sin(a) * r, { w: 0.5 })); }
+    for (let k = 0; k < 16; k++) ledge(LIFE.ring[k], LIFE.ring[(k + 1) % 16]);
+    for (const room of state.roomList) {
+      const lay = room.big ? LIFE_LAYOUT.creative : LIFE_LAYOUT.normal, h = room.half, cx = room.center.x, cz = room.center.z, key = room.key;
+      const R = (lx, lz, o) => lnode(cx + lx, F, cz + lz, Object.assign({ room: key }, o || {}));
+      const lanes = {};
+      for (const k of Object.keys(lay.lanes)) lanes[k] = R(lay.lanes[k][0], lay.lanes[k][1]);
+      lay.edges.split(' ').forEach((e) => { const ab = e.split('-'); ledge(lanes[ab[0]], lanes[ab[1]]); });
+      const joinLanes = (id, names) => names.split(' ').forEach((nm) => { if (lanes[nm] != null) ledge(id, lanes[nm]); });
+      // walkway: ring junction → platform rim → walkway → (porch) → the door on the open edge
+      const d = room.dir, ang = Math.atan2(d.z, d.x), j = LIFE.ring[((Math.round(ang / (Math.PI / 8)) % 16) + 16) % 16];
+      const wp = lnode(d.x * 16.6, LIFE_PLAT_Y, d.z * 16.6, { w: 0.5 }), w0 = lnode(d.x * 17.4, WALK_Y, d.z * 17.4, { w: 1.1 });
+      ledge(j, wp); ledge(wp, w0);
+      const spec = LIFE_ENTRY[room.index % 8](h);
+      let prev = w0, prevKind = 'w';
+      for (const o of spec.out) {
+        const id = lnode(cx + o[0], WALK_Y, cz + o[1], { w: o[2] === 'p' ? 0.35 : 1.1 });
+        ledge(prev, id);
+        if (o[2] === 'p') strip(N[prev].p, N[id].p, 2.6);
+        prev = id; prevKind = o[2];
+      }
+      const door = R(spec.door[0], spec.door[1]);
+      ledge(prev, door); joinLanes(door, spec.lanes);
+      if (prevKind === 'p') strip(N[prev].p, N[door].p, 2.6);                  // the porch meets the slab edge (the part inside the slab stays hidden)
+      // desks: a stand spot beside the chair and a guest spot for a visitor, facing each other. The guest stands
+      // across the screen from the host (world (-1,+1) for a desk facing the back wall, (+1,-1) for a side desk),
+      // so the pair reads side by side from the usual camera angle and neither hides the other.
+      for (const seat of room.seats) {
+        const st = new THREE.Vector3(1.5, 0, 1.9).applyMatrix4(seat.unit), side = Math.abs(wrapA(seat.ch.group.rotation.y - Math.PI)) > 0.5 ? -1 : 1;
+        const gu = st.clone().add(new THREE.Vector3(-1.6 * side, 0, 1.6 * side));
+        const sId = R(st.x - cx, st.z - cz, { spot: true }), gId = R(gu.x - cx, gu.z - cz, { spot: true });
+        const ln = lay.slots[seat.slotKey] || 'MM';
+        joinLanes(sId, ln); joinLanes(gId, ln);
+        N[gId].faceTo = N[sId].p; N[sId].faceTo = N[gId].p;
+        makeActor(seat, sId, gId);
+      }
+      // the coffee corner: a cabinet against the left wall with a machine, a cup under the spout and clean cups
+      const wx = cx + lay.counter[0], wz = cz + lay.counter[1], cupC = [0xffffff, col(room.team.accent || room.color).getHex(), 0xf2c94c];
+      M.box(1.2, 1.5, 2.2, wx, F + 0.75, wz, 0xefe9df); M.box(1.32, 0.1, 2.32, wx, F + 1.55, wz, 0x8a6a4a);
+      M.box(0.02, 0.9, 1.9, wx + 0.61, F + 0.75, wz, 0xd9d1c4);
+      M.box(0.72, 0.95, 0.62, wx - 0.14, F + 2.08, wz - 0.5, 0x2b2e36); M.box(0.32, 0.1, 0.4, wx + 0.18, F + 1.65, wz - 0.5, 0x15161a);
+      M.box(0.22, 0.14, 0.2, wx + 0.18, F + 2.3, wz - 0.5, 0x3a3e48); M.cyl(0.11, 0.2, wx + 0.18, F + 1.8, wz - 0.5, 0xffffff);
+      GL.ball(0.05, wx + 0.23, F + 2.45, wz - 0.28, 0x7dffb0);
+      for (let k = 0; k < 3; k++) M.cyl(0.12, 0.22, wx + 0.12, F + 1.71, wz + 0.3 + k * 0.32, cupC[k]);
+      const counterAt = new THREE.Vector3(wx, F, wz);
+      const coffee = lay.coffee.map((c) => R(c[0], c[1], { spot: true, faceTo: counterAt }));
+      coffee.forEach((id) => joinLanes(id, lay.coffeeLanes));
+      // two phone spots near the open front edge (pace between them) and a note spot at the Brain's edge
+      const phone = lay.phone.map((c) => { const id = R(c[0], c[1], { spot: true }); joinLanes(id, c[2]); return id; });
+      ledge(phone[0], phone[1]);
+      const na = ang + 7 * DEG, note = lnode(Math.cos(na) * 13.9, LIFE_PLAT_Y, Math.sin(na) * 13.9, { spot: true, faceTo: new THREE.Vector3(0, 0, 0) });
+      ledge(note, j);
+      LIFE.rooms[key] = { room, lanes, door, coffee, phone, note, junction: j };
+    }
+    // the lobby coffee bar on the Brain platform, between the Creative and Analytics walkways
+    {
+      const a = LIFE_BAR_A, cs = Math.cos(a), sn = Math.sin(a), ry = -a, at = (r, t, y) => [cs * r - sn * t, y, sn * r + cs * t];
+      const put = (fn, r, t, y, ...rest) => { const q = at(r, t, y); fn(q[0], q[1], q[2], ...rest); };
+      put((x, y, z) => M.box(0.8, 1.25, 4.4, x, y, z, 0xe6ebf1, { ry }), 16.6, 0, LIFE_PLAT_Y + 0.625);
+      put((x, y, z) => M.box(0.98, 0.1, 4.6, x, y, z, 0x5a6b7e, { ry }), 16.6, 0, LIFE_PLAT_Y + 1.3);
+      put((x, y, z) => M.box(0.62, 0.92, 0.78, x, y, z, 0x2b2e36, { ry }), 16.75, -1.35, LIFE_PLAT_Y + 1.81);
+      put((x, y, z) => M.box(0.2, 0.14, 0.22, x, y, z, 0x3a3e48, { ry }), 16.35, -1.35, LIFE_PLAT_Y + 1.98);
+      put((x, y, z) => M.cyl(0.11, 0.2, x, y, z, 0xffffff), 16.38, -1.35, LIFE_PLAT_Y + 1.45);
+      put((x, y, z) => GL.ball(0.05, x, y, z, 0x7dffb0), 16.42, -1.1, LIFE_PLAT_Y + 2.1);
+      [0xffffff, 0xf2c94c, 0x7fc8ff, 0xff8fa3].forEach((c, k) => put((x, y, z) => M.cyl(0.12, 0.22, x, y, z, c), 16.5, 0.1 + k * 0.42, LIFE_PLAT_Y + 1.46));
+      put((x, y, z) => GL.box(0.05, 0.07, 4.2, x, y, z, 0x9fe8ff, { ry }), 16.19, 0, LIFE_PLAT_Y + 1.08);
+      put((x, y, z) => plant(M, x, y, z, 0.42), 16.7, 1.85, LIFE_PLAT_Y + 1.35);
+      for (const deg of [15.5, 22.5, 29.5]) { const b = deg * DEG, id = lnode(Math.cos(b) * 15.7, LIFE_PLAT_Y, Math.sin(b) * 15.7, { spot: true, faceTo: new THREE.Vector3(Math.cos(b) * 18, 0, Math.sin(b) * 18) }); ledge(id, LIFE.ring[1]); LIFE.bar.push(id); }
+    }
+    scene.add(M.mesh()); scene.add(GL.mesh());
+    // the note particles that fly into the Brain, and the ring wave of its pulse
+    for (let k = 0; k < 3; k++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xa8ecff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
+      sp.scale.set(1.1, 1.1, 1); sp.visible = false; scene.add(sp);
+      LIFE.notes.push({ sprite: sp, active: false, t: 0, from: new THREE.Vector3(), ctrl: new THREE.Vector3(), to: new THREE.Vector3(0, CORE_Y, 0) });
+    }
+    const waves = [0, 1].map(() => { const m = new THREE.Mesh(new THREE.RingGeometry(0.86, 1.0, 72), new THREE.MeshBasicMaterial({ color: 0xc8f4ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })); m.rotation.x = -Math.PI / 2; m.position.y = 2.42; m.visible = false; scene.add(m); return m; });
+    LIFE.wave = { meshes: waves, t: -1 };
+    LIFE.ready = true;
+    loadChatter(); LIFE.chatterTimer = setInterval(loadChatter, 60000);
+  }
+
+  // ---------- actors ----------
+  function makeActor(seat, standId, guestId) {
+    const ch = seat.ch, r = rng(hash('life:' + seat.agent.name));
+    const L = {
+      seat, name: seat.agent.name, room: seat.room.key, stand: standId, guest: guestId,
+      cp: ch.group.position.clone(), chairYaw: ch.group.rotation.y, base: ch.group.position.clone(), off: new THREE.Vector3(), pos: ch.group.position.clone(), p0: new THREE.Vector3(),
+      yaw: ch.group.rotation.y, yaw0: 0, pose: 0, pose0: 0, mode: 'seated', steps: null, si: 0, st: 0, node: standId, inNext: false, homing: false, hurry: false,
+      next: 3 + r() * 45, microNext: 4 + r() * 30, micro: null, phase: r() * 6.28, moving: false, speedNow: 0, running: false,
+      anim: null, hasMug: false, hasPhone: false, icon: null, sayText: '', sayUntil: 0, talk: null, speaking: false, holds: [], reservedBy: null,
+      action: null, topic: '', partner: null, visit: null, pair: null, cgroup: null, sip: 0,
+      wL: 0, wR: 0, oL: 0, oLz: 0, oR: 0, oRz: 0, bCode: 0, bText: '', bClearAt: 0, mug: null, phone: null, puffs: null,
+    };
+    seat.life = L; LIFE.actors.push(L); LIFE.by[L.name] = L;
+    makeAnchor('bubble', L.name, ch.group, new THREE.Vector3(0, 4.4, 0));   // the name pill's point; hud.css lifts the bubble over the pill
+    labels.bubble[L.name].el.addEventListener('click', () => { const fn = api.onAgentClick; if (typeof fn === 'function') fn(L.name); else { select(L.name); focusAgent(L.name); } });
+  }
+  function mugOf(L) {
+    if (L.mug) return L.mug;
+    const m = new Merger(charMat), c = [0xffffff, 0xf2c94c, 0x7fc8ff, 0xff8fa3, 0x9be7b0][hash(L.name) % 5];
+    m.add(CG.cyl, c, 0, 0, 0, { sx: 0.17, sy: 0.3, sz: 0.17 }); m.add(CG.cyl, 0x4a2e1c, 0, 0.14, 0, { sx: 0.14, sy: 0.03, sz: 0.14 });
+    m.add(CG.glass, c, 0.19, 0, 0, { sx: 0.55, sy: 0.55, sz: 0.55 });
+    const mesh = m.mesh(); mesh.matrixAutoUpdate = true;
+    const g = new THREE.Group(); g.add(mesh); g.position.set(0, -1.12, 0.2); g.visible = false; L.seat.ch.parts.armR.add(g); L.mug = g;
+    L.puffs = [0, 1, 2].map(() => { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false })); sp.scale.set(0.42, 0.42, 1); sp.visible = false; scene.add(sp); return sp; });
+    return g;
+  }
+  function phoneOf(L) {
+    if (L.phone) return L.phone;
+    const m = new Merger(charMat);
+    // with the arm raised to the ear, arm-local -z points forward: the phone sits just in front of the hand, by the cheek
+    m.add(rbox(0.22, 0.46, 0.1, 0.04), 0x1b1d24, 0, 0, 0); m.add(G.box, 0x6f93ff, 0, 0.02, -0.055, { sx: 0.16, sy: 0.34, sz: 0.01 });
+    const mesh = m.mesh(); mesh.matrixAutoUpdate = true; mesh.position.set(0.14, -0.98, -0.2); mesh.visible = false;
+    L.seat.ch.parts.armL.add(mesh); L.phone = mesh; return mesh;
+  }
+
+  // ---------- steps: rise, walk, face, wait, call, sit ----------
+  const S_RISE = () => ({ t: 'rise' }), S_SIT = () => ({ t: 'sit' });
+  const S_WALK = (to, speed) => ({ t: 'walk', to, speed: speed || WALK_SPEED });
+  const S_FACE = (fn) => ({ t: 'face', fn });
+  const S_WAIT = (dur, anim, until, max) => ({ t: 'wait', dur, anim, until, max });
+  const S_CALL = (fn) => ({ t: 'call', fn });
+  const faceNode = (L) => { const n = LIFE.nodes[L.node]; return n && n.faceTo ? Math.atan2(n.faceTo.x - L.base.x, n.faceTo.z - L.base.z) : null; };
+  const faceActor = (P) => (L) => (P ? Math.atan2(P.base.x - L.base.x, P.base.z - L.base.z) : null);
+  function runSteps(L, steps, action) { L.steps = steps; L.si = -1; L.mode = 'active'; L.action = action; L.t0 = LIFE.time; nextStep(L); }
+  function nextStep(L) {
+    L.inNext = true;
+    for (;;) {
+      L.si++; L.st = 0;
+      const s = L.steps && L.steps[L.si];
+      if (!s) { L.inNext = false; finishAction(L); return; }
+      if (s.t === 'call') { s.fn(L); if (L.mode === 'seated') { L.inNext = false; return; } continue; }
+      if (s.t === 'rise' || s.t === 'sit') { L.p0.copy(L.base); L.pose0 = L.pose; L.yaw0 = L.yaw; }
+      if (s.t === 'walk' && !walkInit(L, s)) continue;
+      if (s.t === 'wait' && s.anim !== undefined) L.anim = s.anim;
+      break;
+    }
+    L.inNext = false;
+  }
+  function walkInit(L, s) {
+    const ids = route(L.node, s.to);
+    if (!ids) return false;
+    const pts = ids.map((id) => LIFE.nodes[id].p), ws = ids.map((id) => LIFE.nodes[id].w);
+    if (s.from) { pts.unshift(s.from); ids.unshift(-1); ws.unshift(0); }       // rerouted mid-walk: start where the agent stands
+    if (pts.length < 2) { L.node = s.to; return false; }
+    s.ids = ids; s.pts = pts; s.ws = ws; s.k = 0; s.d = 0; return true;
+  }
+  function turnTo(L, target, dt, rate) { L.yaw += wrapA(target - L.yaw) * Math.min(1, dt * rate); }
+  function walkStep(L, s, dt) {
+    let left = dt * s.speed, a = s.pts[s.k], b = s.pts[s.k + 1], len = a.distanceTo(b);
+    L.moving = true; L.speedNow = s.speed;
+    while (left > 0) {
+      if (s.d + left < len) { s.d += left; left = 0; break; }
+      left -= len - s.d; s.d = 0; s.k++;
+      if (s.ids[s.k] >= 0) L.node = s.ids[s.k];
+      if (s.k >= s.pts.length - 1) { L.base.copy(s.pts[s.k]); L.moving = false; nextStep(L); return; }
+      a = s.pts[s.k]; b = s.pts[s.k + 1]; len = a.distanceTo(b);
+    }
+    const u = len > 1e-6 ? s.d / len : 1, dx = b.x - a.x, dz = b.z - a.z, inv = 1 / Math.max(1e-6, Math.hypot(dx, dz)), w = Math.min(s.ws[s.k], s.ws[s.k + 1]);
+    L.base.set(a.x + dx * u, a.y + (b.y - a.y) * smooth(0.3, 0.7, u), a.z + dz * u);
+    _lo.set(-dz * inv * w, 0, dx * inv * w);                                   // keep to one side of a walkway or the ring, so walkers pass each other
+    L.off.lerp(_lo, Math.min(1, dt * 3.5));
+    turnTo(L, Math.atan2(dx, dz), dt, 7);
+  }
+  function stepActor(L, dt) {
+    const s = L.steps && L.steps[L.si];
+    if (!s) { finishAction(L); return; }
+    L.st += dt; L.moving = false;
+    if (s.t === 'rise') {
+      const u = Math.min(1, L.st / 0.85), to = LIFE.nodes[L.stand].p;
+      L.pose = L.pose0 + (1 - L.pose0) * easeOut(Math.min(1, u / 0.6));
+      L.base.lerpVectors(L.p0, to, ease(clamp((u - 0.25) / 0.75, 0, 1)));
+      if (L.base.distanceToSquared(to) > 0.01 || u < 0.5) turnTo(L, Math.atan2(to.x - L.cp.x, to.z - L.cp.z), dt, 5);
+      if (u >= 1) { L.node = L.stand; nextStep(L); }
+    } else if (s.t === 'sit') {
+      const u = Math.min(1, L.st / 0.85);
+      L.base.lerpVectors(L.p0, L.cp, ease(Math.min(1, u / 0.7)));
+      L.pose = L.pose0 * (1 - easeOut(clamp((u - 0.3) / 0.7, 0, 1)));
+      L.yaw = L.yaw0 + wrapA(L.chairYaw - L.yaw0) * ease(u);
+      if (u >= 1) nextStep(L);
+    } else if (s.t === 'walk') walkStep(L, s, dt);
+    else if (s.t === 'face') { const y = s.fn(L); if (y != null) turnTo(L, y, dt, 7); if (L.st > 0.6) nextStep(L); }
+    else if (s.t === 'wait') {
+      const T = L.talk && !L.talk.done ? L.talk : null, P = T ? (T.a === L ? T.b : T.a) : null;
+      if (P && L.anim !== 'pour') turnTo(L, Math.atan2(P.base.x - L.base.x, P.base.z - L.base.z), dt, 4);   // talkers turn to each other
+      if ((L.st >= s.dur && (!s.until || s.until(L))) || (s.max && L.st >= s.max)) nextStep(L);
+    }
+    else nextStep(L);
+    if (!L.moving) L.off.multiplyScalar(Math.max(0, 1 - dt * 4));
+    L.pos.copy(L.base).add(L.off);
+  }
+  function release(L) { for (const id of L.holds) if (LIFE.taken[id] === L) delete LIFE.taken[id]; L.holds.length = 0; }
+  function reserve(L, id) { if (id == null || (LIFE.taken[id] && LIFE.taken[id] !== L)) return false; LIFE.taken[id] = L; L.holds.push(id); return true; }
+  const freeSpot = (ids) => ids.find((id) => !LIFE.taken[id]);
+  function cleanupAction(L) {
+    if (L.talk && !L.talk.done) endTalk(L.talk);
+    if (L.pair) L.pair.state = 'done';
+    if (L.visit) { const v = L.visit; v.done = true; v.bail = true; if (v.host.reservedBy === L && v.host.mode === 'seated') v.host.reservedBy = null; }
+    if (L.action === 'host' && L.partner && L.partner.visit) L.partner.visit.done = true;
+    L.hasPhone = false; L.hasMug = false; L.icon = null; L.anim = null; L.sayText = '';
+    release(L);
+  }
+  // Back to the desk: a working agent hurries (life switched off: a calm walk). Mid-walk it turns at the nearer end of
+  // its current segment, so the way home always follows the graph.
+  function goHome(L, hurry) {
+    if (L.mode === 'seated') return;
+    L.homing = true; L.hurry = !!hurry;
+    cleanupAction(L);
+    const s = L.steps && L.steps[L.si];
+    if (s && s.t === 'sit') { L.steps = [s]; L.si = 0; return; }              // already sitting down: let it finish
+    let steps;
+    if (s && s.t === 'rise') steps = [S_SIT()];
+    else {
+      let from = null, c = L.node;
+      if (s && s.t === 'walk' && s.pts) {
+        const A = s.ids[s.k], B = s.ids[s.k + 1];
+        from = L.base.clone();
+        if (A < 0) c = B;
+        else { const da = from.distanceTo(s.pts[s.k]) + routeDist(A, L.stand), db = from.distanceTo(s.pts[s.k + 1]) + routeDist(B, L.stand); c = da <= db ? A : B; }
+        L.node = c;
+      }
+      const w = S_WALK(L.stand, hurry ? HURRY_SPEED : WALK_SPEED); w.from = from;
+      steps = [w, S_SIT()];
+    }
+    L.steps = steps; L.si = -1;
+    if (!L.inNext) nextStep(L);
+  }
+  function finishAction(L) {
+    cleanupAction(L);
+    L.mode = 'seated'; L.steps = null; L.homing = false; L.hurry = false; L.moving = false; L.reservedBy = null;
+    L.talk = null; L.pair = null; L.visit = null; L.partner = null; L.action = null; L.topic = ''; L.cgroup = null; L.wL = L.wR = 0;
+    L.base.copy(L.cp); L.pos.copy(L.cp); L.off.set(0, 0, 0); L.yaw = L.chairYaw; L.pose = 0; L.node = L.stand;
+    poseActor(L, 0, 0);
+    const p = L.seat.ch.parts; p.armL.rotation.z = p.armR.rotation.z = 0; p.head.rotation.set(0, 0, 0);
+    if (L.mug) L.mug.visible = false; if (L.phone) L.phone.visible = false; if (L.puffs) L.puffs.forEach((sp) => { sp.visible = false; });
+    L.next = (state.phone ? 45 : 22) + Math.random() * (state.phone ? 80 : 55);
+  }
+
+  // ---------- talks and bubbles ----------
+  function say(L, text, dur) { L.sayText = text; L.sayUntil = LIFE.time + dur; }
+  function startTalk(a, b, lines, topic, kind, onEnd) {
+    const T = { a, b, lines, i: -1, t: 0, dur: 0, topic: topic || '', kind, done: false, onEnd };
+    a.talk = T; a.topic = T.topic; a.partner = b || a.partner;
+    if (b) { b.talk = T; b.topic = T.topic; b.partner = a; }
+    LIFE.talkers[a.name] = true; if (b) LIFE.talkers[b.name] = true;
+    LIFE.talks.push(T); nextLine(T); return T;
+  }
+  function nextLine(T) {
+    T.i++; T.t = 0;
+    const ln = T.lines[T.i];
+    if (!ln || (ln.who && !T.b)) { endTalk(T); return; }
+    const sp = ln.who ? T.b : T.a, ls = ln.who ? T.a : T.b;
+    T.dur = clamp(2.3 + ln.text.length * 0.034, 2.6, 4.7);
+    say(sp, ln.text, T.dur); sp.speaking = true;
+    if (ls) { ls.speaking = false; ls.sayText = ''; }
+    if (ln.tip && T.b) emitLife({ type: 'tip', from: teamNameOf(T.a.room), fromKey: T.a.room, to: teamNameOf(T.b.room), toKey: T.b.room, text: T.topic, visitor: T.a.name, host: T.b.name });
+  }
+  function endTalk(T) {
+    if (T.done) return;
+    T.done = true;
+    for (const P of [T.a, T.b]) if (P) { P.speaking = false; if (P.talk === T) P.sayText = ''; delete LIFE.talkers[P.name]; }
+    const i = LIFE.talks.indexOf(T); if (i >= 0) LIFE.talks.splice(i, 1);
+    if (T.onEnd) T.onEnd();
+  }
+  function updateTalks(dt) {
+    for (let i = LIFE.talks.length - 1; i >= 0; i--) { const T = LIFE.talks[i]; if (!T) continue; T.t += dt; if (T.t >= T.dur + 0.35) nextLine(T); }
+  }
+  function emitLife(ev) { const fn = api.onLife; if (typeof fn === 'function') { try { fn(ev); } catch (e) { /* the HUD's problem */ } } }
+  // 0 nothing · 1 the text · 2 the pair's 💬 · 3 an icon (📞 📝). The DOM only changes when the code or the text does.
+  function updateBubbles() {
+    const lim = state.phone ? 2 : 6, nearD = (state.phone ? 82 : 96) * state.fit, now = performance.now();
+    let shown = 0;
+    for (const L of LIFE.actors) {
+      let code = 0, text = '';
+      if (L.sayText && LIFE.time >= L.sayUntil) L.sayText = '';
+      if (L.mode !== 'seated' || L.sayText) {
+        _lw.copy(L.pos); _lw.y += 5.4;
+        const near = _lw.distanceTo(camera.position) < nearD, talking = !!(L.talk && !L.talk.done);
+        if (L.sayText && near && shown < lim) { code = 1; text = L.sayText; shown++; }
+        else if (talking && !near && L.talk.a === L && L.talk.b) { code = 2; text = '💬'; }   // from afar: one small icon per pair
+        else if (L.icon && (near || L.icon === '📞')) { code = 3; text = L.icon; }
+      }
+      if (code === L.bCode && text === L.bText) { if (L.bClearAt && now >= L.bClearAt) { setLabel('bubble', L.name, ''); L.bClearAt = 0; } continue; }
+      const lbl = labels.bubble[L.name];
+      if (!code) {                                                             // fade out, then empty the label
+        const inner = lbl && lbl.el.firstElementChild; if (inner) inner.classList.add('bye');
+        L.bClearAt = now + 260;
+      } else {
+        const tc = state.rooms[L.room] ? (state.rooms[L.room].team.accent || state.rooms[L.room].color) : '#7b6cf6';
+        setLabel('bubble', L.name, `<div class="hq-bubble${code === 1 ? (LIFE.talkers[L.name] ? ' talk' : '') : ' icon'}${code === 2 ? ' pair' : ''}" style="--bc:${tc}" title="${code === 1 ? '' : 'Office life · click to see who is talking'}">${escHTML(text)}</div>`);
+        L.bClearAt = 0;
+      }
+      L.bCode = code; L.bText = text;
+    }
+  }
+
+  // ---------- the actions ----------
+  function actStretch(L) {
+    const steps = [S_RISE(), S_WAIT(2.9, 'stretch'), S_WAIT(0.5, null), S_SIT()];
+    if (Math.random() < 0.35) steps.splice(1, 0, S_CALL((A) => say(A, pickFresh('stretch'), 2.6)));
+    runSteps(L, steps, 'stretch'); return true;
+  }
+  function actCoffee(L, opts) {
+    const R = LIFE.rooms[L.room], bar = opts && opts.where ? opts.where === 'bar' : Math.random() < 0.4;
+    let spot = bar ? freeSpot(LIFE.bar) : freeSpot(R.coffee);
+    if (spot == null) spot = bar ? freeSpot(R.coffee) : freeSpot(LIFE.bar);
+    if (spot == null || !reserve(L, spot)) return false;
+    const group = LIFE.bar.includes(spot) ? 'bar' : L.room;
+    // pour at the machine, then turn into the room with the mug (at the bar: stay facing the counter, toward the camera)
+    const sipFace = (A) => { const P = A.talk && !A.talk.done ? (A.talk.a === A ? A.talk.b : A.talk.a) : null; if (P) return Math.atan2(P.base.x - A.base.x, P.base.z - A.base.z); const y = faceNode(A); return y == null ? null : group === 'bar' ? y : y + Math.PI * 0.85; };
+    runSteps(L, [S_RISE(), S_WALK(spot), S_FACE(faceNode), S_WAIT(0.9, 'pour'), S_CALL((A) => { A.hasMug = true; mugOf(A); }), S_WAIT(0.5, 'pour'),
+      S_CALL((A) => arriveCoffee(A, group)), S_FACE(sipFace), S_WAIT(8 + Math.random() * 5, 'sip', (A) => !A.talk || A.talk.done, 32), S_CALL((A) => { A.anim = null; }), S_WALK(L.stand), S_SIT()], 'coffee');
+    return true;
+  }
+  function arriveCoffee(L, group) {
+    L.hasMug = true; L.cgroup = group; L.sip = Math.random() * 2; mugOf(L);
+    const other = LIFE.actors.find((M) => M !== L && M.cgroup === group && M.hasMug && M.mode === 'active' && !M.homing && (!M.talk || M.talk.done) && M.steps && M.steps[M.si] && M.steps[M.si].t === 'wait');
+    if (other && Math.random() < 0.8) {
+      const tl = topicLine(L), lines = [{ who: 0, text: tl.text }, { who: 1, text: pickFresh('reply') }];
+      if (Math.random() < 0.5) lines.push({ who: 1, text: pickFresh('small') });
+      startTalk(L, other, lines, tl.topic || 'coffee break small talk', 'coffee');
+    } else if (Math.random() < 0.5) say(L, pickFresh('solo'), 3.4);
+  }
+  function actPhone(L) {
+    const R = LIFE.rooms[L.room];
+    if (LIFE.taken[R.phone[0]] || LIFE.taken[R.phone[1]]) return false;
+    reserve(L, R.phone[0]); reserve(L, R.phone[1]);
+    const steps = [S_RISE(), S_WALK(R.phone[0]), S_CALL((A) => { A.hasPhone = true; A.icon = '📞'; phoneOf(A); }), S_WAIT(1.4, 'phone')];
+    const laps = 2 + Math.floor(Math.random() * 2);
+    for (let k = 0; k < laps; k++) steps.push(S_WALK(R.phone[1], PACE_SPEED), S_WAIT(1.3, 'phone'), S_WALK(R.phone[0], PACE_SPEED), S_WAIT(1.3, 'phone'));
+    steps.push(S_CALL((A) => { A.hasPhone = false; A.icon = null; A.anim = null; }), S_WALK(L.stand), S_SIT());
+    runSteps(L, steps, 'phone'); return true;
+  }
+  function actNote(L) {
+    const R = LIFE.rooms[L.room];
+    if (!reserve(L, R.note)) return false;
+    runSteps(L, [S_RISE(), S_WALK(R.note), S_FACE(faceNode), S_WAIT(0.4, null), S_CALL((A) => { A.icon = '📝'; if (Math.random() < 0.5) say(A, pickFresh('note'), 2.8); }),
+      S_WAIT(0.45, 'note'), S_CALL(launchNote), S_WAIT(1.9, 'note'), S_CALL((A) => { A.icon = null; A.anim = null; }), S_WALK(L.stand), S_SIT()], 'note');
+    return true;
+  }
+  const isFree = (A) => A.mode === 'seated' && !A.running && !A.reservedBy && LIFE.on;
+  function freeHost(roomKey, not) {
+    const list = LIFE.actors.filter((A) => A.room === roomKey && A !== not && isFree(A) && !LIFE.taken[A.guest]);
+    return list.length ? list[Math.floor(Math.random() * list.length)] : null;
+  }
+  function actChat(L, opts) {
+    const R = LIFE.rooms[L.room];
+    if (LIFE.taken[R.coffee[0]] || LIFE.taken[R.coffee[1]]) return false;
+    const B = (opts && opts.with && LIFE.by[opts.with] && isFree(LIFE.by[opts.with]) && LIFE.by[opts.with]) || freeHost(L.room, L);
+    if (!B) return false;
+    reserve(L, R.coffee[0]); reserve(B, R.coffee[1]);
+    const pair = { a: L, b: B, arrived: 0, state: 'gather' };
+    L.pair = B.pair = pair; L.partner = B; B.partner = L;
+    const arrive = () => { pair.arrived++; if (pair.arrived === 2 && pair.state === 'gather') { pair.state = 'talk'; const tl = topicLine(L); startTalk(L, B, chatLines(L, B, tl), tl.topic || 'a coffee-machine chat', 'chat', () => { pair.state = 'done'; }); } };
+    const tail = (A) => [S_WAIT(0.2, 'listen', () => pair.state === 'done', 45), S_CALL((X) => { X.anim = null; if (pair.arrived < 2 && Math.random() < 0.6) say(X, pickFresh('busy'), 2.6); }), S_WAIT(pair.arrived < 2 ? 0.6 : 0.2, null), S_WALK(A.stand), S_SIT()];
+    runSteps(L, [S_RISE(), S_WALK(R.coffee[0]), S_FACE(faceActor(B)), S_CALL(arrive)].concat(tail(L)), 'chat');
+    runSteps(B, [S_WAIT(0.5 + Math.random() * 0.6, null), S_RISE(), S_WALK(R.coffee[1]), S_FACE(faceActor(L)), S_CALL(arrive)].concat(tail(B)), 'chat');
+    return true;
+  }
+  // A visit with a purpose: a lesson this agent's team learned that is tagged for another team; else a neighbourly hello.
+  function actVisit(V, opts) {
+    let host = null, lesson = null;
+    if (opts && opts.to && opts.to !== V.room) host = (opts.host && LIFE.by[opts.host] && LIFE.by[opts.host].room === opts.to && isFree(LIFE.by[opts.host]) && LIFE.by[opts.host]) || freeHost(opts.to);
+    const lessons = LIFE.topics.filter((x) => x && x.kind === 'lesson' && x.teamKey === V.room && x.text);
+    for (let k = lessons.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); const tmp = lessons[k]; lessons[k] = lessons[j]; lessons[j] = tmp; }
+    if (host) lesson = lessons.find((x) => (x.forKeys || []).includes(host.room)) || null;
+    else for (const ls of lessons) { for (const k of ls.forKeys || []) { if (k !== V.room) host = freeHost(k); if (host) break; } if (host) { lesson = ls; break; } }
+    if (!host) {                                                               // no lesson for anyone: a hello, neighbours more likely
+      const me = state.rooms[V.room], others = state.roomList.filter((r) => r.key !== V.room);
+      const weights = others.map((r) => { const steps = Math.abs(wrapA((r.index - me.index) * Math.PI / 4)) / (Math.PI / 4); return 1 / (0.6 + steps); });
+      for (let tries = 0; tries < 4 && !host; tries++) { let x = Math.random() * weights.reduce((s, w) => s + w, 0), pick = others[0]; for (let i = 0; i < others.length; i++) { if ((x -= weights[i]) <= 0) { pick = others[i]; break; } } host = freeHost(pick.key); }
+      if (host) { const fit = lessons.find((x) => !(x.forKeys || []).length); if (fit && Math.random() < 0.5) lesson = fit; }
+    }
+    if (!host || !reserve(V, host.guest)) return false;
+    host.reservedBy = V;
+    const tl = lesson ? null : topicLine(V);
+    const v = V.visit = { host, lesson, tl, ready: false, done: false, bail: false, doneAt: 0 };
+    V.partner = host; V.topic = lesson ? lesson.text : (tl.topic || 'a friendly hello');
+    const knock = (A) => {
+      if (host.reservedBy !== A || host.running || host.mode !== 'seated' || !LIFE.on) { v.bail = true; say(A, pickFresh('busy'), 2.6); v.doneAt = LIFE.time + 2.7; return; }
+      host.partner = A; host.topic = A.topic;
+      runSteps(host, [S_RISE(), S_CALL(() => { v.ready = true; }), S_FACE(faceActor(A)), S_WAIT(0.2, 'listen', () => v.done, 34), S_WAIT(0.5, null), S_SIT()], 'host');
+    };
+    const talk = (A) => {
+      if (v.bail || !v.ready || v.done) { v.done = v.done || !v.bail; return; }
+      startTalk(A, host, lesson ? tipLines(A, host, lesson) : socialLines(A, host, tl), A.topic, 'visit', () => { v.done = true; });
+    };
+    runSteps(V, [S_RISE(), S_WALK(host.guest), S_FACE(faceActor(host)), S_CALL(knock), S_WAIT(0.3, 'listen', () => v.ready || v.bail || v.done, 4), S_FACE(faceActor(host)), S_CALL(talk),
+      S_WAIT(0.2, 'listen', () => v.done || (v.bail && LIFE.time >= v.doneAt), 32), S_CALL((A) => { A.anim = null; v.done = true; }), S_WAIT(0.3, null), S_WALK(V.stand), S_SIT()], 'visit');
+    return true;
+  }
+  function startAction(L, kind, opts) {
+    if (!kind) {
+      const w = [['coffee', 0.27], ['stretch', 0.2], ['visit', 0.21], ['phone', 0.11], ['chat', 0.12], ['note', 0.09]];
+      let x = Math.random(); kind = 'stretch';
+      for (const [k, v] of w) { if ((x -= v) <= 0) { kind = k; break; } }
+    }
+    const fn = { coffee: actCoffee, stretch: actStretch, visit: actVisit, phone: actPhone, chat: actChat, note: actNote }[kind];
+    return fn ? !!fn(L, opts) : false;
+  }
+
+  // ---------- poses ----------
+  function poseActor(L, dt, t) {
+    const ch = L.seat.ch, p = ch.parts, b = L.pose, sb = 1 - b, lift = 0.1 * sb, s = L.steps && L.steps[L.si];
+    p.torso.position.y = lift; p.head.position.y = 2.3 + lift; p.armL.position.y = p.armR.position.y = 2.12 + lift; p.hipL.position.y = p.hipR.position.y = 1.05 + lift;
+    let swing = 0, bob = 0, toe = 0;
+    if (L.moving) {
+      L.phase += dt * (1.4 + L.speedNow * 2.25);
+      const amp = L.hurry ? 0.62 : L.speedNow < 1.2 ? 0.28 : 0.5;
+      swing = Math.sin(L.phase) * amp; bob = Math.abs(Math.sin(L.phase)) * (L.hurry ? 0.08 : 0.055);
+    }
+    p.hipL.rotation.x = HIP_S * sb + swing * b; p.hipR.rotation.x = HIP_S * sb - swing * b;
+    p.kneeL.rotation.x = KNEE_S * sb + Math.max(0, -swing) * 1.2 * b; p.kneeR.rotation.x = KNEE_S * sb + Math.max(0, swing) * 1.2 * b;
+    // arms: the walk swing (or a small idle sway), then the action's pose blended in (mug, phone, stretch, talk, note)
+    const idle = L.moving ? 0 : Math.sin(t * 1.3 + L.phase) * 0.05;
+    const aL = ARM_S * sb + (-swing * 0.7 + idle) * b, aR = ARM_S * sb + (swing * 0.7 - idle) * b;
+    let oL = null, oLz = 0, oR = null, oRz = 0, hx = 0, hy = 0, sipK = 0;
+    const st = L.st, an = L.anim;
+    if (an === 'stretch' && s && s.t === 'wait') {
+      const e = Math.min(clamp(st / 0.7, 0, 1), clamp((s.dur - st) / 0.7, 0, 1)), k = ease(e);
+      oL = oR = -3.05 * k; oLz = -0.38 * k; oRz = 0.38 * k; hx = -0.28 * k; toe = 0.06 * k;
+    }
+    if (L.hasPhone) { oL = -2.85; oLz = 0.16; hy = -0.12; }
+    if (L.hasMug) {
+      oR = -0.95; oRz = 0;
+      if (an === 'sip' && !L.moving) {
+        L.sip += dt; const c = (L.sip % 4.6) / 4.6;
+        sipK = Math.sin(Math.PI * clamp(c / 0.34, 0, 1)); oR = -0.95 - 1.25 * sipK; oRz = -0.38 * sipK; hx = -0.14 * sipK;
+      }
+    }
+    if (an === 'pour' && s && s.t === 'wait') { const e = Math.sin(Math.PI * clamp(L.st / 1.4, 0, 1)); oR = -1.25 * e - (L.hasMug ? 0.95 * (1 - e) : 0); hx = 0.12 * e; }
+    if (an === 'note' && s && s.t === 'wait') { const e = Math.sin(Math.PI * clamp(st / 0.9, 0, 1)); oR = -2.6 * e; oRz = -0.1 * e; hx = -0.18; }
+    const talking = L.talk && !L.talk.done;
+    if (talking && L.speaking && !L.hasMug && !L.hasPhone) { oR = -0.55 + Math.sin(t * 5.3 + L.phase) * 0.3; oRz = -0.12; }
+    if (talking) { hx += L.speaking ? Math.sin(t * 6.5 + L.phase) * 0.05 : 0.05 + Math.sin(t * 1.8 + L.phase) * 0.05; hy += L.speaking ? 0 : 0.1; }
+    else if (an === 'listen') hx += 0.03;
+    const kr = Math.min(1, dt * 7);
+    L.wR += ((oR != null ? 1 : 0) - L.wR) * kr; if (oR != null) { L.oR = oR; L.oRz = oRz; }
+    L.wL += ((oL != null ? 1 : 0) - L.wL) * kr; if (oL != null) { L.oL = oL; L.oLz = oLz; }
+    p.armR.rotation.x = aR + (L.oR - aR) * L.wR * b; p.armR.rotation.z = L.oRz * L.wR * b;
+    p.armL.rotation.x = aL + (L.oL - aL) * L.wL * b; p.armL.rotation.z = L.oLz * L.wL * b;
+    p.head.rotation.x += (hx * b - p.head.rotation.x) * kr; p.head.rotation.y += (hy * b - p.head.rotation.y) * kr;
+    ch.group.position.set(L.pos.x, L.pos.y + bob * b + toe, L.pos.z); ch.group.rotation.y = L.yaw;
+    if (L.mug) { L.mug.visible = L.hasMug; if (L.hasMug) { L.mug.rotation.x = -p.armR.rotation.x * 0.94 - sipK * 0.45; L.mug.rotation.z = -p.armR.rotation.z; } }
+    if (L.phone) L.phone.visible = L.hasPhone;
+  }
+  function lifeMicro(L, dtReal) {                                              // seated: a stretch with both arms up, or a look around
+    const m = L.micro, p = L.seat.ch.parts;
+    if (!LIFE.on || L.running) { L.micro = null; p.armL.rotation.z = p.armR.rotation.z = 0; return; }
+    m.t += dtReal * LIFE.speed;
+    const e = ease(Math.min(clamp(m.t / 0.6, 0, 1), clamp((m.dur - m.t) / 0.6, 0, 1)));
+    if (m.kind === 'stretch') { p.armL.rotation.x = p.armR.rotation.x = ARM_S + (-3.0 - ARM_S) * e; p.armL.rotation.z = -0.3 * e; p.armR.rotation.z = 0.3 * e; p.head.rotation.x = -0.22 * e; }
+    else p.head.rotation.y += m.dir * 0.55 * e;
+    if (m.t >= m.dur) { L.micro = null; p.armL.rotation.z = p.armR.rotation.z = 0; }
+  }
+  function updateProps(t) {
+    for (const L of LIFE.actors) {
+      if (!L.puffs) continue;
+      if (!L.hasMug || L.mode === 'seated') { if (L.puffs[0].visible) L.puffs.forEach((sp) => { sp.visible = false; }); continue; }
+      L.mug.getWorldPosition(_lw);
+      for (let k = 0; k < 3; k++) {
+        const sp = L.puffs[k], c = (t * 0.55 + k / 3) % 1;
+        sp.visible = true; sp.position.set(_lw.x + Math.sin(c * 6 + k * 2) * 0.1, _lw.y + 0.3 + c * 1.0, _lw.z + Math.cos(c * 5 + k) * 0.06);
+        sp.material.opacity = 0.55 * (1 - c) * Math.min(1, c * 5); sp.scale.setScalar(0.32 + c * 0.5);
+      }
+    }
+  }
+  function launchNote(L) {
+    const n = LIFE.notes.find((x) => !x.active); if (!n) { LIFE.pulse = 1; return; }
+    L.seat.ch.parts.armR.localToWorld(n.from.set(0, -1.1, 0.15));
+    n.ctrl.copy(n.from).lerp(n.to, 0.45); n.ctrl.y += 6;
+    n.active = true; n.t = 0; n.sprite.visible = true; n.sprite.position.copy(n.from);
+  }
+  function updateNotes(dt) {
+    for (const n of LIFE.notes) {
+      if (!n.active) continue;
+      n.t += dt / 1.25; const u = Math.min(1, n.t), iu = 1 - u;
+      n.sprite.position.set(iu * iu * n.from.x + 2 * iu * u * n.ctrl.x + u * u * n.to.x, iu * iu * n.from.y + 2 * iu * u * n.ctrl.y + u * u * n.to.y, iu * iu * n.from.z + 2 * iu * u * n.ctrl.z + u * u * n.to.z);
+      n.sprite.scale.setScalar(0.8 + Math.sin(u * Math.PI) * 0.7);
+      if (u >= 1) { n.active = false; n.sprite.visible = false; LIFE.pulse = 1; if (LIFE.wave) LIFE.wave.t = 0; }
+    }
+    const W = LIFE.wave;                                                       // two rings ripple out over the Brain's inner disc
+    if (W && W.t >= 0) {
+      W.t += dt;
+      W.meshes.forEach((m, k) => { const u = (W.t - k * 0.35) / 1.5; m.visible = u > 0 && u < 1; if (m.visible) { m.scale.setScalar(2.5 + easeOut(u) * 10.5); m.material.opacity = 0.95 * (1 - u); } });
+      if (W.t > 1.9) W.t = -1;
+    }
+  }
+  function lifePulse(dt) {                                                     // the Brain answers a note: the core, its glow and light swell once
+    const k = LIFE.pulse, b = anim.brain;
+    b.core.material.emissiveIntensity += 0.6 * k; b.glow.material.opacity = Math.min(1, b.glow.material.opacity + 0.35 * k);
+    b.glow.scale.setScalar(7 * (1 + 0.55 * k)); b.light.intensity += 1.3 * k;
+    LIFE.pulse = Math.max(0, k - dt * 0.9); LIFE.pulsed = LIFE.pulse > 0;
+  }
+
+  // ---------- the frame ----------
+  function lifeUpdate(run, dtReal, t) {
+    if (!LIFE.ready) return;
+    const dt = dtReal * LIFE.speed;
+    LIFE.time += dt; LIFE.max = state.phone ? 3 : 7;
+    let active = 0;
+    for (const L of LIFE.actors) {
+      const on = !!run[L.name]; L.running = on;
+      if (L.mode !== 'seated') { if ((on && !L.hurry) || (!LIFE.on && !L.homing)) goHome(L, on); active++; }
+      else if (on && L.reservedBy) L.reservedBy = null;                       // a reserved host got work: the visitor finds them busy
+    }
+    updateTalks(dt);
+    if (LIFE.on && LIFE.auto) for (const L of LIFE.actors) {
+      if (L.mode !== 'seated' || L.running || L.reservedBy) continue;
+      L.next -= dt;
+      if (L.next <= 0) { if (active < LIFE.max && startAction(L)) active += L.action === 'chat' ? 2 : 1; else L.next = 4 + Math.random() * 9; }
+      if (!L.micro && L.mode === 'seated') { L.microNext -= dt; if (L.microNext <= 0) { L.micro = { kind: Math.random() < 0.45 ? 'stretch' : 'look', t: 0, dur: 2.6, dir: Math.random() < 0.5 ? -1 : 1 }; L.microNext = 14 + Math.random() * 34; } }
+    }
+    for (const L of LIFE.actors) if (L.mode !== 'seated') { stepActor(L, dt); if (L.mode !== 'seated') poseActor(L, dt, t); }
+    updateProps(t); updateNotes(dt); updateBubbles();
+  }
+
+  // ---------- the API: life(on|off), lifeOf(name), lifeState(), lifeDebug({speed, force, agent, to, with, graph}) ----------
+  function lifeSwitch(on) {
+    if (on === undefined) return LIFE.on;
+    LIFE.on = !(on === false || on === 'off' || on === 0 || on === '0');
+    if (LIFE.on) loadChatter();
+    return LIFE.on;
+  }
+  function lifeOf(name) {
+    const L = LIFE.by[name]; if (!L || L.mode === 'seated') return null;
+    const T = L.talk && !L.talk.done ? L.talk : null, P = T ? (T.a === L ? T.b : T.a) : L.partner;
+    const s = L.steps && L.steps[L.si];
+    return { action: L.action, partner: P ? P.name : null, talking: !!(T && P), topic: (T && T.topic) || L.topic || '', step: s ? s.t : '', hurrying: L.hurry, homing: L.homing, done: !!((L.visit && L.visit.done) || (L.pair && L.pair.state === 'done')), mug: L.hasMug, phone: L.hasPhone, saying: L.sayText || '' };
+  }
+  function lifeState() {
+    return { on: LIFE.on, ready: LIFE.ready, speed: LIFE.speed, max: LIFE.max, topics: LIFE.topics.length, talks: LIFE.talks.length,
+      away: LIFE.actors.filter((L) => L.mode !== 'seated').map((L) => ({ name: L.name, action: L.action, step: L.steps && L.steps[L.si] ? L.steps[L.si].t : '', partner: L.partner ? L.partner.name : null, away: +(LIFE.time - (L.t0 || 0)).toFixed(1), x: +L.pos.x.toFixed(2), y: +L.pos.y.toFixed(2), z: +L.pos.z.toFixed(2) })) };
+  }
+  function lifeDebug(o) {
+    o = o || {};
+    if (o.speed != null) LIFE.speed = clamp(+o.speed || 1, 0.1, 20);
+    if (o.auto != null) LIFE.auto = !!o.auto;                                // false: only forced actions (for tests)
+    if (o.graph != null) {
+      if (o.graph && !LIFE.debug) {
+        const pts = [];
+        for (const n of LIFE.nodes) for (const j of n.adj) if (j > n.id) { const m = LIFE.nodes[j]; pts.push(n.p.x, n.p.y + 0.12, n.p.z, m.p.x, m.p.y + 0.12, m.p.z); }
+        const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+        LIFE.debug = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xff3df2, depthTest: false, transparent: true })); LIFE.debug.renderOrder = 9; scene.add(LIFE.debug);
+      } else if (!o.graph && LIFE.debug) { scene.remove(LIFE.debug); LIFE.debug = null; }
+    }
+    if (o.topics) LIFE.topics = o.topics;
+    let res = { speed: LIFE.speed, auto: LIFE.auto, graph: !!LIFE.debug, nodes: LIFE.nodes.length };
+    if (o.force) {
+      let L = o.agent ? LIFE.by[o.agent] : null;
+      if (L && !isFree(L)) return Object.assign(res, { ok: false, reason: o.agent + ' is busy' });
+      if (!L) { const free = LIFE.actors.filter((A) => isFree(A) && (!o.room || A.room === o.room)); L = free[Math.floor(Math.random() * free.length)]; }
+      if (!L) return Object.assign(res, { ok: false, reason: 'nobody is free' });
+      const ok = startAction(L, o.force, o);
+      res = Object.assign(res, { ok, agent: L.name, action: L.action, partner: L.partner ? L.partner.name : null, topic: L.topic });
+    }
+    return res;
+  }
+
   // ------------------------------------------------------------------ labels (CSS2D anchors the HUD fills)
   function makeAnchor(kind, key, parent, pos) {
     const el = document.createElement('div');
@@ -1015,6 +1756,7 @@
     const near = clamp((currentView().dist / state.fit - 80) / 60, 0, 1);
     anim.brain.beam.material.opacity = 0.85 * near; anim.brain.beam.visible = anim.brain.halo.visible = near > 0.02; anim.brain.halo.material.opacity = 0.07 * near; anim.brain.glow.material.opacity *= 0.5 + 0.5 * near;
     const neon = 0.88 + Math.sin(t * 1.1) * 0.12; anim.brain.neon.forEach((m, k) => m.material.color.setRGB(0.78 * neon, 0.96 * neon, 1 * neon));
+    if (LIFE.pulse > 0 || LIFE.pulsed) lifePulse(dt);                          // a note just landed in the Brain
     for (const r of anim.rings) r.holder.rotation.y = r.phase + t * r.speed;
     anim.dust.rotation.y = t * 0.004;
     animateParticles(t);
@@ -1023,26 +1765,32 @@
     for (const d of anim.dashboards) { const lit = state.rooms[d.team].lit; const b = lit ? 0.95 + Math.sin(t * 4) * 0.25 : 0.82; d.mesh.material.color.setScalar(b); }
     for (const c of anim.crawlers) { if (c.orb) { c.mesh.position.y = c.base.y + Math.sin(t * 0.8) * 0.4; c.mesh.position.x = c.base.x + Math.sin(t * 0.5) * 0.6; } else c.mesh.material.opacity = 0.25 + 0.65 * (0.5 + 0.5 * Math.sin(t * 2.2 + c.phase)); }
     // seated agents
+    lifeUpdate(run, dt, t);                                                    // office life moves the idle agents who are away from their desks
     for (const name in state.seats) {
-      const seat = state.seats[name], on = !!run[name], p = seat.ch.parts, ph = seat.phase;
+      const seat = state.seats[name], on = !!run[name], p = seat.ch.parts, ph = seat.phase, away = !!(seat.life && seat.life.mode !== 'seated');
       if (on) {
         const s = t * 9 + ph;
-        p.armL.rotation.x = -1.45 + Math.sin(s) * 0.1; p.armR.rotation.x = -1.45 + Math.cos(s * 1.3) * 0.1;
-        p.head.rotation.x = Math.sin(t * 2.4 + ph) * 0.06; p.head.rotation.y = Math.sin(t * 1.1 + ph) * 0.18;
+        if (!away) { p.armL.rotation.x = -1.45 + Math.sin(s) * 0.1; p.armR.rotation.x = -1.45 + Math.cos(s * 1.3) * 0.1; }
+        if (!away) { p.head.rotation.x = Math.sin(t * 2.4 + ph) * 0.06; p.head.rotation.y = Math.sin(t * 1.1 + ph) * 0.18; }
         seat.ring.material.opacity = 0.35 + Math.sin(t * 3 + ph) * 0.2; seat.ring.scale.setScalar(1 + Math.sin(t * 3 + ph) * 0.08);
         seat.pool.material.opacity = 0.3 + Math.sin(t * 3 + ph) * 0.08;
         const sb = 1.25 + Math.sin(t * 5 + ph) * 0.12; for (const m of seat.screens) m.color.setScalar(sb);
       } else {
-        p.armL.rotation.x = -1.45; p.armR.rotation.x = -1.45;
-        p.head.rotation.x = Math.sin(t * 0.7 + ph) * 0.02; p.head.rotation.y = Math.sin(t * 0.3 + ph) * 0.09;
+        if (!away) { p.armL.rotation.x = -1.45; p.armR.rotation.x = -1.45; }
+        if (!away) { p.head.rotation.x = Math.sin(t * 0.7 + ph) * 0.02; p.head.rotation.y = Math.sin(t * 0.3 + ph) * 0.09; }
         seat.ring.material.opacity = 0; seat.pool.material.opacity = 0.09;
         for (const m of seat.screens) m.color.setScalar(0.8);
       }
-      seat.ch.group.position.y = seat.ch.baseY + Math.sin(t * (on ? 4 : 1.2) + ph) * (on ? 0.03 : 0.015);
+      if (!away) seat.ch.group.position.y = seat.ch.baseY + Math.sin(t * (on ? 4 : 1.2) + ph) * (on ? 0.03 : 0.015);
+      if (!away && !on && seat.life && seat.life.micro) lifeMicro(seat.life, dt);   // a seated stretch or a look around
       seat.running = on;
     }
     animateWalkers(t, dt); animateSubs(t); updateLabels();
-    if (state.selectRing && state.selectRing.visible) state.selectRing.material.opacity = 0.6 + Math.sin(t * 4) * 0.3;
+    if (state.selectRing && state.selectRing.visible) {
+      state.selectRing.material.opacity = 0.6 + Math.sin(t * 4) * 0.3;
+      const sel = state.seats[state.selected];                                  // the ring follows an agent who walked away from the desk
+      if (sel && sel.life) { const q = sel.ch.group.position; state.selectRing.position.set(q.x, (sel.life.mode === 'seated' ? SLAB_H : sel.life.base.y) + 0.07, q.z); }
+    }
     if (bloomPass.enabled) composer.render(); else renderer.render(scene, camera);
     css.render(scene, camera);
   }
@@ -1075,6 +1823,7 @@
     buildBrain();
     teams.forEach((team, i) => buildRoom(team, i, agents.filter((a) => a.teamKey === team.key || a.team === team.name)));
     buildPaths();
+    try { buildLife(); } catch (e) { console.warn('office3d: office life is off', e); LIFE.ready = false; }
     state.built = true;
     placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
     state.userActiveUntil = performance.now() + 5000;
@@ -1093,11 +1842,13 @@
     labelRules: (rules) => Object.assign(state.labelRules, rules || {}),
     pause: (on) => { state.paused = !!on; }, fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
     teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size })),
+    life: (on) => lifeSwitch(on), lifeOf: (n) => lifeOf(n), lifeState: () => lifeState(), lifeDebug: (o) => lifeDebug(o), lifeTalkers: () => LIFE.talkers,
     _three: () => ({ scene, camera, renderer, composer, controls, state }),
   });
   if (!('onRoomClick' in api)) api.onRoomClick = null;
   if (!('onAgentClick' in api)) api.onAgentClick = null;
   if (!('onBrainClick' in api)) api.onBrainClick = null;
+  if (!('onLife' in api)) api.onLife = null;
 
   ensureExamples(() => {
     setupRenderer();

@@ -2,7 +2,10 @@
 // Owns window.HQ (contract: status, teams, agents, running, subagents, send, toast). Talks to the scene only
 // through window.HQ_OFFICE when it exists (hq/office3d.js dispatches "hq-office-ready" once the scene is built).
 // Plain ES2020, no framework. Sections: helpers · state · data · top bar · billboards · toasts · minimap ·
-// panels (team, tasks, calendar, brain) · voice · ask box · agent card · lead log + run stream · scene hookup.
+// panels (team, tasks, calendar, brain) · voice · ask box · agent card · lead log + run stream · office life · scene hookup.
+// Office life (the scene's idle-agent simulation): the agent card says who an agent is talking with and about what
+// (HQ_OFFICE.lifeOf), a shared lesson raises a soft toast at most every 2 minutes (HQ_OFFICE.onLife), and the user menu
+// has an "Office life: on/off" switch remembered in localStorage ("hq.officeLife").
 (() => {
   "use strict";
 
@@ -92,6 +95,7 @@
     sceneSubs: {},         // sub-agents someone spawned directly on the scene (e.g. a test harness)
     sentSubs: {}, subLabels: new Set(), blanked: new Set(), selfCall: false,
     skillPct: {}, voice: null, zoom: 100, scene: false, lastReply: "",
+    life: true, lifeTipAt: 0,   // office life on/off (remembered) and when the last "shared a tip" toast showed
   };
 
   const teamByKey = (k) => state.teams.find((t) => t.key === k) || null;
@@ -273,7 +277,7 @@
   }
   function showToast(item) {
     const host = $("#toasts");
-    const node = el(`<div class="toast ${item.bad ? "bad" : ""}">${iconTile(item.teamKey)}<div><div class="title">${esc(item.title || item.team)}</div><div class="body">${esc(item.body)}</div></div><span class="when">now</span></div>`);
+    const node = el(`<div class="toast ${item.bad ? "bad" : ""} ${item.soft ? "soft" : ""}">${iconTile(item.teamKey)}<div><div class="title">${esc(item.title || item.team)}</div><div class="body">${esc(item.body)}</div></div><span class="when">now</span></div>`);
     host.prepend(node);
     while (host.children.length > (isPhone() ? 2 : 3)) host.lastElementChild.remove();
     const gone = () => { node.classList.add("fade"); setTimeout(() => node.remove(), 650); };
@@ -467,8 +471,9 @@
         else { sched.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0) scale(${c.s})`; sched.style.zIndex = String(c.y + 1); sched.classList.add("show"); } }
       else sched.classList.remove("show");
     }
+    const talkers = hasFn("lifeTalkers") ? window.HQ_OFFICE.lifeTalkers() || null : null;   // office life: a speech bubble stands in for the name pill
     for (const pill of $("#agent-pills").children) {
-      const lvl = pill.dataset.show, p = lvl && lvl !== "0" ? project(pill.dataset.kind, pill.dataset.key) : null;
+      const lvl = pill.dataset.show, p = lvl && lvl !== "0" && !(talkers && talkers[pill.dataset.key] && pill.dataset.kind === "agent") ? project(pill.dataset.kind, pill.dataset.key) : null;
       const near = p && (p.near != null ? !!p.near : state.zoom >= 160);         // pills show inside the zoomed room only, like the video
       if (!p || p.visible === false || !near || (phone && (p.y > H || p.y < barH + 20))) { pill.classList.remove("show"); continue; }
       pill.style.transform = `translate3d(${Math.round(p.x)}px, ${Math.round(p.y - 4)}px, 0) translate(-50%, -100%) scale(${scaleOf(p)})`;
@@ -855,7 +860,7 @@
     const t = teamByName(a.team), r = runningMap()[a.name];
     card.innerHTML = `<div class="agent-card-head"><span class="av" style="background:${accent(t)};width:28px;height:28px;font-size:10px;box-shadow:none">${esc(initials(a.label))}</span><strong>${esc(a.label)}</strong><span class="tag ${r ? "ok" : ""}">${r ? (typeof r === "string" && r !== "working" ? esc(r.split(" ")[0]) : "working") : "idle"}</span><button class="small" data-close type="button">×</button></div>
       <div class="agent-card-meta">${esc(a.team)} · ${a.role === "head" ? "team head" : "worker"}${a.model ? " · " + esc(a.model) : ""}</div>
-      <p>${esc(a.description || "")}</p>${typeof r === "string" && r.length > 12 ? `<p class="agent-card-task">Now: ${esc(r)}</p>` : ""}
+      <p>${esc(a.description || "")}</p>${typeof r === "string" && r.length > 12 ? `<p class="agent-card-task">Now: ${esc(r)}</p>` : ""}${r ? "" : lifeLine(callScene("lifeOf", a.name))}
       ${a.skills && a.skills.length ? `<div class="agent-card-row">Skills: ${a.skills.map(esc).join(", ")}</div>` : ""}
       <div class="agent-card-row"><code>.claude/agents/${esc(a.name)}.md</code></div>
       <div class="row"><button class="btn sm blue" data-ask="${esc(a.name)}" type="button">Ask ${esc(a.label)}</button>${t ? `<button class="btn sm" data-team="${esc(t.key)}" type="button">Open ${esc(t.name)}</button>` : ""}</div>`;
@@ -934,12 +939,45 @@
     });
   }
 
+  // ---------- office life: what an idle agent is up to, the "shared a tip" toast, the on/off switch ----------
+  function lifeLine(l) {
+    if (!l || !l.action) return "";
+    const who = l.partner ? ((agentByName(l.partner) || {}).label || l.partner) : "";
+    if (l.homing) return `<p class="agent-card-life">🏃 Heading back to the desk</p>`;
+    if (l.done && !l.talking && (l.action === "visit" || l.action === "chat")) return `<p class="agent-card-life">👋 Heading back after a chat${who ? ` with <b>${esc(who)}</b>` : ""}</p>`;
+    if (l.talking && who) return `<p class="agent-card-life">💬 Talking with <b>${esc(who)}</b>${l.topic ? ` about: ${esc(shortTask(l.topic, 140))}` : ""}</p>`;
+    const text = { coffee: "☕ On a coffee break", phone: "📞 On a phone call", note: "📝 Dropping a note into the Brain", stretch: "🙆 Stretching their legs",
+      visit: who ? `🚶 On the way to visit <b>${esc(who)}</b>` : "🚶 Visiting another team", host: who ? `👋 Welcoming <b>${esc(who)}</b>` : "", chat: who ? `💬 Meeting <b>${esc(who)}</b> at the coffee machine` : "" }[l.action];
+    return text ? `<p class="agent-card-life">${text}${l.topic && l.action === "visit" ? ` · about: ${esc(shortTask(l.topic, 120))}` : ""}</p>` : "";
+  }
+  function lifeEvent(ev) {                                 // from the scene: a visitor shared a lesson with another team
+    if (!ev || ev.type !== "tip" || !ev.from || !ev.to) return;
+    if (Date.now() - state.lifeTipAt < 120000 || document.hidden) return;   // at most one every 2 minutes
+    if (isPhone() && state.view !== "office") return;
+    state.lifeTipAt = Date.now();
+    showToast({ teamKey: ev.fromKey || ev.from, title: `${ev.from} shared a tip with ${ev.to}`, body: shortTask(ev.text || "", 120), soft: true });   // soft: a toast only, the bell stays quiet
+  }
+  function renderLifeItem() { const b = $("#menu-life"); if (b) b.innerHTML = `Office life<span class="life-state ${state.life ? "on" : ""}">${state.life ? "on" : "off"}</span>`; }
+  function setLife(on, save = true) {
+    state.life = !!on; renderLifeItem();
+    if (save) { try { localStorage.setItem("hq.officeLife", state.life ? "on" : "off"); } catch (e) { /* private mode: not remembered */ } }
+    callScene("life", state.life);
+  }
+  function initLife() {
+    try { state.life = localStorage.getItem("hq.officeLife") !== "off"; } catch (e) { state.life = true; }
+    const lead = $("#menu-lead");
+    if (lead && !$("#menu-life")) { const b = el(`<button class="menu-item" id="menu-life" type="button" title="Agents get up, fetch coffee, visit other teams and share lessons while idle"></button>`); lead.parentNode.insertBefore(b, lead.nextSibling); }
+    renderLifeItem();
+  }
+
   // ---------- the scene: callbacks, direct spawn calls, label blanking ----------
   function onSceneReady() {
     const O = window.HQ_OFFICE; if (!O || state.scene) return; state.scene = true;
     O.onRoomClick = (key) => roomTap(key);
     O.onAgentClick = (name) => showAgentCard(name);
     O.onBrainClick = () => openPanel(state.view === "brain" ? "office" : "brain");
+    O.onLife = (ev) => lifeEvent(ev);
+    callScene("life", state.life);
     // Notice sub-agents spawned straight on the scene (tests, the console) so the pills, cards and counters agree.
     if (typeof O.spawnSubagents === "function" && !O.spawnSubagents.hqWrapped) {
       const spawn = O.spawnSubagents, clear = O.clearSubagents;
@@ -976,6 +1014,7 @@
       if (b.id === "user-btn") { const m = $("#user-dropdown"); const was = m.hidden; closeMenus(); m.hidden = !was; return; }
       if (b.id === "menu-overview") { openPanel("office"); goOverview(); return; }
       if (b.id === "menu-lead") { setLead(true); $("#lead-input").focus(); return; }
+      if (b.id === "menu-life") { setLife(!state.life); return; }
       if (b.id === "bell") { const was = $("#notif-list").hidden; closeMenus(); toggleBell(was); return; }
       if (b.id === "ask-mic" || d.voice != null) { openVoice(); return; }
       if (b.id === "ask-unpick") { pickAgent(null); focusAsk(); return; }
@@ -1042,7 +1081,7 @@
   function init() {
     $("#user-name").textContent = "Owner"; $("#hud").dataset.view = "office";
     $("#ask-kbd").textContent = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl K";
-    wire();
+    initLife(); wire();
     refresh().then(pollNotifs); loadBrain();
     setInterval(refresh, 4000);
     setInterval(pollNotifs, 5000);
