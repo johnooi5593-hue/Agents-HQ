@@ -31,7 +31,7 @@ Static routes served by the backend: `/` (app.html, login-guarded), `/hud.js`, `
 | 8 | inbox | Inbox | `#f97316` orange | ✉️ (tray) | email · brand deals · quotes | inbox-manager |
 
 The Brain sits in the middle: "THE BRAIN · <n> notes · shared memory" where n = total observations in `brain/memory.jsonl`.
-Exact hex values may be refined by `docs/video-spec.md`; the backend keeps them in `hq/teams.json` and everyone reads them from `/api/teams`.
+Exact hex values come from `docs/video-spec.md` (floor, accent, carpet `color_light`, wall `color_wall`); the backend keeps them in `hq/teams.json` and everyone reads them from `/api/teams`.
 
 Agents come from `.claude/agents/*.md` (frontmatter `team:` matches the team name, `role: head|worker`). The scene puts the head at the back desk and the workers at the front desks. Agent display names: the frontmatter `name` (e.g. `clip-editor`); the HUD may show a prettier label (`Clip Editor`).
 

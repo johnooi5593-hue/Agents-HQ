@@ -4,9 +4,9 @@
     {
       "key": "research",
       "name": "Research",
-      "color": "#3b82f6",
-      "color_light": "#85b2f9",
-      "color_wall": "#334669",
+      "color": "#5d88cf",
+      "color_light": "#c6d5ee",
+      "color_wall": "#334b72",
       "icon": "🔍",
       "tagline": "github radar · markets · trends",
       "lead": "research-director",
@@ -59,14 +59,15 @@
           "note": "three workers' files merged into one brief with sources",
           "agent": "research-director"
         }
-      ]
+      ],
+      "accent": "#3858bd"
     },
     {
       "key": "scripts",
       "name": "Scripts",
-      "color": "#d4a017",
-      "color_light": "#e4c46f",
-      "color_wall": "#54492d",
+      "color": "#d8b055",
+      "color_light": "#f1e3c4",
+      "color_wall": "#77612f",
       "icon": "✏️",
       "tagline": "hooks · scripts · fact-check",
       "lead": "script-writer",
@@ -114,14 +115,15 @@
           "note": "every claim in a script checked before it is reported",
           "agent": "script-writer"
         }
-      ]
+      ],
+      "accent": "#e3b031"
     },
     {
       "key": "social",
       "name": "Social",
-      "color": "#d946ef",
-      "color_light": "#e78cf5",
-      "color_wall": "#5a3868",
+      "color": "#ca54cf",
+      "color_light": "#ecc3ee",
+      "color_wall": "#6f2e72",
       "icon": "💬",
       "tagline": "posts · calendar · replies",
       "lead": "social-media-manager",
@@ -174,14 +176,15 @@
           "note": "personalised outreach to partners, sponsors and collaborators",
           "agent": "outreach-writer"
         }
-      ]
+      ],
+      "accent": "#cd51d5"
     },
     {
       "key": "creative",
       "name": "Creative",
-      "color": "#7c5cff",
-      "color_light": "#ae9aff",
-      "color_wall": "#46416f",
+      "color": "#7a69d1",
+      "color_light": "#d0caef",
+      "color_wall": "#433a73",
       "icon": "▶️",
       "tagline": "rough cuts · captions · thumbnails",
       "lead": "creative-director",
@@ -269,14 +272,15 @@
           "note": "every creative deliverable against the brand rules",
           "agent": "brand-checker"
         }
-      ]
+      ],
+      "accent": "#7269d4"
     },
     {
       "key": "analytics",
       "name": "Analytics",
-      "color": "#14b8a6",
-      "color_light": "#6dd3c8",
-      "color_wall": "#214c4e",
+      "color": "#40aa9c",
+      "color_light": "#bce1dc",
+      "color_wall": "#235e56",
       "icon": "📊",
       "tagline": "retention · reports · lessons",
       "lead": "analytics-lead",
@@ -324,14 +328,15 @@
           "note": "a goal turned into options, a recommendation and the first three steps",
           "agent": "strategist"
         }
-      ]
+      ],
+      "accent": "#07b594"
     },
     {
       "key": "shop",
       "name": "Shop",
-      "color": "#ef4444",
-      "color_light": "#f58b8b",
-      "color_wall": "#5d363c",
+      "color": "#d74961",
+      "color_light": "#f1bfc8",
+      "color_wall": "#762835",
       "icon": "🛍",
       "tagline": "listings · orders · support",
       "lead": "shop-manager",
@@ -380,14 +385,15 @@
           "note": "milestones, owners, dates, dependencies and risks",
           "agent": "project-manager"
         }
-      ]
+      ],
+      "accent": "#f6275b"
     },
     {
       "key": "dev",
       "name": "Dev",
-      "color": "#22c55e",
-      "color_light": "#76db9b",
-      "color_wall": "#26513d",
+      "color": "#48b467",
+      "color_light": "#bfe5ca",
+      "color_wall": "#286339",
       "icon": "<>",
       "tagline": "ships the code",
       "lead": "engineering-lead",
@@ -437,14 +443,15 @@
           "note": "a diff reviewed for bugs, risks and simplifications: PASS or FIX",
           "agent": "code-reviewer"
         }
-      ]
+      ],
+      "accent": "#28ad5e"
     },
     {
       "key": "inbox",
       "name": "Inbox",
-      "color": "#f97316",
-      "color_light": "#fba86f",
-      "color_wall": "#5f4030",
+      "color": "#d69155",
+      "color_light": "#f1d8c4",
+      "color_wall": "#76502f",
       "icon": "✉️",
       "tagline": "email · brand deals · quotes",
       "lead": "inbox-manager",
@@ -484,7 +491,8 @@
           "note": "scope, deliverables, price, timeline, next step",
           "agent": "proposal-writer"
         }
-      ]
+      ],
+      "accent": "#f69a4f"
     }
   ]
 }
