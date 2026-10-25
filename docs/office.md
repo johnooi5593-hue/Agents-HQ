@@ -30,7 +30,7 @@
 | 23 | `email-marketer` | Social | worker | Writes newsletters and email sequences with subject lines and preview text |
 | 24 | `outreach-writer` | Social | worker | Writes personalised outreach to partners, sponsors and collaborators |
 | 25 | `creative-director` | Creative | head | Head of Creative |
-| 26 | `clip-editor` | Creative | worker | Edits ONE raw clip from inbox/ into a short vertical video with burned-in captions, a cover image and notes (reel and pixel skills) |
+| 26 | `clip-editor` | Creative | worker | Edits ONE raw clip from inbox/ into a short vertical video with burned-in captions, a cover image and notes (yellow-serif by default, or reel; pixel for the cover) |
 | 27 | `brand-checker` | Creative | worker | Reviews every creative deliverable (edits, covers, copy, scripts) against the brand rules in the shared brain and lists exactly what must be fixed |
 | 28 | `thumbnail-designer` | Creative | worker | Picks the frame, the words and the placement for a cover image and makes it with the pixel skill |
 | 29 | `analytics-lead` | Analytics | head | Head of Analytics |

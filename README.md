@@ -20,7 +20,7 @@ Built from Bekhruz AI's "Build Your AI Team" videos: [I Built an AI Agent Team F
 | Creative | creative-director | clip-editor, brand-checker, thumbnail-designer |
 | Analytics | analytics-lead | data-analyst, strategist |
 
-Every agent is one file in `.claude/agents/` with its job, its team, its tools and its steps. The full org chart is in `docs/office.md`. Six skills in `.claude/skills/` (reel, pixel, quill, radar, relay, pulse) hold the creative know-how and their scripts; the agents that need one preload it.
+Every agent is one file in `.claude/agents/` with its job, its team, its tools and its steps. The full org chart is in `docs/office.md`. Seven skills in `.claude/skills/` (reel, yellow-serif, pixel, quill, radar, relay, pulse) hold the creative know-how and their scripts; the agents that need one preload it.
 
 **The app** (`python hq/server.py`, opens http://localhost:7331):
 
@@ -50,7 +50,7 @@ Agents-HQ/
 ├── docs/office.md             the org chart: every agent and its job
 ├── .claude/
 │   ├── agents/                31 agents, one file each (team and role in the frontmatter)
-│   ├── skills/                reel, pixel, quill, radar, relay, pulse (with their scripts)
+│   ├── skills/                reel, yellow-serif, pixel, quill, radar, relay, pulse (with their scripts)
 │   ├── commands/              /brief /standup /research /campaign /edit-clips /script /whats-next /post-copy /stats /teach /tasks /hire
 │   └── settings.json          what agents may do alone, what asks you, what is never allowed; the office hooks
 ├── .mcp.json                  the memory MCP server (the shared brain), started through hq/brain.js
@@ -118,6 +118,10 @@ Every push to `main` builds a new installer (`.github/workflows/windows-app.yml`
 Or just talk. Tell it about your company once (*"We sell X to Y. Our voice is Z."*) and the chief of staff saves it to the brain.
 
 Deliverables land in `work/<team>/<task>/` and `out/<clip>/`. Nothing is posted; you review and say OK.
+
+## Caption style: Yellow Serif Kinetic
+
+The default caption style (黄字重点衬线动态字幕, the `yellow-serif` skill): white heavy serif captions, key words in warm yellow `#FBC238`, and one motion per sentence (typing, pop, burst, shine, flash), with full-screen, darkened-speaker and torn-paper layouts and light-leak transitions. A long talk becomes two 45-60 s topics. Each gets a planning page (`plan.md`: original line, key words, motion, picture and notes) that you can approve before anything is rendered. Every render keeps editable captions (`edit.ass` for Aegisub, `edit.srt` for CapCut) beside the video. Speech-to-text handles Chinese and English. The fonts (Noto Serif SC and Ma Shan Zheng, both SIL OFL) download on first use. The full guide is `.claude/skills/yellow-serif/GUIDE.md`. Ask for "word-by-word captions" to get the older reel style.
 
 ## Host it, so your phone can reach it
 

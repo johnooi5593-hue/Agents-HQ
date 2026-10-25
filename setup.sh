@@ -15,6 +15,8 @@ else
   curl -L -o /tmp/whisper-tiny.en.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.en.tar.bz2
   tar xjf /tmp/whisper-tiny.en.tar.bz2 -C .claude/skills/reel/scripts/models
 fi
+# Yellow Serif Kinetic captions: download the two OFL fonts once (about 31 MB); not fatal when offline
+python3 .claude/skills/yellow-serif/scripts/fonts.py || echo "Note: the Yellow Serif fonts did not download; they will be fetched on first use, or a system font is used"
 mkdir -p inbox/radar inbox/stats out done approved brain
 [ -f brain/memory.jsonl ] || echo '{"type":"entity","name":"Brand rules","entityType":"style_guide","observations":[]}' > brain/memory.jsonl
 python3 hq/status.py

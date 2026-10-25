@@ -22,3 +22,7 @@ work/*
 !work/.gitkeep
 inbox/messages/*
 !inbox/messages/.gitkeep
+.claude/skills/yellow-serif/scripts/fonts/*
+!.claude/skills/yellow-serif/scripts/fonts/FONTS.md
+.claude/skills/yellow-serif/assets/overlays/*
+!.claude/skills/yellow-serif/assets/overlays/README.md

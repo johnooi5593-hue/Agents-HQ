@@ -18,7 +18,7 @@ Modelled on Bekhruz AI's "Build Your AI Team" series: the agent team, the 31-age
 | Creative | `creative-director` | `clip-editor`, `brand-checker`, `thumbnail-designer` |
 | Analytics | `analytics-lead` | `data-analyst`, `strategist` |
 
-The full org chart with every agent's job is `docs/office.md`. The skills in `.claude/skills/` (reel, pixel, quill, radar, relay, pulse) hold the creative know-how; the agents that need one preload it.
+The full org chart with every agent's job is `docs/office.md`. The skills in `.claude/skills/` (reel, pixel, quill, radar, relay, pulse, yellow-serif) hold the creative know-how; the agents that need one preload it. The owner's default caption style is **Yellow Serif Kinetic** (skill `yellow-serif`, guide in `.claude/skills/yellow-serif/GUIDE.md`); the older word-by-word captions (reel) only when the owner asks for them.
 
 ## How work flows
 1. **Route.** Read the request and the brain, decide which team owns it. A small single-skill task goes straight to the worker. Anything with several steps goes through the team head.

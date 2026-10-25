@@ -23,6 +23,10 @@ if subprocess.call([py, "-m", "pip", "install", "--quiet", "faster-whisper"]) ==
 else:
     print("faster-whisper did not install. Captions will not work until it does: python -m pip install faster-whisper")
 
+# Yellow Serif Kinetic captions: download the two OFL fonts once (about 31 MB); not fatal when offline
+if subprocess.call([py, os.path.join(".claude", "skills", "yellow-serif", "scripts", "fonts.py")]) != 0:
+    print("Note: the Yellow Serif fonts did not download; they will be fetched on first use, or a system font is used")
+
 for d in ("inbox/radar", "inbox/stats", "out", "done", "approved", "brain"):
     os.makedirs(d, exist_ok=True)
 if not os.path.isfile("brain/memory.jsonl"):

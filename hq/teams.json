@@ -262,6 +262,12 @@
           "skill": "reel"
         },
         {
+          "name": "yellow-serif-kinetic",
+          "note": "黄字 captions: white heavy serif, key words #FBC238, typing / pop / burst / shine / flash, planning page first",
+          "agent": "clip-editor",
+          "skill": "yellow-serif"
+        },
+        {
           "name": "thumbnail-maker",
           "note": "the frame, the words and the placement for the cover",
           "agent": "thumbnail-designer",
