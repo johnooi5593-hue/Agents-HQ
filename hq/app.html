@@ -81,6 +81,8 @@
   .toast { position: fixed; right: 20px; bottom: 90px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; max-width: 360px; box-shadow: 0 10px 30px rgba(0, 0, 0, .4); display: none; }
   .toast.show { display: block; } .toast.bad { border-color: var(--bad); }
   .empty { color: var(--muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
+  .office-wrap { width: 100%; display: flex; justify-content: center; background: #0b0d11; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 0; overflow: hidden; }
+  .office-wrap canvas { image-rendering: pixelated; max-width: 100%; }
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
     nav { grid-row: auto; flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px; }
@@ -93,7 +95,8 @@
 <div class="app">
   <nav>
     <div class="brand"><span class="dot"></span>Agents HQ</div>
-    <a class="item active" href="#desk" data-view="desk">Desk</a>
+    <a class="item active" href="#office" data-view="office">Office</a>
+    <a class="item" href="#desk" data-view="desk">Desk</a>
     <a class="item" href="#inbox" data-view="inbox">Inbox <span class="badge" id="n-inbox">0</span></a>
     <a class="item" href="#staff" data-view="staff">Staff</a>
     <a class="item" href="#work" data-view="work">Work <span class="badge" id="n-work">0</span></a>
@@ -104,7 +107,13 @@
   </nav>
 
   <main>
-    <section class="view active" id="view-desk">
+    <section class="view active" id="view-office">
+      <h1>Office</h1>
+      <p class="sub">Your team at work. A lit screen and a speech bubble mean that agent is on a task right now.</p>
+      <div class="office-wrap"><canvas id="office"></canvas></div>
+    </section>
+
+    <section class="view" id="view-desk">
       <h1>Desk</h1>
       <p class="sub">What is waiting, what is done, and the lead's latest reply.</p>
       <div class="cards">
@@ -187,6 +196,7 @@
   };
   const pending = {};            // tool_use id -> staff name, for the staff board
   const working = {};            // staff name -> task text
+  const finished = {};           // staff name -> time it last finished, for the office
   let currentRun = null, offset = 0, lastStatus = null, quietRun = false, seenRun = false;
 
   // navigation
@@ -195,7 +205,8 @@
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + view));
   };
   document.querySelectorAll("nav .item").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); location.hash = a.dataset.view; show(a.dataset.view); }));
-  show((location.hash || "#desk").slice(1));
+  show((location.hash || "#office").slice(1));
+  window.HQ = { working, finished, status: () => lastStatus };   // read by office.js
 
   // toast
   let toastTimer;
@@ -263,9 +274,9 @@
     } else if (ev.type === "tool_done") {
       const who = pending[ev.id];
       if (who && /background/i.test(ev.text || "")) log("staff", "… " + who + " is working in the background");   // stays lit until the lead's reply
-      else if (who) { delete pending[ev.id]; delete working[who]; renderStaff(); log("staff", "← " + who + (ev.is_error ? " (error)" : " done")); }
+      else if (who) { delete pending[ev.id]; delete working[who]; finished[who] = Date.now(); renderStaff(); log("staff", "← " + who + (ev.is_error ? " (error)" : " done")); }
     } else if (ev.type === "result") {
-      for (const k in working) delete working[k]; renderStaff();
+      for (const k in working) { finished[k] = Date.now(); delete working[k]; } renderStaff();
       const reply = ev.text || (ev.is_error ? "The lead hit an error. See the console." : "(no reply)");
       $("#reply").textContent = reply; $("#reply").className = "reply";
       const stats = ev.cost_usd != null ? `(${ev.turns} turns, ${(ev.duration_ms / 1000).toFixed(0)}s, $${ev.cost_usd.toFixed(3)})` : "";
@@ -324,5 +335,6 @@
   renderStaff(); refresh(); setInterval(refresh, 5000);
 })();
 </script>
+<script src="/office.js"></script>
 </body>
 </html>

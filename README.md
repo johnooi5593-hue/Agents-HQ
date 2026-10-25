@@ -2,9 +2,9 @@
 
 The headquarters of a small AI creative team that runs inside [Claude Code](https://claude.com/claude-code). Drop raw clips, comments and analytics into `inbox/`, and a lead agent puts the staff to work: clips get cut, captioned and covered in parallel, a checker reviews them against your brand rules, a scout turns comments into ideas, a scriptwriter writes in your voice, an analyst turns stats into lessons. A shared brain remembers your rules. Nothing is published without your OK.
 
-It comes as an app you open in your browser (the desk, the inbox, the staff board, the work shelf, the brain and a live console) and as a plain [Claude Code](https://claude.com/claude-code) folder you can drive from the terminal. Both run the same team.
+It comes as an app you open in your browser (a pixel-art office where you watch the team work, the desk, the inbox, the staff board, the work shelf, the brain and a live console) and as a plain [Claude Code](https://claude.com/claude-code) folder you can drive from the terminal. Both run the same team.
 
-![Agents HQ desk](hq/screenshot-desk.png)
+![Agents HQ office](hq/screenshot-office.png)
 
 Built from Bekhruz AI's video [**I Built an AI Agent Team From Scratch (Claude Code)**](https://youtu.be/-14NKNpWr1M) and the [ai-creative-team](https://github.com/bekhruztbx/ai-creative-team) repo behind it. The video (episode 4 of the "Build Your AI Team" series) builds a lead plus parallel sub-agents with a shared memory brain. Episode 6 later turned every agent into a skill. Agents HQ keeps both ideas:
 
@@ -35,6 +35,7 @@ Agents-HQ/
 ├── brain/memory.jsonl         brand rules, lessons, ideas
 ├── hq/server.py               the Agents HQ app: a local web server over the team (no dependencies)
 ├── hq/app.html                the app's screen
+├── hq/office.js               the pixel-art office, drawn in code
 ├── hq/status.py               one JSON line with the state of inbox, out, done and the brain
 ├── hq/brain.js                starts the memory server on brain/memory.jsonl, on any OS, whatever folder Claude Code was started from
 ├── inbox/                     raw clips; inbox/radar/ comments and notes; inbox/stats/ analytics CSVs
@@ -86,6 +87,7 @@ Or double-click `Open Agents HQ.command` (Mac) or `Open Agents HQ.bat` (Windows)
 
 | Screen | What you do there |
 |---|---|
+| **Office** | Your team as a pixel-art office: a desk per agent, lit screens and speech bubbles while they work, the brain, the inbox tray and the work shelf with live counts |
 | **Desk** | The numbers (clips waiting, work waiting for your OK, edited, brand rules) and the lead's latest reply |
 | **Inbox** | Drag raw clips, comment exports and analytics CSVs in |
 | **Staff** | The six agents; a green light means that agent is working right now |

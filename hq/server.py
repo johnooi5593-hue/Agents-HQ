@@ -313,6 +313,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/") if not PASSWORD or self.authed() else self.send_file(os.path.join(HERE, "login.html"))
         if path in ("/", "/index.html"):
             return self.guard(page=True) and self.send_file(os.path.join(HERE, "app.html"))
+        if path == "/office.js":
+            return self.guard() and self.send_file(os.path.join(HERE, "office.js"))
         if not self.guard():
             return
         if path == "/api/status":
