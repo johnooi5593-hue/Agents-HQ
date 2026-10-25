@@ -41,6 +41,15 @@ The buttons at the bottom (Standup, Edit clips, What's next, Stats, Script…, P
 
 **It updates itself.** Every time you open the app it pulls the newest Agents HQ from GitHub before starting (set `HQ_NO_UPDATE=1` to skip that).
 
+## How the office gets better
+
+The agents learn from every project, and share it across teams:
+
+- **Retro.** After you approve or correct work, `/retro` saves up to five specific lessons to the brain, tagged with the team they came from and the teams they help: `[Creative · for Scripts] Hooks under 8 words kept people watching longer`.
+- **Every agent reads the lessons before it works.** The team heads end each review with their lessons, so the next project starts from what the last one taught.
+- **Weekly coffee chat.** Every Monday the board gets a "Coffee chat" task. `/coffee-chat` has the eight team heads cross-review each other's lessons, adopt what helps them, and propose improvements. Changes to skills or agents still wait for your OK.
+- **You can see it.** In the office, idle agents stand up, grab coffee, take calls and walk to other departments. What they talk about in their speech bubbles are those real lessons, ideas and brand rules (`/api/chatter`). When real work arrives they hurry back to their desks.
+
 ## The floor plan
 
 ```
@@ -51,7 +60,7 @@ Agents-HQ/
 ├── .claude/
 │   ├── agents/                31 agents, one file each (team and role in the frontmatter)
 │   ├── skills/                reel, yellow-serif, pixel, quill, radar, relay, pulse (with their scripts)
-│   ├── commands/              /brief /standup /research /campaign /edit-clips /script /whats-next /post-copy /stats /teach /tasks /hire
+│   ├── commands/              /brief /standup /research /campaign /edit-clips /script /whats-next /post-copy /stats /teach /tasks /hire /retro /coffee-chat
 │   └── settings.json          what agents may do alone, what asks you, what is never allowed; the office hooks
 ├── .mcp.json                  the memory MCP server (the shared brain), started through hq/brain.js
 ├── brain/memory.jsonl         Company, Brand rules, Lessons, Ideas

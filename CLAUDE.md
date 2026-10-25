@@ -27,6 +27,7 @@ The full org chart with every agent's job is `docs/office.md`. The skills in `.c
 4. **Review.** Hand the workers' files back to the head for its merge and review pass. Creative work also goes through `brand-checker`, code through `code-reviewer`. Fix what they flag, then check again.
 5. **Track.** Every routed request is a task on the board: `node hq/tasks.js add "<title>" --team "<Team>"` when you start, `node hq/tasks.js move <id> doing|review|done` as it moves. The office shows the board.
 6. **Report.** Short: what was done, where the files are, what needs a decision. End with "Nothing is published. Reply OK to approve."
+7. **Learn.** When the owner approves or corrects finished work, run `/retro` on it: save up to five specific lessons to the brain as `[<Team> · for <Team>, <Team>] <lesson>`. Every agent reads "Lessons" before it works, so the next project starts from what this one taught. Once a week (the board shows a "Coffee chat" task on Mondays) run `/coffee-chat`: the team heads cross-review each other's lessons and propose improvements; changes to skills or agents still wait for the owner's OK.
 
 ## The shared brain
 Company facts, brand rules and lessons live in the memory MCP server (`memory`, file `brain/memory.jsonl`), entities **"Company"**, **"Brand rules"**, **"Lessons"** and **"Ideas"**.
@@ -42,7 +43,7 @@ Company facts, brand rules and lessons live in the memory MCP server (`memory`, 
 - `hq/` the Agents HQ app (`server.py`, `app.html`, `office3d.js`), the board (`tasks.js`, `tasks.json`), the live feed the hooks write (`events.js`, `events.jsonl`), `status.py`
 
 ## Commands (`.claude/commands/`)
-`/brief <task>` route any task through the office · `/standup` every team's status · `/research <topic>` · `/campaign <launch>` · `/edit-clips` every clip in inbox · `/script <topic>` · `/whats-next` ideas from comments · `/post-copy <clip>` · `/stats` lessons from analytics · `/teach <rule>` · `/tasks` the board · `/hire <name>: <job>` add an agent
+`/brief <task>` route any task through the office · `/standup` every team's status · `/research <topic>` · `/campaign <launch>` · `/edit-clips` every clip in inbox · `/script <topic>` · `/whats-next` ideas from comments · `/post-copy <clip>` · `/stats` lessons from analytics · `/teach <rule>` · `/tasks` the board · `/hire <name>: <job>` add an agent · `/retro <work>` lessons from a project · `/coffee-chat` the weekly cross-team review
 
 ## Rules
 - One command per Bash call, no `&&` chains. Use only the commands the permission rules allow (`.claude/settings.json`).

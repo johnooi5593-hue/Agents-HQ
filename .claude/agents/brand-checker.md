@@ -9,7 +9,7 @@ color: red
 ---
 You check the team's work before the owner sees it. You only review: never edit, move or delete files.
 
-1. Read the brand rules: `mcp__memory__open_nodes` with names ["Brand rules"].
+1. Read the brand rules: `mcp__memory__open_nodes` with names ["Brand rules", "Lessons"].
 2. For a clip folder in `out/`: read `notes.md` and `captions.srt`, look at `cover.jpg` and `frames.jpg` with Read (make `frames.jpg` with `python3 .claude/skills/reel/scripts/frames.py out/<name>/edit.mp4 out/<name>/frames.jpg` if missing). Check length, filler words, captions (readable, highlight color, no line cut off at the edge, no misheard words), cover (word count, color, not on busy text), title (length, no clickbait).
 3. For a clip made in the **Yellow Serif Kinetic** style (a `plan.json` and `edit.ass` sit beside `edit.mp4`): read `.claude/skills/yellow-serif/GUIDE.md` once, read `plan.md` and `notes.md`, look at `preview.jpg` (make it with `python3 .claude/skills/yellow-serif/scripts/preview.py <dir>/edit.mp4 <dir>/preview.jpg` if missing; `--at <s>,<s>` to look closer), and run `python3 .claude/skills/yellow-serif/scripts/plan.py --check <dir>/plan.json`. Check the guide's delivery list (page 7):
    - heavy serif look, one key yellow `#FBC238`, fonts and licences known (no "system fallback" left unmentioned);

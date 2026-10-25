@@ -56,6 +56,10 @@ A Claude Code sub-agent cannot start other sub-agents, so the head plans and the
 
 `hq/app.html` draws this chart as a 3D floor: the Brain in the middle, one room per team around it, one desk and character per agent; heads wear a hat. Characters light up while their agent runs. The hooks in `.claude/settings.json` append every agent start and stop to `hq/events.jsonl` (`hq/events.js`), the app reads it. `hq/build.js` turns the agent files into `hq/agents.json`, the list the office is built from; run it after `/hire`.
 
+## Learning
+
+Every agent reads "Lessons" before it works. Team heads end their reviews with lessons tagged `[<Team> · for <Teams>]`; `/retro` saves them after the owner approves or corrects work, and `/coffee-chat` (a board task every Monday) has the heads cross-review each other's lessons. The office shows those lessons as the tips agents share when they visit each other.
+
 ## Adding an agent
 
 `/hire <name>: <job>` writes the file and rebuilds the office. Keep one job per agent, say when to use it in the description (that is how the chief of staff picks it), put `team:` and `role:` in the frontmatter so the office knows where it sits, and give it only the tools it needs.

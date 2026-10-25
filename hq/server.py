@@ -389,7 +389,63 @@ def brain_payload():
     return brain
 
 
+LESSON_TAG = re.compile(r"^\[\s*(?:from\s+)?([^\]·|>→]+?)\s*(?:(?:·|\||→|->|>)\s*(?:for\s+)?([^\]]+?))?\s*\]\s*(.+)$", re.I)
+
+
+def parse_lesson(text):
+    """'[Creative · for Scripts, Social] Hooks under 8 words kept viewers longer' -> team, for_teams, text.
+    Untagged lessons belong to the whole office."""
+    m = LESSON_TAG.match(str(text).strip())
+    if not m:
+        return {"team": "", "for": [], "text": str(text).strip()}
+    others = [t.strip() for t in re.split(r"[,&/]| and ", m.group(2) or "") if t.strip()]
+    return {"team": m.group(1).strip(), "for": others, "text": m.group(3).strip()}
+
+
+def chatter_payload():
+    """GET /api/chatter: what the office talks about over coffee, all from real data. Lessons (with the team they came
+    from and the teams they help), ideas, brand rules and today's finished work. The office turns these into the
+    speech bubbles of agents who visit each other; an empty brain gives friendly small talk only."""
+    brain, tasks = brain_entities(), load_tasks()["tasks"]
+    keys = {t["name"].lower(): t["key"] for t in teams_payload()}
+    key = lambda name: keys.get((name or "").lower(), "")
+    topics = []
+    for raw in brain.get("Lessons", [])[-40:]:
+        l = parse_lesson(raw)
+        topics.append({"kind": "lesson", "team": l["team"], "teamKey": key(l["team"]), "for": l["for"],
+                       "forKeys": [key(t) for t in l["for"] if key(t)], "text": l["text"]})
+    for raw in brain.get("Ideas", [])[-15:]:
+        topics.append({"kind": "idea", "team": "", "teamKey": "", "for": [], "forKeys": [], "text": str(raw)})
+    for raw in brain.get("Brand rules", [])[-12:]:
+        topics.append({"kind": "rule", "team": "", "teamKey": "", "for": [], "forKeys": [], "text": str(raw)})
+    for t in tasks:
+        if t.get("status") == "done" and is_today(t.get("done_at")):
+            topics.append({"kind": "done", "team": t.get("team", ""), "teamKey": key(t.get("team")), "for": [], "forKeys": [], "text": t.get("title", "")})
+    return {"topics": topics, "lessons": sum(1 for x in topics if x["kind"] == "lesson")}
+
+
+def ensure_coffee_chat(today=None):
+    """Every Monday the board gets a "Coffee chat" meeting (the weekly cross-team review, /coffee-chat), once per week.
+    Set HQ_COFFEE_CHAT=0 to stop it."""
+    if os.environ.get("HQ_COFFEE_CHAT", "1") in ("0", "false"):
+        return
+    today = today or datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    with TASK_LOCK:
+        db = load_tasks()
+        for t in db["tasks"]:
+            if t.get("title") == "Coffee chat" and (t.get("date") or "") >= monday.isoformat():
+                return
+        nid = "t" + str(max([0] + [int(t["id"][1:]) for t in db["tasks"] if str(t.get("id", "t"))[1:].isdigit()]) + 1)
+        db["tasks"].append(normalize_task({"id": nid, "title": "Coffee chat", "team": "The Brain", "agent": "", "status": "todo", "kind": "meeting",
+                                           "note": "Weekly cross-team review of lessons. Press Run, or type /coffee-chat.",
+                                           "subtitle": "every team head · share what worked", "progress": None,
+                                           "date": monday.isoformat(), "time": "10:00", "created": now_iso(), "updated": now_iso(), "done_at": None}))
+        save_tasks(db)
+
+
 def status_payload():
+    ensure_coffee_chat()
     s = collect()
     ag, running, tasks = agents()["agents"], events()["running"], load_tasks()["tasks"]
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
@@ -808,6 +864,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(cal) if cal else self.send_json({"error": "month must be YYYY-MM"}, 400)
         if path == "/api/brain":
             return self.send_json(brain_payload())
+        if path == "/api/chatter":
+            return self.send_json(chatter_payload())
         if path == "/api/brain/notes":
             return self.send_json({"notes": brain_notes()})
         if path == "/api/runs":
