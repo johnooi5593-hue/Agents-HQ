@@ -31,17 +31,18 @@ Agents-HQ/
 │   │   └── pixel/scripts/     thumbnail.py
 │   ├── commands/              the desk (/standup, /edit-clips, /script, /whats-next, /post-copy, /stats, /teach)
 │   └── settings.json          what the team may do alone, what it must ask, what it may never do
-├── .mcp.json                  the memory MCP server (the shared brain), started through hq/brain.sh
+├── .mcp.json                  the memory MCP server (the shared brain), started through hq/brain.js
 ├── brain/memory.jsonl         brand rules, lessons, ideas
 ├── hq/server.py               the Agents HQ app: a local web server over the team (no dependencies)
 ├── hq/app.html                the app's screen
 ├── hq/status.py               one JSON line with the state of inbox, out, done and the brain
-├── hq/brain.sh                starts the memory server on brain/memory.jsonl, whatever folder Claude Code was started from
+├── hq/brain.js                starts the memory server on brain/memory.jsonl, on any OS, whatever folder Claude Code was started from
 ├── inbox/                     raw clips; inbox/radar/ comments and notes; inbox/stats/ analytics CSVs
 ├── out/                       finished work waiting for your OK
 ├── approved/                  what you approved in the app, ready for you to publish
 ├── done/                      raw clips whose edit is finished
-├── setup.sh                   one-time setup
+├── setup.sh                   one-time setup (macOS, Linux)
+├── setup.py                   the same setup for any OS, including Windows
 ├── deploy/                    hosted version: Dockerfile, entrypoint, docker-compose with HTTPS (Caddy), .env.example
 └── fly.toml                   hosted version on Fly.io
 ```
@@ -68,6 +69,8 @@ git clone https://github.com/johnooi5593-hue/Agents-HQ
 cd Agents-HQ
 bash setup.sh
 ```
+
+On Windows, run `python setup.py` instead of `bash setup.sh`. Both do the same thing.
 
 `setup.sh` installs numpy, pillow and a local speech-to-text engine (faster-whisper, or sherpa-onnx Whisper as a fallback), creates the folders and prints the HQ status. Speech-to-text runs on your machine; nothing is uploaded.
 

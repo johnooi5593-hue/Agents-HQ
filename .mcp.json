@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "memory": {
-      "command": "bash",
-      "args": ["${CLAUDE_PROJECT_DIR:-.}/hq/brain.sh"]
+      "command": "node",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/hq/brain.js"]
     }
   }
 }
