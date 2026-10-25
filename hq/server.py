@@ -38,7 +38,93 @@ CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,120}$")
 UPLOAD_DIRS = {"clips": "inbox", "radar": os.path.join("inbox", "radar"), "stats": os.path.join("inbox", "stats")}
 UPLOAD_EXT = {"clips": CLIP_EXT, "radar": {".txt", ".md", ".csv", ".json"}, "stats": {".csv"}}
-STAFF = ["clip-editor", "brand-checker", "scriptwriter", "scout", "copywriter", "analyst"]
+TEAM_ORDER = ["Research", "Inbox", "Scripts", "Dev", "Shop", "Social", "Creative", "Analytics"]
+EVENTS = os.path.join(HERE, "events.jsonl")
+TASKS = os.path.join(HERE, "tasks.json")
+STATUSES = ("todo", "doing", "review", "done")
+
+
+def agents():
+    """Every agent in .claude/agents/*.md: frontmatter fields the office needs."""
+    out = []
+    folder = os.path.join(ROOT, ".claude", "agents")
+    for fn in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        if not fn.endswith(".md"):
+            continue
+        try:
+            text = open(os.path.join(folder, fn), encoding="utf-8").read()
+        except OSError:
+            continue
+        m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+        if not m:
+            continue
+        fm, skills = {}, []
+        for line in m.group(1).splitlines():
+            if line.startswith("  - "):
+                skills.append(line[4:].strip())
+            elif ":" in line and not line.startswith(" "):
+                k, _, v = line.partition(":")
+                fm[k.strip()] = v.strip()
+        out.append({"name": fm.get("name", fn[:-3]), "team": fm.get("team", "Office"), "role": fm.get("role", "worker"), "model": fm.get("model", ""),
+                    "description": fm.get("description", ""), "tools": [t.strip() for t in fm.get("tools", "").split(",") if t.strip()], "skills": skills, "color": fm.get("color", "")})
+    teams = [t for t in TEAM_ORDER if any(a["team"] == t for a in out)] + sorted({a["team"] for a in out} - set(TEAM_ORDER))
+    return {"agents": out, "teams": teams}
+
+
+def events(after=0):
+    """The hook feed: events after line `after`, and which agents are running now (started, not stopped)."""
+    lines = []
+    try:
+        with open(EVENTS, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    lines.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    open_ids, running = {}, {}
+    cutoff = time.time() * 1000 - 6 * 3600 * 1000           # a start older than six hours without a stop is a crash, not a run
+    for e in lines:
+        if e.get("event") == "start" and e.get("ts", 0) > cutoff:
+            open_ids[e.get("id") or e.get("agent")] = e.get("agent")
+        elif e.get("event") == "stop":
+            open_ids.pop(e.get("id") or e.get("agent"), None)
+    for name in open_ids.values():
+        running[name] = running.get(name, 0) + 1
+    return {"events": lines[after:], "offset": after, "total": len(lines), "running": running}
+
+
+def load_tasks():
+    try:
+        with open(TASKS, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"tasks": []}
+
+
+def save_tasks(db):
+    with open(TASKS, "w", encoding="utf-8") as f:
+        json.dump(db, f, indent=2)
+        f.write("\n")
+
+
+def auto_update():
+    """Pull the newest Agents HQ from GitHub before starting, so the app keeps itself up to date."""
+    if os.environ.get("HQ_NO_UPDATE") or not os.path.isdir(os.path.join(ROOT, ".git")):
+        return
+    try:
+        before = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip()
+        p = subprocess.run(["git", "pull", "--ff-only", "--quiet"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        after = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip()
+        if p.returncode != 0:
+            print("update check skipped:", (p.stderr or p.stdout).strip().splitlines()[-1] if (p.stderr or p.stdout).strip() else "git pull failed")
+        elif before != after:
+            print(f"Agents HQ updated {before} -> {after}")
+        else:
+            print(f"Agents HQ is up to date ({after})")
+    except (OSError, subprocess.SubprocessError) as e:
+        print("update check skipped:", e)
 
 
 def allow_list():
@@ -313,14 +399,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/") if not PASSWORD or self.authed() else self.send_file(os.path.join(HERE, "login.html"))
         if path in ("/", "/index.html"):
             return self.guard(page=True) and self.send_file(os.path.join(HERE, "app.html"))
-        if path == "/office.js":
-            return self.guard() and self.send_file(os.path.join(HERE, "office.js"))
         if not self.guard():
             return
         if path == "/api/status":
             s = collect()
-            s["desk"], s["staff"], s["auth"] = desk.state(), STAFF, bool(PASSWORD)
+            s["desk"], s["auth"], s["running"] = desk.state(), bool(PASSWORD), events()["running"]
+            s["tasks"] = load_tasks()["tasks"]
             return self.send_json(s)
+        if path == "/api/agents":
+            return self.send_json(agents())
+        if path == "/api/events":
+            return self.send_json(events(int(qs.get("after", ["0"])[0])))
+        if path == "/api/tasks":
+            return self.send_json(load_tasks())
+        if path in ("/office3d.js", "/vendor/three.min.js"):
+            return self.send_file(os.path.join(HERE, path.lstrip("/")))
         if path == "/api/brain":
             return self.send_json(brain_entities())
         if path == "/api/runs":
@@ -368,6 +461,25 @@ class Handler(BaseHTTPRequestHandler):
             if not run:
                 return self.send_json({"error": "the lead is still working on the previous message"}, 409)
             return self.send_json(run.summary(), 202)
+        if path == "/api/tasks":
+            body, db = self.read_json(), load_tasks()
+            action = body.get("action")
+            if action == "add" and (body.get("title") or "").strip():
+                nid = "t" + str(max([0] + [int(t["id"][1:]) for t in db["tasks"] if t.get("id", "t")[1:].isdigit()]) + 1)
+                task = {"id": nid, "title": body["title"].strip()[:200], "team": (body.get("team") or "")[:40], "agent": (body.get("agent") or "")[:60],
+                        "status": body.get("status") if body.get("status") in STATUSES else "todo", "note": (body.get("note") or "")[:500],
+                        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                db["tasks"].append(task); save_tasks(db)
+                return self.send_json({"added": task}, 201)
+            if action == "move":
+                for t in db["tasks"]:
+                    if t.get("id") == body.get("id") and body.get("status") in STATUSES:
+                        t["status"], t["updated"] = body["status"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()); save_tasks(db)
+                        return self.send_json({"moved": t})
+            if action == "remove":
+                n = len(db["tasks"]); db["tasks"] = [t for t in db["tasks"] if t.get("id") != body.get("id")]; save_tasks(db)
+                return self.send_json({"removed": n - len(db["tasks"])})
+            return self.send_json({"error": "action: add (title, team), move (id, status) or remove (id)"}, 400)
         if path == "/api/approve":
             name = self.read_json().get("name") or ""
             src = safe_join(os.path.join(ROOT, "out"), name)
@@ -412,6 +524,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    auto_update()
     if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)

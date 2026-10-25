@@ -16,3 +16,9 @@ approved/
 __pycache__/
 .env
 deploy/.env
+hq/events.jsonl
+hq/tasks.json
+work/*
+!work/.gitkeep
+inbox/messages/*
+!inbox/messages/.gitkeep

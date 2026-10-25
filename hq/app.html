@@ -81,9 +81,27 @@
   .toast { position: fixed; right: 20px; bottom: 90px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; max-width: 360px; box-shadow: 0 10px 30px rgba(0, 0, 0, .4); display: none; }
   .toast.show { display: block; } .toast.bad { border-color: var(--bad); }
   .empty { color: var(--muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
-  .office-wrap { width: 100%; display: flex; justify-content: center; background: #0b0d11; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 0; overflow: hidden; }
-  .office-wrap canvas { image-rendering: pixelated; max-width: 100%; }
+  .office-top { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .office-counter { font-weight: 700; font-size: 16px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+  .office-counter.live { border-color: var(--ok); color: var(--ok); }
+  .chips { display: flex; gap: 8px; } .chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+  .chip.opus { border-color: rgba(255, 212, 0, .5); color: var(--accent); } .chip.sonnet { border-color: rgba(96, 165, 250, .5); color: var(--blue); }
+  .office-wrap { position: relative; width: 100%; background: #0b0d11; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  #office3d canvas { display: block; width: 100% !important; }
+  .agent-card { position: absolute; top: 14px; right: 14px; width: 300px; max-width: calc(100% - 28px); background: rgba(23, 26, 33, .96); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; font-size: 14px; }
+  .agent-card-head { display: flex; align-items: center; gap: 10px; } .agent-card-head strong { flex: 1; } .agent-card-meta { color: var(--muted); font-size: 13px; margin: 4px 0 8px; }
+  .agent-card p { margin: 0 0 8px; } .agent-card-task { color: var(--ok); } .agent-card-row { color: var(--muted); font-size: 12px; margin-top: 4px; word-break: break-word; }
+  .minimap { position: absolute; right: 14px; bottom: 14px; width: 120px; height: 120px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+  .office-hint { position: absolute; left: 14px; bottom: 14px; color: var(--muted); font-size: 12px; background: rgba(15, 17, 21, .7); padding: 4px 8px; border-radius: 6px; max-width: calc(100% - 160px); }
+  .room-links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; } .room-links button { font-size: 13px; }
+  .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; min-height: 120px; }
+  .col h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .task { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 14px; }
+  .task .t-meta { color: var(--muted); font-size: 12px; margin: 4px 0 6px; } .task .t-actions { display: flex; gap: 6px; } .task .t-actions button { padding: 2px 8px; font-size: 12px; }
+  .team-block { margin-bottom: 18px; } .team-block h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; } .team-block .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   @media (max-width: 760px) {
+    .minimap { width: 80px; height: 80px; } .office-hint { display: none; } .agent-card { width: 240px; font-size: 13px; }
     .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
     nav { grid-row: auto; flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px; }
     nav .brand { width: 100%; padding-bottom: 6px; } nav .foot, nav .lead { display: none; }
@@ -96,6 +114,7 @@
   <nav>
     <div class="brand"><span class="dot"></span>Agents HQ</div>
     <a class="item active" href="#office" data-view="office">Office</a>
+    <a class="item" href="#tasks" data-view="tasks">Tasks <span class="badge" id="n-tasks">0</span></a>
     <a class="item" href="#desk" data-view="desk">Desk</a>
     <a class="item" href="#inbox" data-view="inbox">Inbox <span class="badge" id="n-inbox">0</span></a>
     <a class="item" href="#staff" data-view="staff">Staff</a>
@@ -108,9 +127,27 @@
 
   <main>
     <section class="view active" id="view-office">
-      <h1>Office</h1>
-      <p class="sub">Your team at work. A lit screen and a speech bubble mean that agent is on a task right now.</p>
-      <div class="office-wrap"><canvas id="office"></canvas></div>
+      <div class="office-top">
+        <div><h1 style="margin:0">Agents HQ</h1><div class="sub" style="margin:0">The Brain in the middle, one room per team, one desk per agent.</div></div>
+        <div class="office-counter" id="office-counter">… agents</div>
+        <div class="chips"><span class="chip opus">Opus: team heads</span><span class="chip sonnet">Sonnet: workers</span></div>
+      </div>
+      <div class="office-wrap" id="office-wrap">
+        <div id="office3d"></div>
+        <div class="agent-card" id="agent-card" hidden></div>
+        <canvas class="minimap" id="minimap" width="150" height="150"></canvas>
+        <div class="office-hint">drag to orbit · right-drag to pan · wheel to zoom · click a character or a room · keys 1-8 rooms, 0 overview</div>
+      </div>
+      <div class="room-links" id="room-links"></div>
+    </section>
+
+    <section class="view" id="view-tasks">
+      <h1>Tasks</h1>
+      <p class="sub">The board the chief of staff keeps. Add a task here and tell the lead "run t3", or route it with the message box below.</p>
+      <form id="task-add" class="row" style="margin-bottom:16px"><input type="text" id="task-title" placeholder="New task, for example: write the listing for the new hoodie" style="flex:1"><select id="task-team"></select><button class="primary" type="submit">Add</button></form>
+      <div class="board" id="board"></div>
+      <div class="panel" style="margin-top:18px"><h2>Running now</h2><div id="running-now" class="sub" style="margin:0">nobody</div></div>
+      <div class="panel"><h2>Live feed</h2><div class="console" id="feed" style="min-height:80px;max-height:220px"></div></div>
     </section>
 
     <section class="view" id="view-desk">
@@ -141,7 +178,7 @@
 
     <section class="view" id="view-staff">
       <h1>Staff</h1>
-      <p class="sub">Six agents, each with one job. A green light means that agent is working right now.</p>
+      <p class="sub">31 agents in 8 teams. Heads plan, merge and review; workers do one job each. A green light means that agent is working right now.</p>
       <div class="staff" id="staff"></div>
     </section>
 
@@ -186,14 +223,8 @@
 <script>
 (() => {
   const $ = (s) => document.querySelector(s);
-  const ROLES = {
-    "clip-editor": "one raw clip in, a captioned vertical edit and cover out",
-    "brand-checker": "reviews every edit against the brand rules",
-    "scriptwriter": "scripts and hooks in your voice",
-    "scout": "comments in, a ranked shortlist of ideas out",
-    "copywriter": "titles, descriptions, captions, pinned comment",
-    "analyst": "analytics in, lessons for the team out",
-  };
+  const TEAM_HEX = { Research: "#60a5fa", Inbox: "#fb923c", Scripts: "#22d3ee", Dev: "#4ade80", Shop: "#ffd400", Social: "#f472b6", Creative: "#c084fc", Analytics: "#f87171" };
+  let AGENTS = { agents: [], teams: [] };
   const pending = {};            // tool_use id -> staff name, for the staff board
   const working = {};            // staff name -> task text
   const finished = {};           // staff name -> time it last finished, for the office
@@ -245,9 +276,29 @@
     $("#work-out").innerHTML = out.length ? out.map(([n, f]) => jobCard("out", n, f)).join("") : `<div class="empty">Nothing waiting. Drop a clip in the inbox and press Edit clips.</div>`;
     $("#work-approved").innerHTML = ap.length ? ap.map(([n, f]) => jobCard("approved", n, f)).join("") : `<div class="empty">Nothing approved yet.</div>`;
   };
+  const isRunning = (n) => !!(working[n] || (lastStatus && lastStatus.running && lastStatus.running[n]));
   const renderStaff = () => {
-    const names = (lastStatus && lastStatus.staff) || Object.keys(ROLES);
-    $("#staff").innerHTML = names.map((n) => `<div class="member ${working[n] ? "working" : ""}"><span class="state"></span><div class="name">${esc(n)}</div><div class="role">${esc(ROLES[n] || "")}</div><div class="task">${esc(working[n] || "")}</div></div>`).join("");
+    $("#staff").innerHTML = AGENTS.teams.map((t) => `<div class="team-block"><h2><span class="swatch" style="background:${TEAM_HEX[t] || "#8b93a7"}"></span>${esc(t)}</h2><div class="staff">` +
+      AGENTS.agents.filter((a) => a.team === t).map((a) => `<div class="member ${isRunning(a.name) ? "working" : ""}"><span class="state"></span><div class="name">${esc(a.name)}${a.role === "head" ? ' <span class="tag">head</span>' : ""}</div><div class="role">${esc(a.description.split(". ")[0])}</div><div class="task">${esc(working[a.name] || (isRunning(a.name) ? "working" : ""))}</div></div>`).join("") + `</div></div>`).join("");
+    const links = $("#room-links"); if (links && !links.children.length && AGENTS.teams.length) links.innerHTML = `<button data-room="">Overview</button>` + AGENTS.teams.map((t, i) => `<button data-room="${esc(t)}">${i + 1} · ${esc(t)}</button>`).join("");
+    const sel = $("#task-team"); if (sel && !sel.children.length && AGENTS.teams.length) sel.innerHTML = `<option value="">Auto</option>` + AGENTS.teams.map((t) => `<option>${esc(t)}</option>`).join("");
+  };
+  const renderTasks = (tasks) => {
+    const cols = ["todo", "doing", "review", "done"], names = { todo: "To do", doing: "Doing", review: "Review (your OK)", done: "Done" };
+    $("#n-tasks").textContent = tasks.filter((t) => t.status === "review").length; $("#n-tasks").className = "badge" + (tasks.some((t) => t.status === "review") ? " hot" : "");
+    $("#board").innerHTML = cols.map((c, i) => `<div class="col"><h3>${names[c]} · ${tasks.filter((t) => t.status === c).length}</h3>` + tasks.filter((t) => t.status === c).map((t) => `<div class="task"><div>${esc(t.title)}</div><div class="t-meta">${esc(t.id)}${t.team ? " · " + esc(t.team) : ""}${t.agent ? " · " + esc(t.agent) : ""}${t.note ? "<br>" + esc(t.note) : ""}</div><div class="t-actions">${i > 0 ? `<button data-move="${t.id}:${cols[i - 1]}">←</button>` : ""}${i < 3 ? `<button data-move="${t.id}:${cols[i + 1]}">→</button>` : ""}${c !== "done" ? `<button data-run="${t.id}">Run</button>` : ""}<button data-remove="${t.id}">✕</button></div></div>`).join("") + `</div>`).join("");
+    const run = Object.entries(lastStatus && lastStatus.running || {}).filter(([, v]) => v > 0).map(([k]) => k).concat(Object.keys(working).filter((k) => !(lastStatus && lastStatus.running && lastStatus.running[k])));
+    $("#running-now").textContent = run.length ? run.join(", ") : "nobody";
+  };
+  let feedOffset = 0;
+  const pollFeed = async () => {
+    try {
+      const r = await fetch(`/api/events?after=${feedOffset}`).then((x) => x.json());
+      const feed = $("#feed");
+      for (const e of r.events) { const d = document.createElement("div"); d.className = "ev " + (e.event === "start" ? "staff" : "system"); d.textContent = `${new Date(e.ts).toLocaleTimeString()}  ${e.event === "start" ? "→" : "←"} ${e.agent}`; feed.appendChild(d); }
+      if (r.events.length) feed.scrollTop = feed.scrollHeight;
+      feedOffset = r.total;
+    } catch (e) {}
   };
   const renderBrain = (b) => {
     const order = ["Brand rules", "Lessons", "Ideas"], names = [...order.filter((k) => k in b), ...Object.keys(b).filter((k) => !order.includes(k))];
@@ -256,7 +307,7 @@
   const refresh = async () => {
     try {
       const [s, b] = await Promise.all([fetch("/api/status").then((r) => r.json()), fetch("/api/brain").then((r) => r.json())]);
-      renderStatus(s); renderBrain(b);
+      renderStatus(s); renderBrain(b); renderTasks(s.tasks || []); pollFeed();
       if (s.desk.current && s.desk.current !== currentRun && s.desk.busy) attach(s.desk.current);
       else if (!seenRun && !currentRun && s.desk.runs.length) attach(s.desk.runs[s.desk.runs.length - 1].id, true);   // show the last reply on load
     } catch (e) { $("#lead-text").textContent = "app not reachable"; }
@@ -332,9 +383,24 @@
     const j = await r.json(); toast(r.ok ? `Approved ${name}. It is in approved/ for you to publish.` : j.error, !r.ok); refresh();
   };
 
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.room !== undefined) { b.dataset.room ? window.HQ_OFFICE && window.HQ_OFFICE.flyTo(b.dataset.room) : window.HQ_OFFICE && window.HQ_OFFICE.overview(); }
+    if (b.dataset.move) { const [id, status] = b.dataset.move.split(":"); fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "move", id, status }) }).then(refresh); }
+    if (b.dataset.remove) fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove", id: b.dataset.remove }) }).then(refresh);
+    if (b.dataset.run) { const t = (lastStatus.tasks || []).find((x) => x.id === b.dataset.run); if (t) send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); }
+  });
+  $("#task-add").addEventListener("submit", async (e) => {
+    e.preventDefault(); const title = $("#task-title").value.trim(); if (!title) return;
+    await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "add", title, team: $("#task-team").value }) });
+    $("#task-title").value = ""; refresh(); toast("Added to the board. Press Run on it to put the team to work.");
+  });
+  fetch("/api/agents").then((r) => r.json()).then((a) => { AGENTS = a; renderStaff(); });
   renderStaff(); refresh(); setInterval(refresh, 5000);
+  document.querySelectorAll("nav .item").forEach((a) => a.addEventListener("click", () => { if (a.dataset.view === "office" && window.HQ_OFFICE) setTimeout(window.HQ_OFFICE.resize, 50); }));
 })();
 </script>
-<script src="/office.js"></script>
+<script src="/vendor/three.min.js"></script>
+<script src="/office3d.js"></script>
 </body>
 </html>

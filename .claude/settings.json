@@ -3,17 +3,26 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(python3 hq/status.py:*)",
+      "Bash(node hq/tasks.js:*)",
       "Bash(ffprobe:*)",
       "Bash(python3 .claude/skills/reel/scripts/cut.py:*)",
       "Bash(python3 .claude/skills/reel/scripts/captions.py:*)",
       "Bash(python3 .claude/skills/reel/scripts/frames.py:*)",
       "Bash(python3 .claude/skills/pixel/scripts/thumbnail.py:*)",
       "Bash(mkdir -p out/:*)",
+      "Bash(mkdir -p work/:*)",
       "Bash(mv inbox/*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
       "Read",
       "Edit(out/**)",
       "Edit(done/**)",
+      "Edit(work/**)",
       "Write(out/**)",
+      "Write(work/**)",
+      "WebSearch",
+      "WebFetch",
       "mcp__memory",
       "Skill",
       "Agent"
@@ -22,14 +31,24 @@
       "Bash(git push:*)",
       "Edit(.claude/**)",
       "Edit(CLAUDE.md)",
-      "Edit(brain/**)"
+      "Edit(brain/**)",
+      "Edit(hq/**)"
     ],
     "deny": [
       "Bash(rm:*)",
       "Bash(curl:*)",
       "Bash(wget:*)",
+      "Bash(git push --force:*)",
       "Read(.env)"
     ]
   },
-  "enableAllProjectMcpServers": true
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "SubagentStart": [
+      { "hooks": [ { "type": "command", "command": "node hq/events.js start" } ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "node hq/events.js stop" } ] }
+    ]
+  }
 }
