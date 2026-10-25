@@ -11,11 +11,11 @@ py = sys.executable
 if sys.version_info < (3, 10):
     sys.exit("Python 3.10 or newer is needed. Install it from https://www.python.org/downloads/")
 if not shutil.which("ffmpeg"):
-    sys.exit("Install ffmpeg first (Windows: winget install -e --id Gyan.FFmpeg, then open a new window; macOS: brew install ffmpeg)")
+    print("Note: ffmpeg is not installed. Cutting and captioning clips needs it (Windows: winget install -e --id Gyan.FFmpeg, then open a new window; macOS: brew install ffmpeg)")
 if not shutil.which("npx"):
     sys.exit("Install Node.js 18+ first (it runs the shared-brain memory server): https://nodejs.org")
 if not shutil.which("claude"):
-    print("Note: Claude Code is not on PATH yet. Install it with: npm install -g @anthropic-ai/claude-code")
+    print("Note: Claude Code is not on PATH yet. Install it: Windows PowerShell: irm https://claude.ai/install.ps1 | iex   macOS/Linux: curl -fsSL https://claude.ai/install.sh | bash")
 
 subprocess.check_call([py, "-m", "pip", "install", "--quiet", "numpy", "pillow"])
 if subprocess.call([py, "-m", "pip", "install", "--quiet", "faster-whisper"]) == 0:
