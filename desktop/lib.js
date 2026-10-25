@@ -399,15 +399,174 @@ async function waitForHttp(url, opts = {}) {
   return false;
 }
 
+// ---------------------------------------------------------------- phone access
+
+// the engine settings phone access controls; anything the user's own environment has for them is dropped first,
+// so a stray HQ_HOST or HQ_TRUST_PROXY on the PC can never open the office by accident
+const PHONE_ENV_KEYS = ["HQ_HOST", "HQ_PASSWORD", "HQ_SECRET", "HQ_LOCAL_TRUST", "HQ_TRUST_PROXY"];
+const PHONE_MIN_PASSWORD = 8;
+const REDACTED = "********";
+
+/** True for an address in Tailscale's range, 100.64.0.0/10 (100.64.0.0 to 100.127.255.255). */
+function isTailscaleIp(ip) {
+  const m = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || ""));
+  return !!m && +m[1] >= 64 && +m[1] <= 127 && +m[2] <= 255 && +m[3] <= 255;
+}
+
+/**
+ * The addresses a phone can type, from an os.networkInterfaces() object: every IPv4 that is not internal and not
+ * link-local (169.254.x.x, what Windows gives an adapter with no network), as http://<ip>:<port>.
+ * Returns [{ ip, url, iface, tailscale, label }] with the Tailscale ones first, each address once.
+ */
+function phoneAddresses(ifaces, port) {
+  const out = [];
+  const seen = new Set();
+  for (const [iface, list] of Object.entries(ifaces || {})) {
+    for (const a of Array.isArray(list) ? list : []) {
+      if (!a || a.internal) continue;
+      const v4 = a.family === "IPv4" || a.family === 4;       // Node 18.0-18.3 reported the family as a number
+      if (!v4 || !/^\d{1,3}(\.\d{1,3}){3}$/.test(a.address || "")) continue;
+      if (/^169\.254\./.test(a.address) || /^127\./.test(a.address) || seen.has(a.address)) continue;
+      seen.add(a.address);
+      const tailscale = isTailscaleIp(a.address) || /tailscale/i.test(iface);
+      out.push({ ip: a.address, url: `http://${a.address}:${port}`, iface, tailscale, label: tailscale ? "works anywhere (Tailscale)" : "same Wi-Fi only" });
+    }
+  }
+  return out.sort((x, y) => (y.tailscale - x.tailscale));
+}
+
+// short, common words that are easy to type on a phone keyboard (no look-alikes, no capitals)
+const PASSWORD_WORDS = (
+  "acorn amber anchor apple arrow aspen autumn badge bagel bamboo banjo basil beacon berry bison blossom breeze brick " +
+  "bridge bronze bubble cabin cactus camel candle canoe canyon carbon carrot castle cedar cherry chess cider cinema " +
+  "circus citrus clover cobalt comet copper coral cotton crane crayon cricket crystal cupcake daisy delta denim desert " +
+  "dolphin dragon drum eagle easel ember falcon fern fiddle flame forest fossil fox galaxy garden garlic gecko ginger " +
+  "glacier globe goose granite grape gravel guitar hammer harbor hazel helmet heron honey hornet iceberg igloo indigo " +
+  "island ivory jacket jaguar jasmine jelly jungle kettle kiwi koala ladder lagoon lantern lemon lily lizard lobster " +
+  "lotus magnet mango maple marble meadow melon meteor mint mirror mitten monkey moose mosaic muffin nectar needle " +
+  "nickel noodle nutmeg oasis ocean olive onion orbit orchid otter owl paddle panda papaya parrot peach pebble pepper " +
+  "piano pickle pigeon pillow pine planet plum pocket polar pony poppy potato prism pumpkin puzzle quartz quill rabbit " +
+  "radar radish raven ribbon river robin rocket rose ruby saddle salmon sapphire satin scarf scooter shadow shell " +
+  "silver sketch sled snail sparrow spider spruce squash stamp star stone sugar summit sunset swan tango teapot " +
+  "thistle thunder tiger timber toast tomato topaz tractor tulip tundra turtle tuxedo umbrella valley velvet violet " +
+  "walnut walrus whale willow window winter wizard yogurt zebra zephyr"
+).split(" ");
+
+/**
+ * A readable password: three words and two digits, like "maple-otter-lantern-42" (about 31 bits; the engine also
+ * slows down every address after 5 wrong tries). `randomInt(n)` returns 0..n-1; crypto.randomInt by default.
+ */
+function generatePassword(randomInt) {
+  const rnd = randomInt || require("crypto").randomInt;
+  const words = [];
+  while (words.length < 3) {
+    const w = PASSWORD_WORDS[rnd(PASSWORD_WORDS.length)];
+    if (!words.includes(w)) words.push(w);
+  }
+  return words.join("-") + "-" + String(rnd(100)).padStart(2, "0");
+}
+
+/** "" when the phone password is fine, else the problem in one plain sentence. */
+function passwordProblem(pw) {
+  if (typeof pw !== "string" || !pw) return "Type a password first, or press Generate.";
+  if (pw.length < PHONE_MIN_PASSWORD) return `The password needs at least ${PHONE_MIN_PASSWORD} characters. Type a longer one or press Generate.`;
+  if (pw.length > 200) return "The password is too long. Use at most 200 characters.";
+  if (/[\r\n\0]/.test(pw)) return "The password cannot contain line breaks.";
+  return "";
+}
+
+/**
+ * The environment of the engine: the app's own environment plus HQ_PORT and, with `phone` = { password, secret },
+ * phone access: listen on every network (HQ_HOST=0.0.0.0), ask for the password (HQ_PASSWORD), keep phones logged in
+ * across restarts (HQ_SECRET) and let this computer's own window in without a login (HQ_LOCAL_TRUST=1).
+ * HQ_TRUST_PROXY is never set: with it, anyone could claim to be this computer through X-Forwarded-For.
+ * Without `phone` the engine listens on 127.0.0.1 only, as it always did.
+ */
+function buildEngineEnv(base, opts = {}) {
+  const env = { ...(base || {}) };
+  for (const k of PHONE_ENV_KEYS) delete env[k];
+  env.HQ_PORT = String(opts.port || DEFAULT_PORT);
+  env.PYTHONIOENCODING = "utf-8";
+  env.PYTHONUNBUFFERED = "1";
+  if (opts.claudeBin) env.CLAUDE_BIN = opts.claudeBin;
+  const phone = opts.phone;
+  if (phone && !passwordProblem(phone.password) && phone.secret) {
+    env.HQ_HOST = "0.0.0.0";
+    env.HQ_PASSWORD = phone.password;
+    env.HQ_SECRET = phone.secret;
+    env.HQ_LOCAL_TRUST = "1";
+  }
+  return env;
+}
+
+/** The line with every secret (4+ characters) replaced by ********, plus anything written as HQ_PASSWORD=... or HQ_SECRET=... */
+function redact(line, secrets = []) {
+  let s = String(line);
+  const list = secrets.filter((x) => typeof x === "string" && x.length >= 4).sort((a, b) => b.length - a.length);
+  for (const x of list) s = s.split(x).join(REDACTED);
+  return s.replace(/\b(HQ_PASSWORD|HQ_SECRET)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/g, (m, k, sep) => k + sep + REDACTED);
+}
+
+/** The first Tailscale address in the output of `tailscale ip -4`, or "". */
+function parseTailscaleIp(text) {
+  for (const l of String(text || "").replace(/\r/g, "").split("\n")) if (isTailscaleIp(l.trim())) return l.trim();
+  return "";
+}
+
+/**
+ * What `tailscale ip -4` said: { state: "connected", ip } | { state: "signed-out" } (installed, but not signed in or
+ * not running) | { state: "missing" } (no tailscale command). `res` is a run() result.
+ */
+function tailscaleState(res) {
+  const ip = res && res.code === 0 ? parseTailscaleIp(res.stdout) : "";
+  if (ip) return { state: "connected", ip };
+  const text = String((res && res.error) || "") + "\n" + String((res && res.stderr) || "") + "\n" + String((res && res.stdout) || "");
+  if (!res || res.code === 127 || res.code === 9009 || (res.error && !res.timedOut && /ENOENT|not found/i.test(res.error)) ||
+      /is not recognized as an internal or external command|tailscale: (command )?not found/i.test(text)) {
+    return { state: "missing", ip: "" };
+  }
+  return { state: "signed-out", ip: "" };
+}
+
+/** Where Tailscale installs its command on Windows (on the PATH too, but only for programs started after the install). */
+const TAILSCALE_WIN_EXE = "C:\\Program Files\\Tailscale\\tailscale.exe";
+
+/** Detect Tailscale with `tailscale ip -4` (10 s timeout). `opts.run` and `opts.exists` replace the runner and fs.existsSync (tests). */
+async function checkTailscale(opts = {}) {
+  const runner = opts.run || run;
+  const exists = opts.exists || fs.existsSync;
+  let res = await runner("tailscale", ["ip", "-4"], { timeoutMs: CHECK_TIMEOUT_MS });
+  let st = tailscaleState(res);
+  if (st.state === "missing" && (opts.isWin != null ? opts.isWin : IS_WIN) && exists(TAILSCALE_WIN_EXE)) {
+    res = await runner(TAILSCALE_WIN_EXE, ["ip", "-4"], { timeoutMs: CHECK_TIMEOUT_MS });
+    st = tailscaleState(res);
+    if (st.state === "missing") st = { state: "signed-out", ip: "" };      // the program is there, it just did not answer
+  }
+  return st;
+}
+
+/** The PowerShell lines that install Tailscale with winget (run in a visible window, like the tool installs). */
+function tailscaleInstallLines() {
+  return [
+    "Write-Host 'Agents HQ: installing Tailscale. Approve the Windows prompt when it appears.' -ForegroundColor Yellow",
+    "winget install -e --id tailscale.tailscale --accept-package-agreements --accept-source-agreements",
+    "Write-Host 'Done. Open Tailscale from the Start menu and sign in, then go back to Agents HQ and press Check Tailscale.' -ForegroundColor Green",
+  ];
+}
+
 // ---------------------------------------------------------------- the log ring buffer
 
-/** The last `max` log lines, with listeners for new ones. push() splits chunks into lines. */
+/**
+ * The last `max` log lines, with listeners for new ones. push() splits chunks into lines.
+ * `opts.redact(line)` rewrites every line before it is kept or passed on (main.js hides the phone password with it).
+ */
 class RingLog {
-  constructor(max = 400) {
+  constructor(max = 400, opts = {}) {
     this.max = max;
     this.items = [];
     this.listeners = [];
     this.partial = "";
+    this.redact = opts.redact || null;
   }
 
   push(chunk) {
@@ -415,8 +574,9 @@ class RingLog {
     const lines = text.split("\n");
     this.partial = text.endsWith("\n") ? "" : lines.pop();
     for (const raw of lines) {
-      const line = raw.trimEnd();
+      let line = raw.trimEnd();
       if (!line) continue;
+      if (this.redact) { try { line = this.redact(line); } catch (_) { line = REDACTED; } }
       this.items.push(line);
       if (this.items.length > this.max) this.items.splice(0, this.items.length - this.max);
       for (const fn of this.listeners) { try { fn(line); } catch (_) { /* a listener must not break the log */ } }
@@ -439,5 +599,8 @@ module.exports = {
   refreshPath, resolveClaude, shortPath, claudeSignedIn, officeBase, installLines, installScript,
   loadSettings, saveSettings,
   isPortFree, findPort, httpGet, isAgentsHq, waitForHttp,
+  PHONE_ENV_KEYS, PHONE_MIN_PASSWORD, PASSWORD_WORDS, TAILSCALE_WIN_EXE,
+  isTailscaleIp, phoneAddresses, generatePassword, passwordProblem, buildEngineEnv, redact,
+  parseTailscaleIp, tailscaleState, checkTailscale, tailscaleInstallLines,
   RingLog,
 };

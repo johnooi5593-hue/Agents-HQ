@@ -125,6 +125,7 @@
         <button id="btn-install">Install missing tools</button>
         <button id="btn-signin">Sign in to Claude Code</button>
         <button id="btn-check">Check again</button>
+        <button id="btn-phone" title="Open your office in the browser on your phone">Phone access</button>
         <button id="btn-open" class="primary wide" disabled>Open Agents HQ</button>
       </div>
       <div class="note" id="note"></div>
@@ -237,6 +238,7 @@
     $("btn-signin").title = claudeOk ? "Opens a terminal running claude in the office folder, so you can sign in once" : "Install Claude Code first";
     $("btn-signin").classList.toggle("primary", claudeOk && s.signedIn === false);   // the next thing to do when claude is there but not signed in
     $("btn-check").disabled = !!s.busy;
+    $("btn-phone").textContent = s.phoneActive ? "Phone access: on" : "Phone access";
 
     var open = $("btn-open");
     if (s.canOpen) { open.disabled = false; open.textContent = "Open Agents HQ"; }
@@ -265,6 +267,7 @@
   $("btn-signin").addEventListener("click", function () { note("Opening a terminal…"); call("signIn", "Sign in"); });
   $("btn-check").addEventListener("click", function () { note(""); call("check", "Check again"); });
   $("btn-open").addEventListener("click", function () { note(""); call("start", "Open"); });
+  $("btn-phone").addEventListener("click", function () { call("openPhone", "Phone access"); });
   $("lnk-folder").addEventListener("click", function () { call("openFolder", "Open folder"); });
   $("lnk-log").addEventListener("click", function () { call("openLog", "Open log"); });
   $("lnk-clear").addEventListener("click", function () { logEl.textContent = ""; });

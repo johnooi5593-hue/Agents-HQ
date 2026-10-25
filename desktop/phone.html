@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>Phone access</title>
+<style>
+  /* the same dark look as the office and the setup screen: background #0b0f1a, panels rgba(17,20,30,.85), accent #ffd400 */
+  :root {
+    --bg: #0b0f1a; --panel: rgba(17, 20, 30, .85); --panel-2: #1e222b; --line: #2a2f3a;
+    --text: #e8eaf0; --muted: #8b93a7; --accent: #ffd400; --accent-ink: #1a1500;
+    --ok: #4ade80; --warn: #f59e0b; --bad: #f87171; --radius: 12px;
+    --font: Inter, "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--bg) radial-gradient(900px 500px at 50% -10%, rgba(255, 212, 0, .08), transparent 70%);
+    color: var(--text); font: 15px/1.5 var(--font); -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 24px 32px; display: flex; flex-direction: column; gap: 16px; }
+
+  header { display: flex; align-items: center; gap: 16px; }
+  .logo { width: 52px; height: 52px; border-radius: 14px; background: linear-gradient(160deg, #171a21, #0f1115); border: 1px solid var(--line); display: grid; place-items: center; position: relative; flex: none; }
+  .logo .orb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 16px 4px rgba(255, 212, 0, .5); }
+  .logo .hq { position: absolute; bottom: 4px; font-weight: 800; font-size: 9px; letter-spacing: .12em; color: #fff; }
+  header h1 { margin: 0; font-size: 22px; font-weight: 700; }
+  header .sub { color: var(--muted); font-size: 14px; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .panel h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .panel p { margin: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+
+  /* the switch */
+  .top { display: flex; align-items: center; gap: 16px; }
+  .top .what { flex: 1; min-width: 0; }
+  .top .title { font-weight: 700; font-size: 17px; }
+  .switch { position: relative; width: 58px; height: 32px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; flex: none; padding: 0; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #9aa3b5; transition: left .15s ease, background .15s ease; }
+  .switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+  .switch[aria-checked="true"]::after { left: 29px; background: var(--accent-ink); }
+  .switch:disabled { opacity: .5; cursor: default; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on { color: var(--ok); border-color: rgba(74, 222, 128, .4); } .pill.on .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .pill.wait { color: var(--accent); border-color: rgba(255, 212, 0, .4); } .pill.wait .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .pill.warn { color: var(--warn); border-color: rgba(245, 158, 11, .4); } .pill.warn .dot { background: var(--warn); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .warning { border-left: 3px solid var(--warn); background: rgba(245, 158, 11, .08); padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+  .info { border-left: 3px solid var(--accent); background: rgba(255, 212, 0, .06); padding: 10px 12px; border-radius: 6px; font-size: 14px; }
+  .info b { color: var(--text); }
+
+  /* buttons and fields */
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; font-weight: 600; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #3b4152; background: #262b36; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: #ffdf40; border-color: #ffdf40; }
+  button.danger { border-color: rgba(248, 113, 113, .5); color: var(--bad); }
+  button.small { padding: 5px 10px; font-size: 13px; border-radius: 8px; }
+  .pw { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pw input { flex: 1 1 260px; min-width: 0; font: 16px/1.4 var(--mono); color: var(--text); background: #0b0d11; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; outline: none; }
+  .pw input:focus { border-color: rgba(255, 212, 0, .6); }
+  .pw input.bad { border-color: var(--bad); }
+  .note { font-size: 14px; min-height: 1.4em; color: var(--muted); }
+  .note.bad { color: var(--bad); } .note.good { color: var(--ok); }
+
+  /* the steps and the addresses */
+  ol.steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
+  ol.steps b { color: var(--accent); }
+  .addrs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .addr { background: #0f121a; border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: center; text-align: center; }
+  .addr.ts { border-color: rgba(255, 212, 0, .45); }
+  .addr img, .addr .qrbox { width: 200px; height: 200px; border-radius: 8px; background: #fff; display: block; }
+  .addr .qrbox { display: grid; place-items: center; color: #555; font-size: 13px; }
+  .addr .url { font: 15px var(--mono); user-select: text; word-break: break-all; }
+  .addr .tag { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .addr.ts .tag { color: var(--accent); }
+  .secret { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .secret code { font: 17px var(--mono); background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; user-select: text; }
+  .ts-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 600; }
+  .hidden { display: none !important; }
+  a.link { color: var(--accent); cursor: pointer; text-decoration: none; }
+  a.link:hover { text-decoration: underline; }
+  @media (max-width: 640px) { .wrap { padding: 20px 16px; } .top { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><div class="orb"></div><div class="hq">HQ</div></div>
+    <div>
+      <h1>Phone access</h1>
+      <div class="sub">Open your office in the browser on your phone. It is off until you turn it on here.</div>
+    </div>
+  </header>
+
+  <!-- the switch -->
+  <section class="panel">
+    <div class="top">
+      <div class="what">
+        <div class="title">Let my phone open the office</div>
+        <div class="row" style="margin-top:4px"><span class="pill" id="pill"><span class="dot"></span><span id="pill-text">Off</span></span><span class="muted small" id="status-text">Only this computer can open the office.</span></div>
+      </div>
+      <button class="switch" id="switch" role="switch" aria-checked="false" aria-label="Phone access"></button>
+    </div>
+    <div class="warning">Anyone who has the password and is on the same network (or on your Tailscale) can run the office. Keep the password to yourself.</div>
+    <div class="row hidden" id="off-row"><button class="danger" id="btn-off">Turn off</button><span class="muted small">One click, and no phone can reach the office until you turn it on again.</span></div>
+    <div class="note" id="note"></div>
+  </section>
+
+  <!-- before turning it on: the Windows firewall question -->
+  <section class="panel" id="before">
+    <h2 id="before-title">Before you turn it on</h2>
+    <div class="info" id="fw-info">
+      The first time, <b>Windows will ask whether Python may use the network</b> ("Windows Defender Firewall has blocked some features of Python").
+      Tick <b>Private networks</b> and click <b>Allow</b>. If you click Cancel, your phone cannot connect.
+    </div>
+    <p class="muted small" id="fw-more">Your Wi-Fi must also be a private network in Windows: open Settings, then Network &amp; internet, then Wi-Fi, click your network and choose Private network. A phone on the same Wi-Fi can connect then. To reach the office from anywhere (mobile data, another Wi-Fi), use Tailscale below.</p>
+  </section>
+
+  <!-- the password -->
+  <section class="panel">
+    <h2>Phone password</h2>
+    <p class="muted small">At least 8 characters. Your phone asks for it once and then stays logged in. Changing it logs every phone out.</p>
+    <div class="pw">
+      <input id="pw" type="password" autocomplete="new-password" spellcheck="false" placeholder="Type a password or press Generate">
+      <button id="btn-show">Show</button>
+      <button id="btn-gen">Generate</button>
+      <button id="btn-save" class="primary hidden">Save password</button>
+    </div>
+    <div class="note" id="pw-note"></div>
+  </section>
+
+  <!-- when it is on: the addresses, the QR codes, the password and the steps -->
+  <section class="panel hidden" id="onphone">
+    <h2>On your phone</h2>
+    <ol class="steps">
+      <li>On the phone, open the browser and type one of the addresses below, or scan its QR code with the camera.</li>
+      <li>Type the password: <span class="secret" style="display:inline-flex"><code id="pw-shown">...</code><button class="small" id="btn-copy-pw">Copy</button></span></li>
+      <li>For an app-like icon: on iPhone tap <b>Share</b>, then <b>Add to Home Screen</b>. On Android tap <b>⋮</b>, then <b>Add to Home screen</b>.</li>
+    </ol>
+    <div class="note muted small" id="addr-note"></div>
+    <div class="addrs" id="addrs"></div>
+    <p class="muted small">The addresses stay the same as long as this computer keeps its network address and port <span id="port">7331</span> stays free. <a class="link" id="lnk-refresh">Refresh the addresses</a></p>
+  </section>
+
+  <!-- Tailscale -->
+  <section class="panel">
+    <h2>Use it away from home: Tailscale</h2>
+    <div class="ts-line"><span id="ts-text">Tailscale: checking...</span></div>
+    <p class="muted small">Tailscale is a free app that links your devices privately, so your phone reaches the office on mobile data or any Wi-Fi. Install it on this computer and on your phone (App Store or Play Store), and sign in with the same account on both. Then use the address marked "works anywhere (Tailscale)".</p>
+    <div class="row">
+      <button id="btn-ts-check">Check Tailscale</button>
+      <button id="btn-ts-install" class="hidden">Install Tailscale</button>
+    </div>
+    <p class="muted small hidden" id="ts-hint">On this system, install Tailscale from tailscale.com/download, sign in, then press Check Tailscale.</p>
+    <div class="note" id="ts-note"></div>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var api = window.desktop;
+  var $ = function (id) { return document.getElementById(id); };
+  var st = null, busy = false, dirty = false, qrCache = {}, timers = {};
+
+  if (!api || !api.phoneGet) {
+    $("status-text").textContent = "This page only works inside the Agents HQ app.";
+    return;
+  }
+
+  function note(id, text, kind) {
+    var el = $(id);
+    el.textContent = text || "";
+    el.className = "note" + (kind ? " " + kind : "") + (id === "addr-note" ? " muted small" : "");
+    clearTimeout(timers[id]);
+    if (text && kind !== "bad") timers[id] = setTimeout(function () { el.textContent = ""; }, 20000);
+  }
+
+  function minLen() { return (st && st.minLength) || 8; }
+  function typed() { return $("pw").value; }
+
+  // ---- what the page shows for a phone state
+  function render(s) {
+    if (!s || typeof s.on !== "boolean") return;
+    st = s;
+    var sw = $("switch");
+    sw.setAttribute("aria-checked", s.on ? "true" : "false");
+    sw.disabled = busy;
+    var pill = $("pill"), text = $("pill-text"), status = $("status-text");
+    if (busy) { pill.className = "pill wait"; text.textContent = "Changing"; status.textContent = "Restarting the engine. This takes a few seconds."; }
+    else if (s.on && s.active) { pill.className = "pill on"; text.textContent = "On"; status.textContent = "Your phone can open the office with the password."; }
+    else if (s.on && s.external) { pill.className = "pill warn"; text.textContent = "Not active"; status.textContent = "The engine running now was not started by this app. Close the window where it runs, then press Restart on the setup screen."; }
+    else if (s.on && (s.engine === "starting" || s.busy)) { pill.className = "pill wait"; text.textContent = "Starting"; status.textContent = "Phone access starts with the engine in a moment."; }
+    else if (s.on) { pill.className = "pill warn"; text.textContent = "Not active"; status.textContent = "The engine is not running. Press Restart on the setup screen to start it."; }
+    else { pill.className = "pill"; text.textContent = "Off"; status.textContent = "Only this computer can open the office."; }
+
+    $("off-row").classList.toggle("hidden", !s.on);
+    $("btn-off").disabled = busy;
+    $("before-title").textContent = s.on ? "If the phone cannot connect" : "Before you turn it on";
+    var win = s.platform === "win32";
+    $("fw-info").classList.toggle("hidden", !win);
+    $("fw-more").textContent = win
+      ? "Your Wi-Fi must also be a private network in Windows: open Settings, then Network & internet, then Wi-Fi, click your network and choose Private network. A phone on the same Wi-Fi can connect then. To reach the office from anywhere (mobile data, another Wi-Fi), use Tailscale below."
+      : "If your computer has a firewall, let it accept connections on port " + s.port + ". A phone on the same Wi-Fi can connect then. To reach the office from anywhere, use Tailscale below.";
+
+    if (!dirty) $("pw").value = s.password || "";
+    renderSave();
+    $("pw-shown").textContent = s.password || "";
+    $("port").textContent = String(s.port);
+    $("onphone").classList.toggle("hidden", !s.on);
+    renderAddresses(s);
+    ["btn-gen", "btn-save", "pw"].forEach(function (id) { $(id).disabled = busy; });
+  }
+
+  function renderSave() {
+    var v = typed(), saved = st ? st.password || "" : "";
+    $("btn-save").classList.toggle("hidden", !(v && v !== saved));
+    $("pw").classList.toggle("bad", !!v && v.length < minLen());
+  }
+
+  function renderAddresses(s) {
+    var box = $("addrs");
+    var list = s.on ? s.addresses || [] : [];
+    var key = list.map(function (a) { return a.url + a.label; }).join("|");
+    if (box.getAttribute("data-key") === key) return;
+    box.setAttribute("data-key", key);
+    box.textContent = "";
+    if (s.on && !list.length) note("addr-note", "This computer is not connected to any network right now. Connect it to Wi-Fi (or sign in to Tailscale), then press Refresh the addresses.");
+    else note("addr-note", "");
+    list.forEach(function (a) {
+      var card = document.createElement("div");
+      card.className = "addr" + (a.tailscale ? " ts" : "");
+      var qr = document.createElement("div"); qr.className = "qrbox"; qr.textContent = "Making the QR code...";
+      var url = document.createElement("div"); url.className = "url"; url.textContent = a.url;
+      var tag = document.createElement("div"); tag.className = "tag"; tag.textContent = a.label + (a.iface ? " · " + a.iface : "");
+      var copy = document.createElement("button"); copy.className = "small"; copy.textContent = "Copy address";
+      copy.addEventListener("click", function () { copyText(a.url, "addr-note", "The address is copied."); });
+      card.appendChild(qr); card.appendChild(url); card.appendChild(tag); card.appendChild(copy);
+      box.appendChild(card);
+      qrFor(a.url).then(function (dataUrl) {
+        if (!dataUrl) { qr.textContent = "No QR code. Type the address instead."; return; }
+        var img = document.createElement("img"); img.alt = "QR code for " + a.url; img.src = dataUrl;
+        card.replaceChild(img, qr);
+      });
+    });
+  }
+
+  function qrFor(url) {
+    if (qrCache[url]) return Promise.resolve(qrCache[url]);
+    return api.phoneQr(url).then(function (r) {
+      if (r && r.ok && r.dataUrl) { qrCache[url] = r.dataUrl; return r.dataUrl; }
+      return null;
+    }).catch(function () { return null; });
+  }
+
+  function copyText(text, where, done) {
+    api.phoneCopy(text).then(function (r) { note(where, r && r.ok ? done : (r && r.message) || "Could not copy. Select the text and press Ctrl+C.", r && r.ok ? "good" : "bad"); })
+      .catch(function () { note(where, "Could not copy. Select the text and press Ctrl+C.", "bad"); });
+  }
+
+  // ---- the switch, Turn off and Save
+  function apply(req, pending) {
+    busy = true;
+    note("note", pending || "");
+    render(st);
+    return api.phoneSet(req).then(function (r) {
+      busy = false;
+      if (r && r.ok !== false) dirty = false;
+      render(r);
+      note("note", (r && r.message) || "", r && r.ok === false ? "bad" : "good");
+    }).catch(function (e) {
+      busy = false;
+      render(st);
+      note("note", "Phone access did not change: " + (e && e.message || e) + ". Try again.", "bad");
+    });
+  }
+
+  $("switch").addEventListener("click", function () {
+    if (busy || !st) return;
+    if (st.on) { apply({ on: false }, "Turning phone access off..."); return; }
+    var pw = typed();
+    if (!pw || pw.length < minLen()) {
+      note("pw-note", pw ? "The password needs at least " + minLen() + " characters. Type a longer one or press Generate." : "Type a password first, or press Generate. Then turn phone access on.", "bad");
+      note("note", "Phone access stays off until the password has at least " + minLen() + " characters.", "bad");
+      $("pw").focus();
+      return;
+    }
+    note("pw-note", "");
+    apply({ on: true, password: pw }, st.platform === "win32"
+      ? "Turning phone access on. If Windows asks whether Python may use the network, tick Private networks and click Allow."
+      : "Turning phone access on...");
+  });
+
+  $("btn-off").addEventListener("click", function () { if (!busy) apply({ on: false }, "Turning phone access off..."); });
+
+  $("btn-save").addEventListener("click", function () {
+    var pw = typed();
+    if (pw.length < minLen()) { note("pw-note", "The password needs at least " + minLen() + " characters. Type a longer one or press Generate.", "bad"); return; }
+    note("pw-note", "");
+    apply({ on: !!(st && st.on), password: pw }, st && st.on ? "Saving the new password and restarting the engine..." : "Saving the password...");
+  });
+
+  $("pw").addEventListener("input", function () { dirty = typed() !== ((st && st.password) || ""); renderSave(); note("pw-note", ""); });
+  $("pw").addEventListener("keydown", function (e) { if (e.key === "Enter" && !$("btn-save").classList.contains("hidden")) $("btn-save").click(); });
+
+  $("btn-show").addEventListener("click", function () {
+    var show = $("pw").type === "password";
+    $("pw").type = show ? "text" : "password";
+    $("btn-show").textContent = show ? "Hide" : "Show";
+  });
+
+  $("btn-gen").addEventListener("click", function () {
+    api.phoneGenerate().then(function (r) {
+      if (!r || !r.password) return;
+      $("pw").value = r.password;
+      $("pw").type = "text";
+      $("btn-show").textContent = "Hide";
+      dirty = r.password !== ((st && st.password) || "");
+      renderSave();
+      note("pw-note", st && st.on ? "A new password is ready. Press Save password to use it; every phone then logs in again." : "A new password is ready. Turn phone access on to use it.", "good");
+    });
+  });
+
+  $("btn-copy-pw").addEventListener("click", function () { if (st && st.password) copyText(st.password, "addr-note", "The password is copied."); });
+  $("lnk-refresh").addEventListener("click", function () { refresh(true); });
+
+  // ---- Tailscale
+  var TS_TEXT = { connected: "Tailscale: connected", "signed-out": "Tailscale: installed, not signed in", missing: "Tailscale: not installed" };
+  function checkTailscale() {
+    $("ts-text").textContent = "Tailscale: checking...";
+    $("btn-ts-check").disabled = true;
+    api.phoneTailscale().then(function (r) {
+      $("btn-ts-check").disabled = false;
+      r = r || {};
+      $("ts-text").textContent = (TS_TEXT[r.state] || TS_TEXT.missing) + (r.state === "connected" && r.ip ? " (" + r.ip + ")" : "");
+      $("btn-ts-install").classList.toggle("hidden", !(r.canInstall && r.state === "missing"));
+      $("ts-hint").classList.toggle("hidden", !!r.canInstall || r.state !== "missing");
+      if (r.state === "signed-out") note("ts-note", "Open Tailscale on this computer (Start menu on Windows) and sign in, then press Check Tailscale.");
+      else if (r.state === "connected") note("ts-note", st && st.on ? "Use the address marked works anywhere (Tailscale) on your phone, with Tailscale switched on there too." : "Turn phone access on above to see the Tailscale address.", "good");
+      else if (r.message) note("ts-note", r.message, "bad");
+      else note("ts-note", "");
+      if (r.state === "connected") refresh(false);
+    }).catch(function (e) {
+      $("btn-ts-check").disabled = false;
+      $("ts-text").textContent = "Tailscale: could not check";
+      note("ts-note", "Tailscale could not be checked: " + (e && e.message || e), "bad");
+    });
+  }
+  $("btn-ts-check").addEventListener("click", checkTailscale);
+  $("btn-ts-install").addEventListener("click", function () {
+    api.phoneInstallTailscale().then(function (r) { note("ts-note", (r && r.message) || "", r && r.ok === false ? "bad" : "good"); })
+      .catch(function (e) { note("ts-note", "PowerShell could not be opened: " + (e && e.message || e), "bad"); });
+  });
+
+  // ---- start, live updates, and a refresh every 10 s so a new network shows up
+  function refresh(say) {
+    if (busy) return;
+    api.phoneGet().then(function (s) {
+      render(s);
+      if (say) note("addr-note", s && s.on ? "The addresses are up to date." : "");
+    }).catch(function () { /* the next refresh tries again */ });
+  }
+  api.onPhoneState(function (s) { if (!busy) render(s); });
+  refresh(false);
+  checkTailscale();
+  setInterval(function () { refresh(false); }, 10000);
+})();
+</script>
+</body>
+</html>

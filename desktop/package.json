@@ -17,6 +17,9 @@
     "dist:win": "electron-builder --win nsis portable --publish never",
     "dist:dir": "electron-builder --dir"
   },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
   "devDependencies": {
     "electron": "^44.0.0",
     "electron-builder": "^26.0.12"
@@ -32,6 +35,7 @@
       "preload.js",
       "lib.js",
       "setup.html",
+      "phone.html",
       "assets/**"
     ],
     "extraResources": [

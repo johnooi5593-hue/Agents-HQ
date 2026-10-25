@@ -340,6 +340,160 @@ test("RingLog splits chunks into lines, keeps partial lines, caps and notifies",
   assert.doesNotThrow(() => bad.push("x\n"), "a broken listener does not break the log");
 });
 
+// ---------------------------------------------------------------- phone access
+
+test("isTailscaleIp covers exactly 100.64.0.0/10", () => {
+  for (const ip of ["100.64.0.1", "100.101.102.103", "100.127.255.254"]) assert.strictEqual(lib.isTailscaleIp(ip), true, ip);
+  for (const ip of ["100.63.255.255", "100.128.0.1", "10.0.0.5", "192.168.1.20", "100.64.0", "", null, "100.64.0.256"]) assert.strictEqual(lib.isTailscaleIp(ip), false, String(ip));
+});
+
+test("phoneAddresses lists the LAN and Tailscale IPv4s, skips internal, IPv6 and link-local", () => {
+  const ifaces = {
+    lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }, { address: "::1", family: "IPv6", internal: true }],
+    "Wi-Fi": [
+      { address: "fe80::1c2b:3a4d", family: "IPv6", internal: false },
+      { address: "192.168.1.23", family: "IPv4", internal: false },
+    ],
+    Ethernet: [{ address: "169.254.10.20", family: "IPv4", internal: false }],                 // no network: skipped
+    "vEthernet (WSL)": [{ address: "172.27.80.1", family: 4, internal: false }],               // Node 18.0-18.3 style family
+    Tailscale: [{ address: "100.101.5.6", family: "IPv4", internal: false }, { address: "fd7a:115c:a1e0::1", family: "IPv6", internal: false }],
+    utun4: [{ address: "100.88.1.2", family: "IPv4", internal: false }],                       // macOS: no Tailscale name, the range tells
+    "Tailscale-named": [{ address: "10.9.8.7", family: "IPv4", internal: false }],             // Tailscale by its name
+    dup: [{ address: "192.168.1.23", family: "IPv4", internal: false }],
+  };
+  const list = lib.phoneAddresses(ifaces, 7331);
+  assert.deepStrictEqual(list.map((a) => a.ip), ["100.101.5.6", "100.88.1.2", "10.9.8.7", "192.168.1.23", "172.27.80.1"], "Tailscale first, each address once");
+  const ts = list[0];
+  assert.deepStrictEqual(ts, { ip: "100.101.5.6", url: "http://100.101.5.6:7331", iface: "Tailscale", tailscale: true, label: "works anywhere (Tailscale)" });
+  const wifi = list.find((a) => a.ip === "192.168.1.23");
+  assert.strictEqual(wifi.tailscale, false);
+  assert.strictEqual(wifi.label, "same Wi-Fi only");
+  assert.strictEqual(wifi.url, "http://192.168.1.23:7331");
+  assert.ok(list.every((a) => !/^169\.254\./.test(a.ip) && !a.ip.includes(":") && a.ip !== "127.0.0.1"));
+  assert.deepStrictEqual(lib.phoneAddresses({}, 7331), []);
+  assert.deepStrictEqual(lib.phoneAddresses(null, 7331), []);
+  assert.deepStrictEqual(lib.phoneAddresses({ x: [null, { family: "IPv4" }] }, 1), [], "broken entries are skipped");
+  const real = lib.phoneAddresses(os.networkInterfaces(), 7663);
+  assert.ok(Array.isArray(real));
+  console.log("      this machine: " + (real.map((a) => a.url + " (" + a.label + ")").join(", ") || "no network addresses"));
+});
+
+test("generatePassword: three words and two digits, readable, random", () => {
+  assert.strictEqual(new Set(lib.PASSWORD_WORDS).size, lib.PASSWORD_WORDS.length, "no duplicate words");
+  assert.ok(lib.PASSWORD_WORDS.length >= 200, "at least 200 words");
+  assert.ok(lib.PASSWORD_WORDS.every((w) => /^[a-z]{3,8}$/.test(w)), "lowercase a-z words only");
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const pw = lib.generatePassword();
+    assert.ok(/^[a-z]{3,8}-[a-z]{3,8}-[a-z]{3,8}-\d{2}$/.test(pw), "shape word-word-word-NN: " + pw);
+    assert.ok(pw.length >= lib.PHONE_MIN_PASSWORD && pw.length <= 30, "length " + pw.length);
+    assert.strictEqual(lib.passwordProblem(pw), "", "a generated password is always accepted");
+    const words = pw.split("-").slice(0, 3);
+    assert.strictEqual(new Set(words).size, 3, "three different words");
+    assert.ok(words.every((w) => lib.PASSWORD_WORDS.includes(w)));
+    seen.add(pw);
+  }
+  assert.ok(seen.size >= 195, "200 passwords are (nearly) all different");
+  // with a fixed random source the output is predictable: words 0, 1, 2 (0 repeats, so it is skipped) and 7 padded
+  const seq = [0, 0, 1, 2, 7];
+  assert.strictEqual(lib.generatePassword(() => seq.shift()), `${lib.PASSWORD_WORDS[0]}-${lib.PASSWORD_WORDS[1]}-${lib.PASSWORD_WORDS[2]}-07`);
+});
+
+test("passwordProblem asks for 8+ characters in plain words", () => {
+  assert.strictEqual(lib.passwordProblem("12345678"), "");
+  assert.match(lib.passwordProblem("1234567"), /at least 8 characters/);
+  assert.match(lib.passwordProblem(""), /Type a password/);
+  assert.match(lib.passwordProblem(undefined), /Type a password/);
+  assert.match(lib.passwordProblem("abcdefgh\nij"), /line breaks/);
+  assert.match(lib.passwordProblem("x".repeat(201)), /too long/);
+});
+
+test("buildEngineEnv: phone on sets host, password, secret and local trust; off sets none of them", () => {
+  const base = { PATH: "/usr/bin", HQ_HOST: "0.0.0.0", HQ_TRUST_PROXY: "1", HQ_PASSWORD: "stray", HQ_SECRET: "stray", HQ_LOCAL_TRUST: "1", KEEP: "yes" };
+  const secret = "ab".repeat(32);
+  const on = lib.buildEngineEnv(base, { port: 7333, claudeBin: "C:\\bin\\claude.exe", phone: { password: "maple-otter-lantern-42", secret } });
+  assert.strictEqual(on.HQ_HOST, "0.0.0.0");
+  assert.strictEqual(on.HQ_PASSWORD, "maple-otter-lantern-42");
+  assert.strictEqual(on.HQ_SECRET, secret);
+  assert.strictEqual(on.HQ_LOCAL_TRUST, "1");
+  assert.ok(!("HQ_TRUST_PROXY" in on), "HQ_TRUST_PROXY is never set, even when the PC's own environment has it");
+  assert.strictEqual(on.HQ_PORT, "7333");
+  assert.strictEqual(on.CLAUDE_BIN, "C:\\bin\\claude.exe");
+  assert.strictEqual(on.PYTHONIOENCODING, "utf-8");
+  assert.strictEqual(on.PYTHONUNBUFFERED, "1");
+  assert.strictEqual(on.KEEP, "yes");
+  assert.strictEqual(on.PATH, "/usr/bin");
+
+  const off = lib.buildEngineEnv(base, { port: 7331 });
+  for (const k of ["HQ_HOST", "HQ_PASSWORD", "HQ_SECRET", "HQ_LOCAL_TRUST", "HQ_TRUST_PROXY"]) assert.ok(!(k in off), k + " is not set with phone access off");
+  assert.strictEqual(off.HQ_PORT, "7331");
+  assert.ok(!("CLAUDE_BIN" in off));
+  assert.strictEqual(base.HQ_HOST, "0.0.0.0", "the base environment is not changed");
+
+  const weak = lib.buildEngineEnv({}, { port: 7331, phone: { password: "short", secret } });
+  assert.ok(!("HQ_HOST" in weak) && !("HQ_PASSWORD" in weak), "a password under 8 characters never opens the network");
+  const noSecret = lib.buildEngineEnv({}, { port: 7331, phone: { password: "long enough", secret: "" } });
+  assert.ok(!("HQ_HOST" in noSecret), "no secret, no phone access");
+  assert.strictEqual(lib.buildEngineEnv({}, {}).HQ_PORT, "7331", "the default port");
+});
+
+test("redact hides the password and the secret in log lines", () => {
+  const pw = "maple-otter-lantern-42", secret = "cd".repeat(32);
+  assert.strictEqual(lib.redact(`login with ${pw} ok`, [pw, secret]), "login with ******** ok");
+  assert.strictEqual(lib.redact(`${pw}${pw} and ${secret}`, [pw, secret]), "**************** and ********");
+  assert.strictEqual(lib.redact("HQ_PASSWORD=hunter2hunter2 HQ_SECRET: abc", []), "HQ_PASSWORD=******** HQ_SECRET: ********");
+  assert.strictEqual(lib.redact('set HQ_PASSWORD="two words"', []), "set HQ_PASSWORD=********");
+  assert.strictEqual(lib.redact("nothing secret here", [pw, "", null, "ab"]), "nothing secret here", "empty and very short secrets are ignored");
+  assert.strictEqual(lib.redact("a+b(c)?", ["+b(c)?"]), "a********", "regex characters in the password are literal");
+
+  let current = { password: pw };
+  const log = new lib.RingLog(10, { redact: (l) => lib.redact(l, [current.password]) });
+  const seen = [];
+  log.onLine((l) => seen.push(l));
+  log.push("first half maple-otter-");
+  log.push("lantern-42 second half\n");                 // split across chunks: the whole line is redacted
+  assert.deepStrictEqual(log.lines(), ["first half ******** second half"]);
+  assert.deepStrictEqual(seen, ["first half ******** second half"], "listeners (engine.log, the log panel) get the redacted line");
+  current = { password: "brand-new-password-11" };
+  log.push("now brand-new-password-11\n");
+  assert.strictEqual(log.tail(1)[0], "now ********", "a changed password is redacted from then on");
+  const broken = new lib.RingLog(3, { redact: () => { throw new Error("x"); } });
+  broken.push("secret line\n");
+  assert.deepStrictEqual(broken.lines(), ["********"], "a failing redactor hides the line instead of leaking it");
+});
+
+test("tailscaleState and checkTailscale read `tailscale ip -4`", async () => {
+  assert.deepStrictEqual(lib.tailscaleState({ code: 0, stdout: "100.101.5.6\n" }), { state: "connected", ip: "100.101.5.6" });
+  assert.deepStrictEqual(lib.tailscaleState({ code: 0, stdout: "\r\n100.70.1.2\r\n" }), { state: "connected", ip: "100.70.1.2" });
+  assert.strictEqual(lib.tailscaleState({ code: 1, stdout: "", stderr: "Tailscale is stopped.\n" }).state, "signed-out");
+  assert.strictEqual(lib.tailscaleState({ code: 1, stderr: "failed to connect to local tailscaled; dial unix /var/run/tailscale/tailscaled.sock: connect: no such file or directory" }).state, "signed-out", "installed, service not running");
+  assert.strictEqual(lib.tailscaleState({ code: 0, stdout: "" }).state, "signed-out", "no address yet: not signed in");
+  assert.strictEqual(lib.tailscaleState({ code: 1, stderr: "'tailscale' is not recognized as an internal or external command,\r\noperable program or batch file." }).state, "missing", "Windows cmd.exe");
+  assert.strictEqual(lib.tailscaleState({ code: 127, stderr: "sh: 1: tailscale: not found" }).state, "missing", "POSIX sh");
+  assert.strictEqual(lib.tailscaleState({ code: null, error: "spawn tailscale ENOENT" }).state, "missing");
+  assert.strictEqual(lib.tailscaleState({ code: null, error: "timed out after 10 s", timedOut: true }).state, "signed-out", "a timeout means it is there but not answering");
+  assert.strictEqual(lib.tailscaleState(null).state, "missing");
+
+  const calls = [];
+  const runner = (table) => async (cmd, args, opts) => { calls.push({ cmd, args, opts }); return table[cmd] || { code: 127, stderr: "sh: 1: " + cmd + ": not found" }; };
+  assert.deepStrictEqual(await lib.checkTailscale({ run: runner({ tailscale: { code: 0, stdout: "100.64.1.1\n" } }) }), { state: "connected", ip: "100.64.1.1" });
+  assert.deepStrictEqual(calls[0].args, ["ip", "-4"]);
+  assert.strictEqual(calls[0].opts.timeoutMs, 10000, "the 10 s timeout of the tool checks");
+  assert.strictEqual((await lib.checkTailscale({ run: runner({}), isWin: false })).state, "missing");
+  // Windows, installed while the app was open: not on the PATH yet, found in Program Files
+  const winTable = {}; winTable[lib.TAILSCALE_WIN_EXE] = { code: 0, stdout: "100.90.0.9\n" };
+  assert.deepStrictEqual(await lib.checkTailscale({ run: runner(winTable), isWin: true, exists: (p) => p === lib.TAILSCALE_WIN_EXE }), { state: "connected", ip: "100.90.0.9" });
+  assert.strictEqual((await lib.checkTailscale({ run: runner({}), isWin: true, exists: () => false })).state, "missing");
+  const real = await lib.checkTailscale();
+  console.log("      tailscale here: " + real.state + (real.ip ? " " + real.ip : ""));
+});
+
+test("tailscaleInstallLines run winget for tailscale.tailscale", () => {
+  const lines = lib.tailscaleInstallLines();
+  assert.ok(lines.some((l) => /^winget install -e --id tailscale\.tailscale\b/.test(l)));
+  assert.ok(lines.every((l) => !/rm |Remove-Item|del /i.test(l)));
+});
+
 // ---------------------------------------------------------------- misc
 
 test("constants", () => {

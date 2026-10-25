@@ -11,12 +11,19 @@
  * If the engine stops, the window goes back to setup.html with the last log lines and a Restart button.
  * Closing the window on Windows hides it to the tray; Quit is in the tray menu and in File.
  *
+ * Phone access (phone.html, from the tray, File > Phone access... and the setup screen): when it is on, the engine
+ * listens on every network (HQ_HOST=0.0.0.0) and asks for a password (HQ_PASSWORD) from every device except this
+ * computer itself (HQ_LOCAL_TRUST=1). The password and the cookie secret (HQ_SECRET, so phones stay logged in across
+ * restarts) are kept in settings.json, encrypted with Electron's safeStorage when the system offers it.
+ *
  * Build: copy the office into desktop/bundle (the GitHub workflow .github/workflows/windows-app.yml does this with
  * robocopy: the repository without .git, desktop, out, done, approved and the inbox contents), then `npm run dist:win`.
  */
-const { app, BrowserWindow, Menu, Tray, ipcMain, shell, session, nativeImage } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, shell, session, nativeImage, safeStorage, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 const lib = require("./lib");
 
@@ -25,6 +32,7 @@ const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
 const ASSETS = path.join(__dirname, "assets");
 const SETUP_PAGE = path.join(__dirname, "setup.html");
+const PHONE_PAGE = path.join(__dirname, "phone.html");
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 app.setAppUserModelId(APP_ID);
@@ -40,7 +48,7 @@ if (!app.requestSingleInstanceLock()) {
 // ---------------------------------------------------------------- state shared with setup.html
 
 let settingsFile, logFile, settings;
-let win = null, tray = null;
+let win = null, tray = null, phoneWin = null;
 let child = null;             // the engine process
 let externalEngine = false;   // an engine we did not start answers on the port
 let expectedExit = false;     // we stopped the engine ourselves
@@ -50,7 +58,10 @@ let booting = false;
 let quitting = false;
 let hiddenByUser = false;     // the user closed the window to the tray; it does not pop up again by itself
 let logStream = null;
-const log = new lib.RingLog(500);
+let phone = { password: "", secret: "" };   // decrypted phone password and cookie secret, in memory only
+let enginePhone = false;                     // the running engine was started with phone access on
+// every log line (the setup screen, engine.log) has the phone password and the secret blanked out
+const log = new lib.RingLog(500, { redact: (line) => lib.redact(line, [phone.password, phone.secret]) });
 
 const state = {
   phase: "checking",          // checking | missing | cloning | setup | starting | ready | stopped | updating | error
@@ -59,16 +70,17 @@ const state = {
   officeDir: "", port: lib.DEFAULT_PORT, url: "",
   engine: "stopped",          // stopped | starting | running
   setupDone: false, canOpen: false, busy: false, signedIn: null,
-  platform: process.platform, logFile: "",
+  platform: process.platform, logFile: "", phoneAccess: false, phoneActive: false,
 };
 
 function publicState() {
-  return { ...state, busy: booting, canOpen: state.engine === "running" && state.requiredOk };
+  return { ...state, busy: booting, canOpen: state.engine === "running" && state.requiredOk, phoneAccess: !!(settings && settings.phoneAccess), phoneActive: enginePhone && state.engine === "running" };
 }
 
 function setState(patch) {
   Object.assign(state, patch);
   if (win && !win.isDestroyed()) win.webContents.send("hq:state", publicState());
+  if (phoneWin && !phoneWin.isDestroyed()) phoneWin.webContents.send("phone:state", phoneState());
 }
 
 function say(line) {
@@ -97,6 +109,8 @@ async function start() {
     if (logStream) logStream.write(line + "\n");
   });
   say(`Agents HQ desktop ${app.getVersion()} on ${process.platform}; settings in ${userData}; office folder ${settings.officeDir}`);
+  loadPhone();
+  if (settings.phoneAccess) say("Phone access is on: phones on your network can open the office with the phone password.");
 
   // the office page may use the microphone (voice command); nothing else is granted
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => callback(permission === "media"));
@@ -273,11 +287,10 @@ function stream(cmd, args, opts = {}) {
 
 // ---------------------------------------------------------------- the engine
 
-async function engineEnv() {
-  const env = { ...process.env, HQ_PORT: String(settings.port), PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" };
+/** The environment for python: HQ_PORT, CLAUDE_BIN and, for the engine with `opts.phone`, the phone access settings when they are on. */
+async function engineEnv(opts = {}) {
   if (claudeBin === undefined) claudeBin = await resolveClaudeBin();
-  if (claudeBin) env.CLAUDE_BIN = claudeBin;
-  return env;
+  return lib.buildEngineEnv(process.env, { port: settings.port, claudeBin, phone: opts.phone && phoneOn() ? phone : null });
 }
 
 /** The claude executable the engine should start, or null to leave it to the PATH. */
@@ -305,12 +318,15 @@ async function startEngine() {
   // an engine from an earlier launch (or from "Open Agents HQ.bat") may already answer on the remembered port
   if (await lib.isAgentsHq(settings.port)) {
     say(`An Agents HQ engine already answers on port ${settings.port}; using it.`);
+    if (phoneOn()) say("That engine was not started by this app, so phone access is not active. Close the window where it runs, then press Restart.");
     externalEngine = true;
+    enginePhone = false;
     engineUp(settings.port);
     return;
   }
   externalEngine = false;
-  const port = await lib.findPort(settings.port);
+  // with phone access the engine listens on every network, so the port must be free there too
+  const port = await lib.findPort(settings.port, phoneOn() ? "0.0.0.0" : "127.0.0.1");
   if (!port) {
     setState({ phase: "error", engine: "stopped", message: 'Ports 7331 to 7340 are all busy. Close the programs that use them, then press "Check again".' });
     return;
@@ -318,9 +334,11 @@ async function startEngine() {
   if (port !== settings.port) { settings.port = port; saveSettings(); say(`Port ${state.port} is busy, using ${port}.`); }
   setState({ port });
 
-  const env = await engineEnv();
+  const env = await engineEnv({ phone: true });
+  const withPhone = env.HQ_HOST === "0.0.0.0";
   const args = [...pythonCmd.slice(1), "hq/server.py", "--no-browser"];
-  say(`Engine: ${pythonCmd[0]} ${args.join(" ")}   (port ${port}, folder ${settings.officeDir}${env.CLAUDE_BIN ? ", claude " + env.CLAUDE_BIN : ""})`);
+  say(`Engine: ${pythonCmd[0]} ${args.join(" ")}   (port ${port}, folder ${settings.officeDir}${env.CLAUDE_BIN ? ", claude " + env.CLAUDE_BIN : ""}` +
+    (withPhone ? ", phone access on: every network, password required except on this computer" : "") + ")");
   expectedExit = false;
   let me;
   try {
@@ -330,6 +348,7 @@ async function startEngine() {
     return;
   }
   child = me;
+  enginePhone = withPhone;
   me.stdout.on("data", (d) => log.push(d));
   me.stderr.on("data", (d) => log.push(d));
   me.on("error", (e) => say("The engine could not start: " + e.message));
@@ -369,6 +388,7 @@ function engineUp(port) {
 function onEngineExit(me, code, signal) {
   if (child !== me) return;
   child = null;
+  enginePhone = false;
   log.flush();
   if (expectedExit || quitting) { setState({ engine: "stopped" }); updateTray(); return; }
   const why = code != null ? `code ${code}` : `signal ${signal}`;
@@ -393,9 +413,10 @@ function stopEngine() {
   });
 }
 
-async function restartEngine() {
+/** Stop and start the engine again. `opts.focus: false` leaves the window where it is (the phone access window stays in front). */
+async function restartEngine(opts = {}) {
   if (booting) return;
-  showWindow();
+  if (opts.focus !== false) showWindow();
   showSetup();
   if (externalEngine && !child) {
     say("The running engine was not started by this app, so it cannot be restarted from here. Close the window where it runs, then press Restart.");
@@ -544,11 +565,13 @@ function updateTray() {
     { label: "Setup screen", click: () => { showWindow(); showSetup(); } },
     { label: "Open office folder", click: openFolder },
     { label: "Open engine log", click: openLog },
+    { label: "Phone access…", click: openPhoneWindow },
     { type: "separator" },
     { label: "Restart engine", click: () => restartEngine() },
     { label: "Check for updates", click: () => checkForUpdates() },
     { type: "separator" },
     { label: `Engine: ${state.engine}${state.engine === "running" ? " on port " + state.port : ""}`, enabled: false },
+    { label: `Phone access: ${enginePhone && state.engine === "running" ? "on" : settings && settings.phoneAccess ? "on, starts with the engine" : "off"}`, enabled: false },
     { label: "Quit", click: () => quit() },
   ]));
 }
@@ -562,6 +585,7 @@ function buildMenu() {
         { label: "Setup screen", click: () => { showWindow(); showSetup(); } },
         { label: "Open office folder", click: openFolder },
         { label: "Open engine log", click: openLog },
+        { label: "Phone access…", click: openPhoneWindow },
         { type: "separator" },
         { label: "Quit", accelerator: IS_MAC ? "Cmd+Q" : "Ctrl+Q", click: () => quit() },
       ],
@@ -594,11 +618,7 @@ function openLog() {
 
 // ---------------------------------------------------------------- the buttons of setup.html
 
-/**
- * "Install missing tools": a visible PowerShell window running the winget commands and the Claude Code installer.
- * The script is written to a file and started through `cmd /c start`, which gives PowerShell its own console
- * (a detached child of a GUI app has none, so it would run invisibly).
- */
+/** "Install missing tools": a visible PowerShell window running the winget commands and the Claude Code installer. */
 function installMissing() {
   const missing = state.tools.filter((t) => !t.ok);
   if (!missing.length) return { ok: true, message: "Everything is installed." };
@@ -606,17 +626,29 @@ function installMissing() {
     say("Install these yourself, then press Check again: " + missing.map((t) => t.label).join(", "));
     return { ok: false, message: "On this system, install " + missing.map((t) => t.label).join(", ") + " yourself, then press Check again." };
   }
+  say("Opening PowerShell to install: " + missing.map((t) => t.label).join(", "));
+  const err = openPowerShell("Agents HQ: installing tools", "install-tools.ps1", lib.installLines(state.tools));
+  if (err) return { ok: false, message: "PowerShell could not be opened: " + err };
+  return { ok: true, message: "A PowerShell window is installing the tools. Approve the Windows prompts, wait until it says Done, then press Check again." };
+}
+
+/**
+ * Windows: write the lines to userData/<file> and run them in a visible PowerShell window titled `title`.
+ * The script is started through `cmd /c start`, which gives PowerShell its own console (a detached child of a GUI
+ * app has none, so it would run invisibly). Returns null, or the error message.
+ */
+function openPowerShell(title, file, lines) {
   try {
-    const script = path.join(app.getPath("userData"), "install-tools.ps1");
-    fs.writeFileSync(script, lib.installLines(state.tools).join("\r\n") + "\r\n", "utf8");
-    say("Opening PowerShell to install: " + missing.map((t) => t.label).join(", ") + ` (${script})`);
-    const p = spawn("cmd.exe", ["/c", "start", "Agents HQ: installing tools", "powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", script],
+    const script = path.join(app.getPath("userData"), file);
+    fs.writeFileSync(script, lines.join("\r\n") + "\r\n", "utf8");
+    say(`PowerShell: ${script}`);
+    const p = spawn("cmd.exe", ["/c", "start", title, "powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", script],
       { detached: true, stdio: "ignore", windowsHide: true });
     p.on("error", (e) => say("PowerShell could not be opened: " + e.message));
     p.unref();
-    return { ok: true, message: "A PowerShell window is installing the tools. Approve the Windows prompts, wait until it says Done, then press Check again." };
+    return null;
   } catch (e) {
-    return { ok: false, message: "PowerShell could not be opened: " + e.message };
+    return e.message;
   }
 }
 
@@ -675,6 +707,239 @@ function registerIpc() {
   ipcMain.handle("hq:openFolder", async () => ({ ok: !(await openFolder()) }));
   ipcMain.handle("hq:openLog", async () => ({ ok: !(await openLog()) }));
   ipcMain.handle("hq:start", () => startOrOpen());
+  ipcMain.handle("hq:openPhone", () => { openPhoneWindow(); return { ok: true, message: "" }; });
+
+  // phone access: only the app's own pages (file://) may call these; the office page in the window is http://
+  const fromApp = (fn) => async (e, ...args) => {
+    if (!fromAppPage(e)) return { ok: false, message: "Only the Agents HQ app window can change phone access." };
+    return fn(...args);
+  };
+  ipcMain.handle("phone:get", fromApp(() => phoneState()));
+  ipcMain.handle("phone:set", fromApp((req) => setPhone(req)));
+  ipcMain.handle("phone:qr", fromApp((url) => phoneQr(url)));
+  ipcMain.handle("phone:tailscale", fromApp(() => tailscaleInfo()));
+  ipcMain.handle("phone:install-tailscale", fromApp(() => installTailscale()));
+  ipcMain.handle("phone:generate", fromApp(() => ({ ok: true, password: lib.generatePassword() })));
+  ipcMain.handle("phone:copy", fromApp((text) => {
+    if (typeof text !== "string" || !text || text.length > 500) return { ok: false, message: "Nothing to copy." };
+    clipboard.writeText(text);
+    return { ok: true, message: "Copied." };
+  }));
+}
+
+function fromAppPage(e) {
+  try { return new URL(e.senderFrame.url).protocol === "file:"; } catch (_) { return false; }
+}
+
+// ---------------------------------------------------------------- phone access
+
+/** safeStorage that really encrypts: on Linux without a keyring Electron falls back to a fixed key ("basic_text"), which is not encryption. */
+function canEncrypt() {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return false;
+    if (process.platform === "linux" && typeof safeStorage.getSelectedStorageBackend === "function" && safeStorage.getSelectedStorageBackend() === "basic_text") return false;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function readSecret(encKey, plainKey) {
+  const enc = settings[encKey];
+  if (typeof enc === "string" && enc) {
+    try {
+      if (safeStorage.isEncryptionAvailable()) return safeStorage.decryptString(Buffer.from(enc, "base64"));
+    } catch (e) {
+      say(`The saved ${plainKey === "phonePassword" ? "phone password" : "phone login key"} could not be decrypted (${e.message}).`);
+    }
+    return "";
+  }
+  return typeof settings[plainKey] === "string" ? settings[plainKey] : "";
+}
+
+function writeSecret(encKey, plainKey, value, encrypt) {
+  delete settings[encKey];
+  delete settings[plainKey];
+  if (!value) return;
+  if (encrypt) settings[encKey] = safeStorage.encryptString(value).toString("base64");
+  else settings[plainKey] = value;
+}
+
+/** Save the phone password and the cookie secret: encrypted when the system can, else as plain text with a note saying so. */
+function savePhone() {
+  let encrypt = canEncrypt();
+  try {
+    writeSecret("phonePasswordEncrypted", "phonePassword", phone.password, encrypt);
+    writeSecret("phoneSecretEncrypted", "phoneSecret", phone.secret, encrypt);
+  } catch (e) {
+    say("Could not encrypt the phone password (" + e.message + "); it is saved as plain text in settings.json.");
+    encrypt = false;
+    writeSecret("phonePasswordEncrypted", "phonePassword", phone.password, false);
+    writeSecret("phoneSecretEncrypted", "phoneSecret", phone.secret, false);
+  }
+  if (encrypt) delete settings.phoneStorageNote;
+  else settings.phoneStorageNote = "phonePassword and phoneSecret are stored as plain text: this system offers no encryption to Electron's safeStorage. Anyone who can read this file can log in to your office from a phone.";
+  saveSettings();
+}
+
+/** At start: read the phone settings, make the cookie secret once, and keep phone access off without a usable password. */
+function loadPhone() {
+  if (typeof settings.phoneAccess !== "boolean") settings.phoneAccess = false;
+  phone.password = readSecret("phonePasswordEncrypted", "phonePassword");
+  phone.secret = readSecret("phoneSecretEncrypted", "phoneSecret");
+  let changed = false;
+  if (!/^[0-9a-f]{64}$/.test(phone.secret)) { phone.secret = crypto.randomBytes(32).toString("hex"); changed = true; }
+  if (settings.phoneAccess && lib.passwordProblem(phone.password)) {
+    settings.phoneAccess = false;
+    changed = true;
+    say("Phone access was turned off because no usable phone password is saved. Open File > Phone access to set one and turn it on again.");
+  }
+  // a secret or password saved as plain text earlier is encrypted as soon as the system can
+  if (changed || (canEncrypt() && (settings.phonePassword || settings.phoneSecret))) savePhone();
+}
+
+function phoneOn() {
+  return !!settings.phoneAccess && !lib.passwordProblem(phone.password) && !!phone.secret;
+}
+
+/** What phone.html shows. The password goes only to the app's own pages (see fromAppPage). */
+function phoneState() {
+  const on = !!(settings && settings.phoneAccess);
+  const active = enginePhone && state.engine === "running";
+  return {
+    on, active,
+    engine: state.engine, busy: booting, external: externalEngine && !child,
+    port: state.port,
+    password: phone.password, minLength: lib.PHONE_MIN_PASSWORD,
+    addresses: on ? lib.phoneAddresses(os.networkInterfaces(), state.port) : [],
+    encrypted: !settings.phonePassword && !settings.phoneSecret,
+    platform: process.platform,
+  };
+}
+
+function openPhoneWindow() {
+  if (phoneWin && !phoneWin.isDestroyed()) {
+    if (phoneWin.isMinimized()) phoneWin.restore();
+    phoneWin.show();
+    phoneWin.focus();
+    return;
+  }
+  phoneWin = new BrowserWindow({
+    width: 900, height: 900, minWidth: 560, minHeight: 600,
+    title: "Agents HQ: Phone access",
+    backgroundColor: "#0b0f1a",
+    icon: path.join(ASSETS, "icon.png"),
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  phoneWin.removeMenu();
+  phoneWin.once("ready-to-show", () => phoneWin && phoneWin.show());
+  phoneWin.on("page-title-updated", (e) => e.preventDefault());
+  phoneWin.webContents.setWindowOpenHandler(({ url }) => { openOutside(url); return { action: "deny" }; });
+  phoneWin.webContents.on("will-navigate", (e, url) => { e.preventDefault(); openOutside(url); });
+  phoneWin.on("closed", () => { phoneWin = null; });
+  phoneWin.loadFile(PHONE_PAGE);
+}
+
+/**
+ * phone.html's switch and password: { on, password }. Turning on needs a password of 8+ characters; turning off always
+ * works. A new password also makes a new cookie secret, so every phone logged in with the old one has to log in again.
+ * When the engine runs, it is restarted with the new settings and the window reloads the office.
+ */
+let phoneChanging = false;
+
+async function setPhone(req) {
+  if (phoneChanging) return { ok: false, message: "Phone access is already changing. Wait a moment, then try again.", ...phoneState() };
+  phoneChanging = true;
+  try {
+    return await applyPhone(req);
+  } finally {
+    phoneChanging = false;
+  }
+}
+
+async function applyPhone(req) {
+  req = req && typeof req === "object" ? req : {};
+  const wantOn = req.on === true;
+  const typed = typeof req.password === "string" ? req.password : null;
+  if (wantOn) {
+    const problem = lib.passwordProblem(typed != null ? typed : phone.password);
+    if (problem) return { ok: false, message: problem, ...phoneState() };
+  }
+  const pwChanged = typed != null && !lib.passwordProblem(typed) && typed !== phone.password;
+  const hadPassword = !!phone.password;
+  if (pwChanged) {
+    phone.password = typed;
+    if (hadPassword) phone.secret = crypto.randomBytes(32).toString("hex");
+  }
+  const flipped = wantOn !== !!settings.phoneAccess;
+  settings.phoneAccess = wantOn;
+  savePhone();
+  if (flipped) say(wantOn ? "Phone access turned on." : "Phone access turned off: only this computer can open the office.");
+  else if (pwChanged) say("The phone password was changed; every phone has to log in again.");
+  updateTray();
+
+  const needRestart = wantOn !== enginePhone || (wantOn && pwChanged);
+  if (!needRestart) return { ok: true, message: pwChanged ? "The new password is saved." : wantOn ? "Phone access is on." : "Phone access is off.", ...phoneState() };
+
+  // the engine is starting right now: wait for that to finish, then restart it with the new settings
+  for (let i = 0; booting && i < 1200; i++) await new Promise((r) => setTimeout(r, 500));
+  if (externalEngine && !child) {
+    return { ok: false, message: "The engine running now was not started by this app, so it cannot pick up phone access. Close the window where it runs, then press Restart on the setup screen.", ...phoneState() };
+  }
+  if (!child) {
+    return { ok: true, message: (wantOn ? "Phone access is saved and starts with the engine." : "Phone access is off.") + " The engine is not running; press Restart on the setup screen to start it.", ...phoneState() };
+  }
+  await restartEngine({ focus: false });
+  if (phoneWin && !phoneWin.isDestroyed()) phoneWin.focus();
+  if (state.engine !== "running") {
+    return { ok: false, message: "The engine did not start again. Open the setup screen to see why in the log, then press Restart.", ...phoneState() };
+  }
+  if (enginePhone !== wantOn) {
+    return { ok: false, message: "The engine restarted, but phone access did not change. Press Restart engine in the tray menu and try again.", ...phoneState() };
+  }
+  const message = !wantOn ? "Phone access is off. Only this computer can open the office now."
+    : pwChanged && hadPassword ? "The new password is active. Every phone has to log in again with it."
+    : "Phone access is on. On your phone, open one of the addresses below and type the password.";
+  return { ok: true, message, ...phoneState() };
+}
+
+/** A QR code (PNG data URL) for one of the phone addresses. */
+async function phoneQr(url) {
+  if (typeof url !== "string" || !/^http:\/\/\d{1,3}(\.\d{1,3}){3}:\d{1,5}\/?$/.test(url)) return { ok: false, message: "That is not a phone address." };
+  try {
+    const QRCode = require("qrcode");
+    const dataUrl = await QRCode.toDataURL(url, { errorCorrectionLevel: "M", margin: 2, width: 240, color: { dark: "#000000", light: "#ffffff" } });
+    return { ok: true, url, dataUrl };
+  } catch (e) {
+    say("The QR code could not be made: " + e.message);
+    return { ok: false, message: "The QR code could not be made. Type the address on the phone instead." };
+  }
+}
+
+/** Tailscale: { state: connected | signed-out | missing, ip, canInstall }. */
+async function tailscaleInfo() {
+  try {
+    if (IS_WIN) await lib.refreshPath(process.env);     // installed while the app is open
+    const st = await lib.checkTailscale();
+    return { ok: true, ...st, canInstall: IS_WIN };
+  } catch (e) {
+    return { ok: false, state: "missing", ip: "", canInstall: IS_WIN, message: "Tailscale could not be checked: " + e.message };
+  }
+}
+
+function installTailscale() {
+  if (!IS_WIN) return { ok: false, message: "On this system, install Tailscale from tailscale.com/download, sign in, then press Check Tailscale." };
+  say("Opening PowerShell to install Tailscale.");
+  const err = openPowerShell("Agents HQ: installing Tailscale", "install-tailscale.ps1", lib.tailscaleInstallLines());
+  if (err) return { ok: false, message: "PowerShell could not be opened: " + err };
+  return { ok: true, message: "A PowerShell window is installing Tailscale. Approve the Windows prompt, wait until it says Done, sign in to Tailscale, then press Check Tailscale." };
 }
 
 // ---------------------------------------------------------------- quit
