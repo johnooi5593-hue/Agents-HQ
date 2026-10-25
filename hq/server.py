@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from status import CLIP_EXT, brain_entities, brain_notes, collect  # noqa: E402
+import activity  # noqa: E402  (watches every Claude Code session on this computer)
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
 HOST = os.environ.get("HQ_HOST", "127.0.0.1")
@@ -210,7 +211,28 @@ def events(after=0):
             open_ids.pop(e.get("id") or e.get("agent"), None)
     for name in open_ids.values():
         running[name] = running.get(name, 0) + 1
-    return {"events": lines[after:], "offset": after, "total": len(lines), "running": running}
+    act = claude_activity()                                   # Claude sessions anywhere on this computer (see hq/activity.py)
+    for name, n in act["running"].items():
+        running[name] = max(running.get(name, 0), n)          # the same work seen twice counts once
+    return {"events": lines[after:], "offset": after, "total": len(lines), "running": running,
+            "activity": act["text"], "sessions": act["sessions"]}
+
+
+_activity_cache = {"t": 0.0, "v": {"running": {}, "text": {}, "sessions": []}}
+_activity_lock = threading.Lock()
+
+
+def claude_activity():
+    """activity.scan() at most once every 1.5 s, shared by every request."""
+    with _activity_lock:
+        if time.time() - _activity_cache["t"] > 1.5:
+            try:
+                names = [a["name"] for a in agents()["agents"]]
+                _activity_cache["v"] = activity.scan(agent_names=names)
+            except Exception as e:                               # never let the watcher break the office
+                sys.stderr.write(f"activity watch skipped: {e}\n")
+            _activity_cache["t"] = time.time()
+        return _activity_cache["v"]
 
 
 # the board: hq/tasks.json, shared with hq/tasks.js

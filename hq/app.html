@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#161922">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Agents HQ">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237583fb'/%3E%3Cstop offset='.55' stop-color='%233f7fbf'/%3E%3Cstop offset='1' stop-color='%2314343d'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Crect x='17' y='17' width='30' height='30' rx='8' fill='none' stroke='%23fff' stroke-width='5'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/png;base64,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">
 <title>Agents HQ</title>
 <meta name="description" content="Agents HQ: an office of AI agents in eight teams around one shared brain.">
 <link rel="stylesheet" href="/hud.css">
@@ -27,18 +35,22 @@
       </div>
     </div>
     <nav class="tabs" id="tabs" aria-label="Views">
-      <button class="tab active" id="tab-office" data-view="office" type="button">Office</button>
-      <button class="tab" id="tab-tasks" data-view="tasks" type="button">Tasks <span class="badge zero" id="tasks-badge">0</span></button>
-      <button class="tab" id="tab-calendar" data-view="calendar" type="button">Calendar</button>
-      <button class="tab" id="tab-brain" data-view="brain" type="button">Brain</button>
+      <button class="tab active" id="tab-office" data-view="office" type="button"><svg class="i tab-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span class="tl">Office</span></button>
+      <button class="tab" id="tab-tasks" data-view="tasks" type="button"><svg class="i tab-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"/></svg><span class="tl">Tasks</span> <span class="badge zero" id="tasks-badge">0</span></button>
+      <button class="tab" id="tab-calendar" data-view="calendar" type="button"><svg class="i tab-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span class="tl">Calendar</span></button>
+      <button class="tab" id="tab-brain" data-view="brain" type="button"><svg class="i tab-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 4v2M12 18v2M4 12h2M18 12h2"/></svg><span class="tl">Brain</span></button>
+      <button class="tab tab-lead" id="tab-lead" data-view="lead" type="button" aria-label="Lead log and messages"><svg class="i tab-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12Z"/></svg><span class="tl">Lead</span><i class="dot lead-dot"></i></button>
     </nav>
     <div class="tb-right">
+      <button id="ask-open" class="tb-ico" type="button" title="Ask any agent" aria-label="Ask any agent"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
       <form id="ask-any" class="ask ia" autocomplete="off">
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <span class="who" id="ask-who"></span>
-        <input id="ask-input" type="text" placeholder="Ask any agent…" aria-label="Ask any agent">
+        <input id="ask-input" type="text" placeholder="Ask any agent…" aria-label="Ask any agent" enterkeyhint="send">
         <button class="mic" id="ask-mic" type="button" title="Talk to the office" data-voice><svg class="i" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <kbd id="ask-kbd">⌘K</kbd>
+        <button class="ask-send" id="ask-send" type="submit" title="Send" aria-label="Send"><svg class="i" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
+        <button class="xbtn ask-x" id="ask-close" type="button" title="Close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         <div class="ask-menu" id="ask-menu" hidden></div>
       </form>
       <div id="agents-pill" class="agents-pill"><i class="dot"></i><span id="agents-pill-text">… agents</span></div>
@@ -82,22 +94,22 @@
 
   <!-- the lead's log drawer (collapsed console) -->
   <div id="lead-log">
-    <div class="bar" id="lead-bar"><i class="dot"></i><span class="lt" id="lead-text">Lead · idle</span><span class="car">▴</span></div>
+    <div class="bar" id="lead-bar"><i class="dot"></i><span class="lt" id="lead-text">Lead · idle</span><span class="car">▴</span><button class="xbtn lead-x" id="lead-close" type="button" title="Close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
     <div class="con" id="lead-con"><div class="ev system">waiting for the first message</div></div>
-    <form id="lead-form"><input id="lead-input" type="text" placeholder="Tell the lead anything, for example: OK, or: make the hook shorter" autocomplete="off"><button type="submit">Send</button></form>
+    <form id="lead-form"><input id="lead-input" type="text" placeholder="Tell the lead anything, for example: OK, or: make the hook shorter" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>
   </div>
 
   <!-- voice: a small orb button when idle, the full listening overlay when open -->
   <div id="voice-orb" class="mini ia" role="button" tabindex="0" title="Talk to the office">
     <div class="ghost g1"></div><div class="ghost g2"></div><div class="ghost g3"></div>
-    <button class="xbtn vx" id="voice-close" type="button" title="Close">×</button>
+    <button class="xbtn vx" id="voice-close" type="button" title="Close" aria-label="Close">×</button>
     <div class="stage">
       <div class="orb" id="orb"></div>
       <div class="cap" id="voice-cap">Listening</div>
       <div class="hint" id="voice-hint"></div>
     </div>
     <div id="voice-bar">
-      <div class="tbox" id="voice-tbox"><span class="wave" id="voice-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><textarea id="voice-text" rows="2" placeholder="Listening…"></textarea></div>
+      <div class="tbox" id="voice-tbox"><span class="wave" id="voice-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><textarea id="voice-text" rows="2" placeholder="Listening…" enterkeyhint="send"></textarea></div>
       <button class="vbtn mic" id="voice-mic" type="button" title="Microphone"><svg class="i" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
       <button class="vbtn send" id="voice-send" type="button" title="Send"><svg class="i" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
     </div>

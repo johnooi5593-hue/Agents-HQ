@@ -20,6 +20,10 @@
   const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : "");
   const cssq = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"));
   const BAR_H = 46;                                         // --bar-h in hud.css: billboards never slide under the top bar
+  // Phones: the same query as the phone block in hud.css and PHONE_Q in office3d.js
+  const PHONE_Q = "(max-width: 600px), (max-height: 500px) and (max-width: 1000px)";
+  const phoneMQ = window.matchMedia ? window.matchMedia(PHONE_Q) : null;
+  const isPhone = () => !!(phoneMQ && phoneMQ.matches);
   const fmtTime = (t) => String(t || "").replace(/^0(\d:)/, "$1");   // "09:00" → "9:00" like the video
   const DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -111,7 +115,7 @@
   // plus "chief of staff" while a run is active. The scene reads this every frame.
   function runningMap() {
     const out = {}, st = state.status;
-    for (const [k, v] of Object.entries(hookRun())) if (v > 0) out[k] = true;
+    for (const [k, v] of Object.entries(hookRun())) if (v > 0) out[k] = (state.activity && state.activity[k]) || true;   // task text from Claude's session logs
     for (const [k, v] of Object.entries(state.working)) out[k] = v || true;
     if ((st && st.desk && st.desk.busy) || state.run.id) out["chief of staff"] = "working";
     if (state.voice && state.voice.listening) out["chief of staff"] = "listening";
@@ -218,7 +222,8 @@
     try {
       const r = await getJSON(`/api/events?after=${state.evOffset}`);
       state.evOffset = r.total != null ? r.total : state.evOffset; state.hookAt = Date.now();
-      const sig = JSON.stringify(r.running || {});
+      state.activity = r.activity || {};
+      const sig = JSON.stringify(r.running || {}) + JSON.stringify(state.activity);
       if (sig === state.hookSig) return;
       state.hookSig = sig; state.hookRunning = r.running || {}; if (state.status) state.status.running = state.hookRunning;
       noteHookStarts(state.hookRunning); subsCache.t = 0;
@@ -270,21 +275,22 @@
     const host = $("#toasts");
     const node = el(`<div class="toast ${item.bad ? "bad" : ""}">${iconTile(item.teamKey)}<div><div class="title">${esc(item.title || item.team)}</div><div class="body">${esc(item.body)}</div></div><span class="when">now</span></div>`);
     host.prepend(node);
-    while (host.children.length > 3) host.lastElementChild.remove();
+    while (host.children.length > (isPhone() ? 2 : 3)) host.lastElementChild.remove();
     const gone = () => { node.classList.add("fade"); setTimeout(() => node.remove(), 650); };
     node.addEventListener("click", gone);
-    setTimeout(gone, 12000);
+    setTimeout(gone, isPhone() ? 7000 : 12000);
   }
   function renderBell() {
     const b = $("#bell-badge"); b.hidden = !state.unread; b.textContent = state.unread > 9 ? "9+" : String(state.unread);
     const list = $("#notif-list"); if (list.hidden) return;
     const rows = state.notifs.slice().reverse().map((n) => `<div class="notif">${iconTile(n.teamKey)}<div><div class="title">${esc(n.title || n.team)}</div><div class="body">${esc(n.body)}</div></div><span class="when">${esc(timeAgo(n.ts) || "now")}</span></div>`).join("");
-    list.innerHTML = `<div class="hd"><span>Notifications</span><button type="button" id="notif-clear">clear</button></div>${rows || '<div class="empty">Nothing yet. The bell rings when a team finishes something, starts sub-agents or needs your OK.</div>'}`;
+    list.innerHTML = `<div class="hd"><span>Notifications</span><button type="button" id="notif-clear">clear</button><button type="button" class="xbtn notif-x" data-notif-close title="Close">${svg("close")}</button></div>${rows || '<div class="empty">Nothing yet. The bell rings when a team finishes something, starts sub-agents or needs your OK.</div>'}`;
     $("#notif-clear").onclick = () => { state.notifs = []; state.unread = 0; renderBell(); };
   }
   function toggleBell(force) {
-    const list = $("#notif-list"); list.hidden = force != null ? !force : !list.hidden;
+    const list = $("#notif-list"), was = list.hidden; list.hidden = force != null ? !force : !list.hidden;
     if (!list.hidden) { state.unread = 0; renderBell(); } else renderBell();
+    if (was !== list.hidden && typeof phonePause === "function") phonePause();
   }
 
   // ---------- top bar ----------
@@ -302,14 +308,15 @@
   }
   function renderTopbar() {
     const st = state.status, c = liveCounts();
-    $("#agents-pill-text").textContent = `${c.agents} agents · ${c.running} running`;
+    $("#agents-pill-text").textContent = isPhone() ? `${c.agents} · ${c.running} running` : `${c.agents} agents · ${c.running} running`;
     $("#agents-pill").classList.toggle("live", c.running > 0);
     const n = (st && st.counts && st.counts.tasks_running) || 0, badge = $("#tasks-badge");
     badge.textContent = String(n); badge.classList.toggle("zero", !n);
     $("#logout-form").hidden = !(st && st.auth);
     const lb = $("#lead-log"), busy = !!((st && st.desk && st.desk.busy) || state.run.id);
-    lb.classList.toggle("busy", busy);
-    if (!state.run.id) $("#lead-text").textContent = busy ? "Lead · working…" : state.lastReply ? "Lead · " + shortTask(state.lastReply, 60) : "Lead · idle";
+    lb.classList.toggle("busy", busy); $("#tab-lead").classList.toggle("busy", busy);
+    const outside = state.activity && state.activity["chief of staff"];   // Claude working in another window or folder
+    if (!state.run.id) $("#lead-text").textContent = busy ? "Lead · working…" : outside ? "Lead · working: " + shortTask(outside, 60) : state.lastReply ? "Lead · " + shortTask(state.lastReply, 60) : "Lead · idle";
   }
   function ownerName() {
     const c = (state.brain && state.brain.Company) || [];
@@ -346,7 +353,7 @@
       if (!card) {
         card = el(`<div class="team-card ia" data-team="${esc(t.key)}"></div>`);
         card.style.setProperty("--tc", accent(t));
-        card.addEventListener("click", () => openTeam(t.key));
+        card.addEventListener("click", () => roomTap(t.key));
         host.appendChild(card);
       }
       if (card.dataset.html !== html) { card.innerHTML = html; card.dataset.html = html; }
@@ -413,14 +420,19 @@
   }
 
   // ---------- projection: place the billboards every frame from HQ_OFFICE.project(kind, key) ----------
-  function project(kind, key) { try { return window.HQ_OFFICE.project(kind, key) || null; } catch (e) { return null; } }
+  function projectRaw(kind, key) { try { return window.HQ_OFFICE.project(kind, key) || null; } catch (e) { return null; } }
   function tick() {
     requestAnimationFrame(tick);
     if (!hasProject() || document.hidden) return;
+    const phone = isPhone();
+    if (phone && state.view !== "office") return;                       // a full sheet covers the office: nothing to place
     // billboards keep a near-constant pixel size, scaled slightly with distance (project().scale when the scene gives it)
-    const vf = clamp(Math.min(window.innerWidth / 1440, window.innerHeight / 810), 0.8, 1);     // small windows: smaller billboards
-    const scaleOf = (p) => vf * clamp(0.72 + 0.28 * (p && p.scale ? p.scale : state.zoom / 100), 0.88, 1.35);
-    const cardPos = {}, W = window.innerWidth, H = window.innerHeight;
+    const vf = phone ? 1 : clamp(Math.min(window.innerWidth / 1440, window.innerHeight / 810), 0.8, 1);     // small windows: smaller billboards
+    const scaleOf = phone ? (p) => clamp(0.86 + 0.14 * (p && p.scale ? p.scale : state.zoom / 100), 0.9, 1.08) : (p) => vf * clamp(0.72 + 0.28 * (p && p.scale ? p.scale : state.zoom / 100), 0.88, 1.35);
+    const cardPos = {}, W = window.innerWidth, H = phone ? $("#tabs").getBoundingClientRect().top : window.innerHeight;
+    const barH = phone ? $("#topbar").offsetHeight : BAR_H;
+    const box = $("#office3d").getBoundingClientRect(), ox = box.left, oy = box.top;   // project() is relative to #office3d (between the bars on a phone)
+    const project = (kind, key) => { const p = projectRaw(kind, key); return p && (ox || oy) ? Object.assign({}, p, { x: p.x + ox, y: p.y + oy }) : p; };
     // screen-fixed chrome the billboards never slide under: the docked card of the focused room, the sub-agent cards
     // the sub-agent progress cards belong to the close-up (the video shows them beside the zoomed room); at office-wide
     // zoom the team cards say "3 sub-agents" and keep the right side free
@@ -434,10 +446,11 @@
       const hide = state.view === "team" && state.panelTeam === key && state.zoom > 135;
       const p = project("team", key);
       if (!p || p.visible === false || hide) { card.classList.remove("show"); continue; }
-      const s = scaleOf(p), w = card.offsetWidth * s, h = card.offsetHeight * s, top = BAR_H + 12 + h + 14;   // the card's top edge never goes under the top bar
+      const s = scaleOf(p), w = card.offsetWidth * s, h = card.offsetHeight * s, top = barH + (phone ? 6 : 12) + h + (phone ? 8 : 14);   // the card's top edge never goes under the top bar
+      if (phone && state.focused && p.y < top - 4) { card.classList.remove("show"); continue; }   // a phone close-up: rooms above the frame keep their cards out of the way
       const x = Math.round(p.x), y = Math.round(Math.max(p.y, top));
       // a card mostly off-screen, or one that would slide under the docked card of the focused room, stays hidden
-      const offscreen = x < 24 || x > W - 24 || y > H + 20;                   // more than half off-screen
+      const offscreen = x < 24 || x > W - 24 || y > H + (phone ? -4 : 20);                   // more than half off-screen (a phone: under the tab bar)
       if (offscreen || blocked(x - w / 2, y - h, x + w / 2, y)) { card.classList.remove("show"); continue; }
       cardPos[key] = { p, s, w, h, x, y };
       card.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%) scale(${s})`;
@@ -457,19 +470,19 @@
     for (const pill of $("#agent-pills").children) {
       const lvl = pill.dataset.show, p = lvl && lvl !== "0" ? project(pill.dataset.kind, pill.dataset.key) : null;
       const near = p && (p.near != null ? !!p.near : state.zoom >= 160);         // pills show inside the zoomed room only, like the video
-      if (!p || p.visible === false || !near) { pill.classList.remove("show"); continue; }
+      if (!p || p.visible === false || !near || (phone && (p.y > H || p.y < barH + 20))) { pill.classList.remove("show"); continue; }
       pill.style.transform = `translate3d(${Math.round(p.x)}px, ${Math.round(p.y - 4)}px, 0) translate(-50%, -100%) scale(${scaleOf(p)})`;
       pill.classList.add("show");
     }
     const b = $("#brain-label"), pb = project("brain", "brain");
-    if (pb && pb.visible !== false) { b.style.transform = `translate3d(${Math.round(pb.x)}px, ${Math.round(pb.y - 8)}px, 0) translate(-50%, -100%) scale(${scaleOf(pb)})`; b.classList.add("show"); } else b.classList.remove("show");
+    if (pb && pb.visible !== false && !(phone && (pb.y > H || pb.y < barH + 30))) { b.style.transform = `translate3d(${Math.round(pb.x)}px, ${Math.round(pb.y - 8)}px, 0) translate(-50%, -100%) scale(${scaleOf(pb)})`; b.classList.add("show"); } else b.classList.remove("show");
   }
 
   // ---------- room label card (bottom-left) and the RUNS ON chips ----------
   function renderRoomLabel() {
     const box = $("#room-label"), t = teamByKey(state.focused);
     if (!t) { box.hidden = true; return; }
-    const html = `<span class="bar"></span><div><div class="t1">${esc(t.name)}</div><div class="t2">${esc(t.tagline || "")}</div></div>`;
+    const html = `<span class="bar"></span><div><div class="t1">${esc(t.name)}</div><div class="t2">${esc(t.tagline || "")}</div></div><div class="rl-btns"><button class="btn sm blue" type="button" data-team-open="${esc(t.key)}">Open</button><button class="xbtn" type="button" data-overview title="Back to the overview">${svg("close")}</button></div>`;
     if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; box.style.setProperty("--tc", accent(t)); }
     box.hidden = false;
   }
@@ -494,7 +507,7 @@
   }
   let mapSig = "";
   function drawMinimap(ms) {
-    const cv = $("#minimap-canvas"); if (!cv) return;
+    const cv = $("#minimap-canvas"); if (!cv || !cv.offsetParent) return;   // hidden (a phone): nothing to draw
     const dpr = Math.min(2, window.devicePixelRatio || 1), W = cv.clientWidth || 132, H = cv.clientHeight || 78;
     ms = ms || callScene("minimapState") || fallbackMap(); const run = runningMap();
     $("#minimap-zoom").textContent = `${Math.round(state.zoom)}%`;
@@ -539,8 +552,11 @@
     for (const [v, id] of Object.entries(PANELS)) $(id).hidden = v !== state.view;
     $("#hud").classList.toggle("panel-open", state.view !== "office");
     $("#hud").classList.toggle("board-open", state.view === "tasks");
+    $("#hud").dataset.view = state.view;
     for (const b of $$("#tabs .tab")) b.classList.toggle("open", b.dataset.view === state.view);
     closeMenus();
+    if (isPhone()) { closeAsk(); if (state.view !== "office") setLead(false); }
+    phonePause();
     if (state.view === "tasks") renderBoard();
     if (state.view === "calendar") loadCalendar();
     if (state.view === "brain") { renderBrain(); loadBrain(); }
@@ -559,6 +575,20 @@
     renderRoomLabel(); renderChips(); renderAgentPills(); renderTeamCards();
   }
   function goOverview() { state.focused = null; callScene("overview"); renderAll(); }
+  // A phone: a tap on a team card or a double-tap on a room flies there first; a second tap (or Open) opens the team.
+  function roomTap(key) { if (isPhone() && state.focused !== key) focusTeam(key); else openTeam(key); }
+  // A phone: the office does not draw while a full sheet covers it (battery), and resumes when it closes.
+  function phonePause() { const cover = isPhone() && (state.view !== "office" || $("#lead-log").classList.contains("open") || $("#hud").classList.contains("ask-open") || !$("#notif-list").hidden || !!state.voice); callScene("pause", cover); }
+  // the lead log: a drawer on desktop, a sheet on a phone (the Lead tab)
+  function setLead(on) {
+    const lg = $("#lead-log"); lg.classList.toggle("open", !!on);
+    $("#hud").classList.toggle("lead-open", !!on && isPhone());
+    if (on) { const con = $("#lead-con"); con.scrollTop = con.scrollHeight; if (isPhone()) closeAsk(); }
+    phonePause();
+  }
+  // the ask sheet on a phone (the search icon in the top bar): input, mic, send and the agent picker
+  function openAsk() { const hud = $("#hud"); if (!hud.classList.contains("ask-open")) { hud.classList.add("ask-open"); setLead(false); toggleBell(false); } buildAskMenu(); $("#ask-menu").hidden = false; const i = $("#ask-input"); i.focus(); phonePause(); }
+  function closeAsk() { const hud = $("#hud"); if (!hud.classList.contains("ask-open")) return; hud.classList.remove("ask-open"); $("#ask-input").blur(); $("#ask-menu").hidden = true; phonePause(); }
   function closeMenus() { $("#user-dropdown").hidden = true; $("#ask-menu").hidden = true; toggleBell(false); }
 
   // ---------- shared pieces: sparklines, team tag pills, task rows ----------
@@ -686,8 +716,9 @@
     const scrollTop = p.querySelector(".pbody") ? p.querySelector(".pbody").scrollTop : 0;
     const teamOpts = state.teams.map((t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
     let body = "";
-    if (show("running")) body += sec("Running", "#4f8cff", doing.length) + (doing.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing running. Press Run on a task or send a brief.</div>');
-    if (show("waiting")) body += sec("Waiting for you", "#e4c830", counts.waiting) + outWaiting.map(approvalRow).join("") + (review.map(taskRow).join("") || (outWaiting.length ? "" : '<div class="hint" style="margin:2px 0 6px">Nothing waits for your OK.</div>'));
+    const runningSec = show("running") ? sec("Running", "#4f8cff", doing.length) + (doing.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing running. Press Run on a task or send a brief.</div>') : "";
+    const waitingSec = show("waiting") ? sec("Waiting for you", "#e4c830", counts.waiting) + outWaiting.map(approvalRow).join("") + (review.map(taskRow).join("") || (outWaiting.length ? "" : '<div class="hint" style="margin:2px 0 6px">Nothing waits for your OK.</div>')) : "";
+    body += isPhone() ? waitingSec + runningSec : runningSec + waitingSec;      // a phone is for approving: what waits for you comes first
     if (f === "all" && todo.length) body += sec("To do", "#6b7280", todo.length) + todo.map(taskRow).join("");
     if (show("done")) body += sec("Done today", "#4cceac", done.length) + (done.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing finished yet today.</div>');
     p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">Whole office · today</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
@@ -765,21 +796,22 @@
     const box = $("#voice-orb"); if (!box.classList.contains("mini")) return;
     box.classList.remove("mini"); box.classList.add("open");
     closeMenus(); $("#ask-input").blur();
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    // the microphone needs a secure page (https or this computer); over plain http on Wi-Fi it types instead
+    const SR = window.isSecureContext === false ? null : window.SpeechRecognition || window.webkitSpeechRecognition;
     state.voice = { listening: false, rec: null, typed: !SR, text: "" };
     const ta = $("#voice-text"); ta.value = ""; ta.readOnly = false; ta.placeholder = SR ? "Listening…" : "Type what you would say…";
     $("#voice-tbox").classList.toggle("typed", !SR); $("#voice-wave").classList.toggle("still", !SR);
-    $("#voice-cap").textContent = SR ? "Listening" : "Type to the office"; $("#voice-hint").textContent = SR ? "Say it in one sentence, then press send." : "Voice input is not available in this browser. Type your request instead.";
+    $("#voice-cap").textContent = SR ? "Listening" : "Type to the office"; $("#voice-hint").textContent = SR ? "Say it in one sentence, then press send." : window.isSecureContext === false ? "The microphone needs a secure (https) link. Type it, or tap the mic on your keyboard to dictate." : "Voice input is not available in this browser. Type your request instead.";
     $("#voice-mic").classList.toggle("off", !SR);
     if (SR) startListening(SR); else ta.focus();
-    renderAgentPills(); renderTopbar();
+    renderAgentPills(); renderTopbar(); phonePause();
   }
   function startListening(SR) {
     const v = state.voice; if (!v) return;
     try {
       const rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || "en-US";
       rec.onresult = (e) => { let fin = "", tmp = ""; for (let i = 0; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) fin += r[0].transcript + " "; else tmp += r[0].transcript; } v.text = (fin + tmp).trim(); $("#voice-text").value = v.text; };
-      rec.onerror = (e) => { if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(e.error)) typedFallback(e.error === "network" ? "Speech recognition needs network access here. Type instead." : "Microphone not available. Type your request instead."); };
+      rec.onerror = (e) => { if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(e.error)) typedFallback(e.error === "network" ? "Speech recognition needs network access here. Type instead." : isPhone() ? "Microphone not available. Type it, or tap the mic on your keyboard to dictate." : "Microphone not available. Type your request instead."); };
       rec.onend = () => { if (state.voice && state.voice.listening && state.voice.rec === rec) { try { rec.start(); } catch (e) { /* stopped */ } } };
       rec.start(); v.rec = rec; v.listening = true;
       $("#voice-mic").classList.remove("off"); $("#voice-wave").classList.remove("still"); $("#voice-cap").textContent = "Listening";
@@ -790,7 +822,7 @@
   }
   function stopListening() { const v = state.voice; if (!v) return; v.listening = false; clearTimeout(v.quietTimer); if (v.rec) { try { v.rec.stop(); } catch (e) { /* already stopped */ } v.rec = null; } $("#voice-mic").classList.add("off"); $("#voice-wave").classList.add("still"); $("#voice-cap").textContent = "Paused"; renderAgentPills(); }
   function typedFallback(msg) { const v = state.voice; if (!v) return; stopListening(); v.typed = true; const ta = $("#voice-text"); ta.readOnly = false; ta.placeholder = "Type what you would say…"; $("#voice-tbox").classList.add("typed"); $("#voice-cap").textContent = "Type to the office"; $("#voice-hint").textContent = msg || ""; ta.focus(); }
-  function closeVoice() { stopListening(); state.voice = null; const box = $("#voice-orb"); box.classList.remove("open"); box.classList.add("mini"); $("#orb").classList.remove("thinking"); renderAgentPills(); renderTopbar(); }
+  function closeVoice() { stopListening(); state.voice = null; const box = $("#voice-orb"); box.classList.remove("open"); box.classList.add("mini"); $("#orb").classList.remove("thinking"); renderAgentPills(); renderTopbar(); phonePause(); }
   function sendVoice() { const text = $("#voice-text").value.trim(); if (!text) { $("#voice-hint").textContent = "Nothing heard yet."; return; } closeVoice(); send(text); }
 
   // ---------- Ask any agent (top bar) ----------
@@ -807,11 +839,12 @@
     $("#ask-input").placeholder = a ? `Ask ${a.label}…` : "Ask any agent…";
     buildAskMenu();
   }
-  function focusAsk() { const i = $("#ask-input"); i.focus(); i.select(); }
+  function focusAsk() { if (isPhone()) { openAsk(); return; } const i = $("#ask-input"); i.focus(); i.select(); }
   function submitAsk() {
     const i = $("#ask-input"), q = i.value.trim(); if (!q || q === "@") return;
     const a = agentByName(state.askAgent);
     send(a ? `Ask ${a.name}: ${q}` : q); i.value = ""; $("#ask-menu").hidden = true; i.blur();
+    if (isPhone()) { closeAsk(); setLead(true); }           // a phone: watch the lead work on it
   }
 
   // ---------- agent card (click a character or a name pill) ----------
@@ -853,7 +886,8 @@
       const stats = ev.cost_usd != null ? ` (${ev.turns} turns, ${(ev.duration_ms / 1000).toFixed(0)}s, $${Number(ev.cost_usd).toFixed(3)})` : "";
       log(ev.is_error ? "error" : "result", (reply === state.lastReply ? "done" : reply) + stats);
       state.lastReply = reply; $("#lead-text").textContent = "Lead · " + shortTask(reply, 70);
-      if (!state.run.quiet || ev.is_error) toast("chief", "Chief of staff", shortTask(reply, 180), { bad: !!ev.is_error });
+      const leadSheet = isPhone() && $("#lead-log").classList.contains("open");   // a phone with the lead sheet open already shows the reply
+      if ((!state.run.quiet || ev.is_error) && !leadSheet) toast("chief", "Chief of staff", shortTask(reply, 180), { bad: !!ev.is_error });
       $("#orb").classList.remove("thinking");
     } else log(ev.type || "system", ev.text || "");
     subsCache.t = 0; renderTopbar(); renderTeamCards(); renderAgentPills(); renderSubCards(); syncSubagents();
@@ -903,7 +937,7 @@
   // ---------- the scene: callbacks, direct spawn calls, label blanking ----------
   function onSceneReady() {
     const O = window.HQ_OFFICE; if (!O || state.scene) return; state.scene = true;
-    O.onRoomClick = (key) => openTeam(key);
+    O.onRoomClick = (key) => roomTap(key);
     O.onAgentClick = (name) => showAgentCard(name);
     O.onBrainClick = () => openPanel(state.view === "brain" ? "office" : "brain");
     // Notice sub-agents spawned straight on the scene (tests, the console) so the pills, cards and counters agree.
@@ -924,12 +958,24 @@
       const inMenu = e.target.closest("#user-menu, #ask-any, #notif-list, #bell");
       if (!inMenu) closeMenus();
       if (!e.target.closest(".cal-pop, [data-chip]")) $$(".cal-pop").forEach((n) => n.remove());
+      if (isPhone() && $("#hud").classList.contains("ask-open") && !e.target.closest("#ask-any, #ask-open, #agent-card, [data-brief]")) closeAsk();
       if (!b) return;
       const d = b.dataset;
-      if (b.classList.contains("tab")) { const v = d.view; if (v === "office") { openPanel("office"); if (state.focused) goOverview(); } else openPanel(state.view === v ? "office" : v); return; }
+      if (b.id === "tab-lead") { setLead(!($("#lead-log").classList.contains("open") && isPhone())); return; }
+      if (b.classList.contains("tab")) {
+        const v = d.view;
+        if (isPhone()) { const leadWasOpen = $("#lead-log").classList.contains("open"); setLead(false); if (v === "office") { openPanel("office"); if (state.focused && !leadWasOpen) goOverview(); } else openPanel(v); hideAgentCard(); return; }   // bottom tabs: open, never toggle
+        if (v === "office") { openPanel("office"); if (state.focused) goOverview(); } else openPanel(state.view === v ? "office" : v); return;
+      }
+      if (b.id === "ask-open") { openAsk(); return; }
+      if (b.id === "ask-close") { closeAsk(); return; }
+      if (b.id === "lead-close") return;                   // the lead bar's own handler closes the sheet
+      if (d.notifClose != null) { toggleBell(false); return; }
+      if (d.teamOpen) { openTeam(d.teamOpen); return; }
+      if (d.overview != null) { openPanel("office"); goOverview(); return; }
       if (b.id === "user-btn") { const m = $("#user-dropdown"); const was = m.hidden; closeMenus(); m.hidden = !was; return; }
       if (b.id === "menu-overview") { openPanel("office"); goOverview(); return; }
-      if (b.id === "menu-lead") { $("#lead-log").classList.add("open"); $("#lead-input").focus(); return; }
+      if (b.id === "menu-lead") { setLead(true); $("#lead-input").focus(); return; }
       if (b.id === "bell") { const was = $("#notif-list").hidden; closeMenus(); toggleBell(was); return; }
       if (b.id === "ask-mic" || d.voice != null) { openVoice(); return; }
       if (b.id === "ask-unpick") { pickAgent(null); focusAsk(); return; }
@@ -945,7 +991,7 @@
       if (d.review || d.open) { const id = d.review || d.open; state.openDetail = state.openDetail === id ? null : id; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.remove) { taskAction({ action: "remove", id: d.remove }, "Task removed from the board."); return; }
-      if (d.run) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.run); if (t) { send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); $("#lead-log").classList.add("open"); } return; }
+      if (d.run) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.run); if (t) { send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); setLead(true); } return; }
       if (d.board != null) { openPanel("tasks"); return; }
       if (d.cal != null) { openPanel("calendar"); return; }
       if (d.brief != null) { const t = teamByKey(state.panelTeam); pickAgent(t ? (headOf(t) || {}).name : null); focusAsk(); return; }
@@ -962,7 +1008,7 @@
       if (f.id === "ask-any") { e.preventDefault(); submitAsk(); }
       else if (f.id === "lead-form") { e.preventDefault(); const i = $("#lead-input"); if (i.value.trim()) send(i.value.trim()); i.value = ""; }
       else if (f.id === "add-task") { e.preventDefault(); const title = $("#task-title").value.trim(); if (!title) return; state.addTeam = $("#task-team").value; taskAction({ action: "add", title, team: $("#task-team").value }, `Added "${shortTask(title, 40)}" to the board.`); }
-      else if (f.id === "teach") { e.preventDefault(); const i = $("#teach-text"); if (i.value.trim()) send("/teach " + i.value.trim()); i.value = ""; $("#lead-log").classList.add("open"); }
+      else if (f.id === "teach") { e.preventDefault(); const i = $("#teach-text"); if (i.value.trim()) send("/teach " + i.value.trim()); i.value = ""; setLead(true); }
       else if (f.id === "cal-add") { e.preventDefault(); const title = $("#cal-title").value.trim(); if (!title) return; taskAction({ action: "add", title, team: $("#cal-team").value, kind: "post", date: $("#cal-date").value, time: $("#cal-time").value }, `Scheduled "${shortTask(title, 40)}".`).then(loadCalendar); }
     });
     // drag and drop onto the board's strip
@@ -974,7 +1020,7 @@
     ask.addEventListener("focus", () => { buildAskMenu(); $("#ask-menu").hidden = false; });
     ask.addEventListener("input", () => { if (ask.value.startsWith("@")) { buildAskMenu(); $("#ask-menu").hidden = false; } });
     ask.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#ask-menu").hidden = true; ask.blur(); } });
-    $("#lead-bar").addEventListener("click", () => $("#lead-log").classList.toggle("open"));
+    $("#lead-bar").addEventListener("click", () => setLead(!$("#lead-log").classList.contains("open")));
     $("#voice-orb").addEventListener("click", (e) => { if (e.currentTarget.classList.contains("mini")) openVoice(); });
     $("#voice-orb").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.currentTarget.classList.contains("mini")) { e.preventDefault(); openVoice(); } });
     $("#voice-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendVoice(); } });
@@ -983,16 +1029,18 @@
     $("#avatar").addEventListener("click", () => { const m = $("#user-dropdown"); const was = m.hidden; closeMenus(); m.hidden = !was; });
     window.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); focusAsk(); return; }
-      if (e.key === "Escape") { if (state.voice) closeVoice(); else if (!$("#ask-menu").hidden || !$("#user-dropdown").hidden || !$("#notif-list").hidden) closeMenus(); else if (!$("#agent-card").hidden) hideAgentCard(); else if (state.view !== "office") openPanel("office"); }
+      if (e.key === "Escape") { if (state.voice) closeVoice(); else if ($("#hud").classList.contains("ask-open")) closeAsk(); else if (!$("#ask-menu").hidden || !$("#user-dropdown").hidden || !$("#notif-list").hidden) closeMenus(); else if (!$("#agent-card").hidden) hideAgentCard(); else if (state.view !== "office") openPanel("office"); }
     });
     window.addEventListener("hq-office-ready", onSceneReady);
     window.addEventListener("resize", () => { callScene("resize"); drawMinimap(); });
+    const onPhoneChange = () => { if (!isPhone()) { closeAsk(); $("#hud").classList.remove("lead-open"); } else if ($("#lead-log").classList.contains("open")) $("#hud").classList.add("lead-open"); renderTopbar(); phonePause(); };
+    if (phoneMQ) { if (phoneMQ.addEventListener) phoneMQ.addEventListener("change", onPhoneChange); else if (phoneMQ.addListener) phoneMQ.addListener(onPhoneChange); }
     wireMinimap();
   }
 
   // ---------- init ----------
   function init() {
-    $("#user-name").textContent = "Owner";
+    $("#user-name").textContent = "Owner"; $("#hud").dataset.view = "office";
     $("#ask-kbd").textContent = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl K";
     wire();
     refresh().then(pollNotifs); loadBrain();
@@ -1001,7 +1049,7 @@
     setInterval(pollEvents, 2000);
     setInterval(loadBrain, 30000);
     setInterval(tickSkills, 1000);
-    setInterval(() => { const z = Number(callScene("getZoomPercent")); if (z) state.zoom = z; const ms = callScene("minimapState"); syncFocus(ms); drawMinimap(ms); }, 250);
+    setInterval(() => { const was = state.zoom >= 140, z = Number(callScene("getZoomPercent")); if (z) state.zoom = z; const ms = callScene("minimapState"); syncFocus(ms); drawMinimap(ms); if (isPhone() && was !== state.zoom >= 140) renderTeamCards(); }, 250);   // a phone: dock the focused room's card as soon as the camera arrives
     requestAnimationFrame(tick);
     if (window.HQ_OFFICE) onSceneReady();                  // the scene may already be there
     else setTimeout(() => { if (window.HQ_OFFICE) onSceneReady(); }, 3000);

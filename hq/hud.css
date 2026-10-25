@@ -49,7 +49,9 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 
 /* ---------- layers ---------- */
 #office3d { position: fixed; inset: 0; z-index: 0; background: transparent; }
-#office3d canvas { display: block; width: 100% !important; height: 100% !important; }
+#office3d canvas { display: block; width: 100% !important; height: 100% !important; touch-action: none; }   /* touch drags orbit, pinch zooms */
+/* phone-only controls (shown by the phone block at the end of this file) */
+.tab .tab-ic, #tabs .tab-lead, #ask-open, .ask .ask-send, .ask .ask-x, #lead-log .lead-x, #room-label .rl-btns, #notif-list .notif-x { display: none; }
 #hud { position: fixed; inset: 0; z-index: 1; pointer-events: none; font-family: var(--font); }
 #hud .ia, #hud button, #hud input, #hud select, #hud textarea, #hud a { pointer-events: auto; }
 
@@ -525,4 +527,317 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   .tabs .tab { font-size: 12px; padding: 0 7px; }
   .ask { width: 140px; }
   #toasts { width: 230px; }
+}
+
+/* ==========================================================================================================
+   PHONE (≤ 600 px wide, or a landscape phone ≤ 500 px tall). Same query as PHONE_Q in hud.js and office3d.js.
+   Compact top bar · bottom tab bar · the 3D office between the bars · compact team chips · full-screen sheets
+   that slide up · 44 px touch targets · 16 px inputs (no iOS zoom) · safe-area insets. Desktop rules above are untouched.
+   ========================================================================================================== */
+@keyframes sheet-up { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+@keyframes toast-down { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+@media (max-width: 600px), (max-height: 500px) and (max-width: 1000px) {
+  :root {
+    --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);
+    --bar-h: calc(50px + var(--safe-t));
+    --tab-h: calc(58px + var(--safe-b));
+    --gut-l: max(12px, var(--safe-l)); --gut-r: max(12px, var(--safe-r));
+    --sheet: #0f121b;
+    --panel-w: 100vw; --board-w: 100vw;
+  }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; touch-action: manipulation; }
+  body { font-size: 14px; overscroll-behavior: none; }
+  #hud { -webkit-tap-highlight-color: transparent; }
+  #hud input, #hud select, #hud textarea { font-size: 16px; }
+  /* the office fills the space between the two bars */
+  #office3d { top: var(--bar-h); bottom: var(--tab-h); }
+
+  /* ---- compact top bar: logo · ask · agents pill · bell · avatar ---- */
+  #topbar {
+    display: flex; justify-content: space-between; gap: 6px; height: var(--bar-h);
+    padding: var(--safe-t) var(--gut-r) 0 max(8px, var(--safe-l));
+    background: rgba(20, 23, 32, 0.97); backdrop-filter: none; -webkit-backdrop-filter: none;   /* no blur here: its fixed children (tab bar, sheets) sit against the viewport */
+  }
+  .tb-left { flex: none; gap: 0; }
+  .tb-right { flex: 1; gap: 4px; justify-content: flex-end; }
+  #brand { width: 44px; height: 44px; justify-content: center; }
+  #brand .logo { width: 28px; height: 28px; border-radius: 8px; }
+  #brand .wordmark, .user-btn { display: none; }
+  .ask { display: none; }
+  #ask-open, .bell { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: #aeb4c0; font-size: 20px; }
+  #ask-open:active, .bell:active { background: rgba(255, 255, 255, 0.08); }
+  .bell-badge { top: 6px; right: 6px; }
+  .agents-pill { height: 30px; min-width: 0; padding: 0 11px 0 10px; font-size: 12.5px; margin: 0 2px; }
+  #agents-pill-text { overflow: hidden; text-overflow: ellipsis; }
+  #avatar { width: 44px; height: 44px; padding: 6px; background-clip: content-box; box-shadow: none; font-size: 13px; }
+  #user-dropdown { position: fixed; top: calc(var(--bar-h) + 6px); right: var(--gut-r); left: auto; width: min(320px, calc(100vw - 24px)); min-width: 0; z-index: 61; }
+  .menu-item { padding: 13px 12px; font-size: 15px; }
+
+  /* ---- bottom tab bar: Office · Tasks · Calendar · Brain · Lead ---- */
+  #tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; height: var(--tab-h); margin: 0;
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: start; gap: 2px;
+    padding: 5px max(6px, var(--safe-r)) var(--safe-b) max(6px, var(--safe-l)); border-radius: 0;
+    background: rgba(20, 23, 32, 0.97); border-top: 1px solid #2a2f3a;
+  }
+  #tabs .tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; height: 48px; padding: 0; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: 0.01em; color: #7b8190; background: none; }
+  #tabs .tab .tab-ic { display: block; font-size: 22px; stroke-width: 1.9; }
+  #tabs .tab-lead { display: flex; }
+  #tabs .tab .badge { position: absolute; top: 2px; left: calc(50% + 7px); min-width: 18px; height: 17px; padding: 0 5px; border-radius: 9px; font-size: 10.5px; line-height: 17px; }
+  #tabs .tab .badge.zero { display: none; }
+  #tabs .tab .lead-dot { display: none; position: absolute; top: 6px; left: calc(50% + 10px); width: 8px; height: 8px; }
+  #tabs .tab-lead.busy .lead-dot { display: block; animation: pulse 1.4s ease-in-out infinite; }
+  #tabs .tab:active { background: rgba(255, 255, 255, 0.06); }
+  /* the highlighted tab is the open view (Office when no sheet is open) */
+  #hud[data-view="office"]:not(.lead-open) #tab-office, #hud:not(.lead-open) #tabs .tab.open, #hud.lead-open #tab-lead { color: #f1f3f9; }
+  #hud[data-view="office"]:not(.lead-open) #tab-office .tab-ic, #hud:not(.lead-open) #tabs .tab.open .tab-ic, #hud.lead-open #tab-lead .tab-ic { color: #a99dff; }
+
+  /* ---- the ask sheet (search icon in the top bar) ---- */
+  #hud.ask-open #ask-any {
+    position: fixed; left: 0; right: 0; top: var(--bar-h); bottom: var(--tab-h); z-index: 1; width: auto; height: auto;
+    display: grid; grid-template-columns: minmax(0, 1fr) 48px 48px; grid-template-rows: 44px auto 50px minmax(0, 1fr);
+    grid-template-areas: "hd hd x" "who who who" "in mic send" "menu menu menu"; gap: 10px 8px; align-items: center;
+    padding: 10px var(--gut-r) 12px var(--gut-l); border: 0; border-radius: 0; box-shadow: none; background: var(--sheet); color: var(--text);
+    animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  #hud.ask-open #ask-any::before { content: "Ask the office"; grid-area: hd; font-size: 18px; font-weight: 700; color: var(--text-strong); }
+  #hud.ask-open #ask-any > .i, #hud.ask-open #ask-any kbd { display: none; }
+  #hud.ask-open #ask-any:focus-within { border: 0; box-shadow: none; }
+  #hud.ask-open .ask .ask-x { display: grid; grid-area: x; justify-self: end; font-size: 20px; }
+  #hud.ask-open .ask .who.on { display: inline-flex; grid-area: who; justify-self: start; height: 32px; padding: 0 4px 0 12px; border-radius: 9px; font-size: 14px; }
+  #hud.ask-open .ask .who button { width: 32px; height: 32px; font-size: 18px; }
+  #hud.ask-open .ask input { grid-area: in; height: 50px; padding: 0 14px; border-radius: 13px; background: #1b2130; border: 1px solid rgba(123, 108, 246, 0.45); font-size: 16px; }
+  #hud.ask-open .ask .mic { grid-area: mic; width: 48px; height: 50px; border-radius: 13px; background: #23283a; color: #d8dcf0; font-size: 20px; }
+  #hud.ask-open .ask .ask-send { display: grid; place-items: center; grid-area: send; width: 48px; height: 50px; border-radius: 13px; background: #4c6fe0; color: #fff; font-size: 19px; }
+  #hud.ask-open #ask-menu, #hud.ask-open #ask-menu[hidden] {
+    display: block !important; grid-area: menu; align-self: stretch; position: static; width: auto; max-height: none; min-height: 0;
+    padding: 4px 2px 8px; border: 0; border-radius: 12px; background: rgba(255, 255, 255, 0.025); box-shadow: none; backdrop-filter: none; overscroll-behavior: contain;
+  }
+  .ask-menu .grp { font-size: 10.5px; padding: 12px 10px 4px; }
+  .ask-menu .opt { min-height: 46px; padding: 8px 10px; font-size: 15px; gap: 10px; border-radius: 10px; }
+  .ask-menu .opt .av { width: 28px; height: 28px; font-size: 10px; }
+  .ask-menu .opt .sub { font-size: 11px; }
+
+  /* ---- notifications (the bell): a sheet between the bars ---- */
+  #notif-list {
+    position: fixed; top: var(--bar-h); left: 0; right: 0; bottom: var(--tab-h); width: auto; max-height: none; z-index: 48;
+    padding: 4px var(--gut-r) 16px var(--gut-l); border: 0; border-radius: 0; background: var(--sheet); box-shadow: none; backdrop-filter: none;
+    animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); overscroll-behavior: contain;
+  }
+  #notif-list .hd { padding: 8px 0 8px 4px; font-size: 11px; }
+  #notif-list .hd > span { flex: 1; }
+  #notif-list .hd button { min-height: 44px; padding: 0 12px; font-size: 14px; }
+  #notif-list .notif-x { display: grid; }
+  .notif { grid-template-columns: 30px 1fr auto; padding: 11px 8px; }
+  .notif .ticon { width: 30px; height: 30px; }
+  .notif .title { font-size: 14.5px; } .notif .body { font-size: 13px; } .notif .when { font-size: 11px; }
+
+  /* ---- toasts: stacked at the top under the bar, full width ---- */
+  #toasts { position: fixed; top: calc(var(--bar-h) + 8px); left: var(--gut-l); right: var(--gut-r); width: auto; z-index: 60; gap: 8px; }
+  .toast { grid-template-columns: 30px 1fr auto; padding: 11px 12px; border-radius: 14px; background: rgba(24, 28, 38, 0.97); animation-name: toast-down; }
+  .toast .ticon { width: 30px; height: 30px; }
+  .toast .title { font-size: 14px; } .toast .body { font-size: 12.5px; } .toast .when { font-size: 11px; }
+  .toast.fade { transform: translateY(-12px); }
+
+  /* ---- billboards: compact team chips (icon · name · running dot); full card only for the focused room ---- */
+  .team-card { min-width: 0; height: 30px; gap: 6px; padding: 0 10px 0 4px; border-radius: 10px; }
+  .team-card .ticon { width: 22px; height: 22px; font-size: 12px; border-radius: 7px; }
+  .team-card .txt { flex-direction: row; align-items: center; gap: 6px; }
+  .team-card .name { font-size: 12.5px; }
+  .team-card .line2 { margin: 0; gap: 0; font-size: 0; }
+  .team-card .line2 .dot { width: 7px; height: 7px; }
+  .team-card .avs, .sched-card { display: none; }
+  .team-card::after { height: 10px; }
+  .team-card.docked { top: calc(var(--bar-h) + 10px) !important; min-width: 0; max-width: calc(100vw - 24px); height: 46px; padding: 0 12px 0 7px; gap: 9px; }
+  .team-card.docked .ticon { width: 30px; height: 30px; font-size: 15px; }
+  .team-card.docked .txt { flex-direction: column; align-items: flex-start; gap: 0; }
+  .team-card.docked .name { font-size: 14px; }
+  .team-card.docked .line2 { gap: 5px; margin-top: 2px; font-size: 10.5px; }
+  .team-card.docked .avs { display: flex; }
+  .pill { height: 24px; font-size: 11.5px; }
+  .brain-label { padding: 4px 10px 5px; gap: 1px; }
+  .brain-label .t1 { font-size: 10px; letter-spacing: 0.2em; }
+  .brain-label .t2 { font-size: 9.5px; }
+  #status-chips, #minimap { display: none; }
+  /* a sheet covers the office: its billboards stay hidden (the scene pauses too) */
+  #hud.panel-open #team-cards, #hud.panel-open #agent-pills, #hud.panel-open #brain-label, #hud.panel-open #subagent-cards,
+  #hud.lead-open #team-cards, #hud.lead-open #agent-pills, #hud.lead-open #brain-label, #hud.lead-open #room-label,
+  #hud.ask-open #team-cards, #hud.ask-open #agent-pills, #hud.ask-open #brain-label, #hud.ask-open #room-label { visibility: hidden; }
+  #hud.panel-open #team-cards *, #hud.lead-open #team-cards *, #hud.ask-open #team-cards *, #hud.panel-open #agent-pills *, #hud.lead-open #agent-pills *, #hud.ask-open #agent-pills * { visibility: hidden !important; }
+
+  /* room label: bottom-left above the tab bar, with Open and Back buttons */
+  #room-label { left: var(--gut-l); right: 78px; bottom: calc(var(--tab-h) + 12px); min-width: 0; max-width: 460px; align-items: center; gap: 10px; padding: 8px 8px 8px 0; border-radius: 14px; pointer-events: auto; }
+  #room-label .bar { align-self: stretch; }
+  #room-label > div:not(.rl-btns) { flex: 1; min-width: 0; }
+  #room-label .t1 { font-size: 17px; }
+  #room-label .t2 { font-size: 11px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #room-label .rl-btns { display: flex; gap: 6px; flex: none; }
+  #room-label .rl-btns .btn { height: 44px; padding: 0 14px; font-size: 14px; }
+  #room-label .rl-btns .xbtn { width: 44px; height: 44px; }
+
+  /* sub-agent progress: one compact row under the docked card */
+  #subagent-cards { left: var(--gut-l); right: var(--gut-r); top: calc(var(--bar-h) + 66px); width: auto; flex-direction: row; gap: 6px; }
+  .scard { flex: 1; min-width: 0; padding: 7px 9px 9px; border-radius: 10px; }
+  .scard .t { font-size: 11.5px; }
+  .scard .steps { margin-top: 5px; }
+  .step { min-width: 0; height: 17px; padding: 0 6px; font-size: 9px; letter-spacing: 0.04em; }
+  .step:not(.on) { display: none; }
+
+  /* ---- sheets: team, task board, calendar, brain fill the space between the bars and slide up ---- */
+  .panel, #task-board {
+    position: fixed; left: 0; right: 0; top: var(--bar-h); bottom: var(--tab-h); width: auto; z-index: 30;
+    border: 0; border-radius: 0; box-shadow: none; background: var(--sheet); backdrop-filter: none; -webkit-backdrop-filter: none;
+    animation: sheet-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  #hud.panel-open #panel-dim { display: none; }
+  .panel .ph { gap: 12px; padding: 12px var(--gut-r) 0 var(--gut-l); }
+  .panel .ph .ticon, .panel .ph .picon { width: 40px !important; height: 40px !important; border-radius: 11px !important; font-size: 19px !important; }
+  .panel .ph h2 { font-size: 19px; }
+  .panel .ph .sub { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .xbtn { width: 44px; height: 44px; border-radius: 12px; font-size: 19px; }
+  .pbody { padding: 12px var(--gut-r) 24px var(--gut-l); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .ptabs { gap: 0; padding: 8px 4px 0; }
+  .ptab { flex: 1; padding: 10px 4px 12px; font-size: 14px; }
+  .sec { font-size: 10.5px; margin: 20px 0 10px; }
+  .hint { font-size: 12.5px; } .hint code { font-size: 11.5px; word-break: break-all; }
+  .btn { height: 44px; padding: 0 16px; border-radius: 11px; font-size: 14px; }
+  .btn.sm { height: 40px; padding: 0 14px; font-size: 13.5px; }
+  .field, .add-task input, .add-task select { height: 44px; border-radius: 11px; }
+
+  /* task board: approving from the phone is the main use, so Approve / Review are big */
+  .add-task { grid-template-columns: minmax(0, 1fr) 96px auto; gap: 8px; padding: 12px var(--gut-r) 0 var(--gut-l); }
+  .add-task select { max-width: none; min-width: 0; padding: 0 8px; }
+  .ftabs { gap: 6px; padding: 10px var(--gut-r) 4px var(--gut-l); overflow-x: auto; scrollbar-width: none; }
+  .ftabs::-webkit-scrollbar { display: none; }
+  .ftab { flex: none; height: 38px; padding: 0 12px; font-size: 14px; }
+  .trow { grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; min-height: 70px; padding: 10px 10px 10px 12px; border-radius: 14px; }
+  .trow.approval { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .trow .title { font-size: 15px; line-height: 1.25; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .trow .meta { font-size: 11.5px; gap: 6px; margin-top: 6px; }
+  .trow .act .btn { height: 46px; min-width: 92px; padding: 0 16px; border-radius: 12px; font-size: 15px; }
+  .trow .chev { padding: 10px 6px; }
+  .task-detail { padding: 12px 14px 14px; font-size: 13.5px; }
+  .task-detail .nt { font-size: 12px; }
+  .task-detail a { font-size: 13px; padding: 8px 0; }
+  .task-detail .row { flex-wrap: wrap; }
+  .drop-strip { padding: 10px var(--gut-r) 12px var(--gut-l); }
+  .drop-strip .lbl { gap: 8px; white-space: nowrap; }
+  .drop-strip .lbl span:last-child { display: none; }
+  .drops { gap: 6px; }
+  .drop { height: 46px; font-size: 13px; }
+  .drop small { display: none; }
+
+  /* team panel */
+  .tiles { gap: 8px; }
+  .tile { min-height: 82px; padding: 9px 10px 7px; }
+  .tile .k { font-size: 11px; } .tile .v { font-size: 21px; }
+  .tool { padding: 9px; gap: 9px; } .tool .ic { width: 30px; height: 30px; }
+  .tool .nm { font-size: 13px; } .tool .st { font-size: 10.5px; }
+  .skill { grid-template-columns: 10px minmax(0, 1fr) 64px 40px; height: 38px; }
+  .skill .nm { font-size: 12.5px; }
+  .arow { min-height: 58px; padding: 10px; }
+  .arow .nm { font-size: 14px; } .arow .ds { font-size: 12px; max-width: none; }
+  .stchip { font-size: 11px; padding: 4px 9px; }
+
+  /* calendar: the whole sheet scrolls; day chips become colour bars (the list below has the details) */
+  #calendar { overflow-y: auto; overscroll-behavior: contain; }
+  #calendar .pbody { flex: none; overflow: visible; }
+  #calendar > * { flex-shrink: 0; }
+  #calendar .cal-hd { padding: 12px var(--gut-r) 0 var(--gut-l); }
+  #calendar .cal-hd h3 { font-size: 17px; }
+  #calendar .nav button { width: 44px; height: 40px; border-radius: 10px; font-size: 18px; }
+  .cal-grid { gap: 3px; padding: 10px var(--gut-r) 0 var(--gut-l); }
+  .cal-grid .dow { font-size: 9.5px; letter-spacing: 0.06em; }
+  .cal-day { min-height: 48px; padding: 4px 3px; gap: 3px; border-radius: 8px; }
+  .cal-day .dn { font-size: 11.5px; padding-left: 2px; }
+  .cal-chip { height: 8px; padding: 0; font-size: 0; border-radius: 4px; background: var(--tcl, #8fb3ef); }
+  .cal-more { font-size: 9px; }
+  .cal-pop { width: min(300px, calc(100vw - 24px)); padding: 10px 12px 10px 10px; }
+  .cal-pop .x { width: 36px; height: 36px; font-size: 18px; }
+  .cal-add { grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px var(--gut-r) 0 var(--gut-l); }
+  .cal-add .field { height: 44px; padding: 0 10px; font-size: 16px; }
+  .cal-add .btn { height: 44px !important; }
+  .cal-list { padding: 8px var(--gut-r) 24px var(--gut-l); }
+  .cal-list .d { font-size: 11px; margin: 14px 0 8px; }
+  .trow .date-tile { width: 40px !important; height: 40px !important; }
+  .trow .date-tile .d { margin: 0; font-size: 8.5px; letter-spacing: 0.06em; text-transform: none; color: rgba(255, 255, 255, 0.85); }
+  .trow .date-tile .t { font-size: 11px !important; }
+  .trow:has(.date-tile) { grid-template-columns: 40px minmax(0, 1fr) auto; }
+
+  /* brain */
+  .brain-stat { padding: 12px 14px; }
+  .brain-stat .n { font-size: 26px; }
+  .bcards { grid-template-columns: 1fr; }
+  .bcard { min-height: 0; }
+  .bcard h4 { font-size: 14.5px; }
+  .bcard ul { max-height: none; font-size: 13.5px; }
+  .bcard .none { font-size: 13px; }
+  .teach .btn { flex: none; }
+
+  /* agent card: a bottom sheet above the tab bar */
+  #agent-card {
+    position: fixed; left: 0; right: 0; top: auto; bottom: var(--tab-h); width: auto; max-height: calc(100% - var(--bar-h) - var(--tab-h)); overflow-y: auto; z-index: 36;
+    padding: 16px var(--gut-r) 16px var(--gut-l); border-radius: 18px 18px 0 0; border-width: 1px 0 0; font-size: 14px; background: rgba(22, 26, 36, 0.985);
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45); animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  #agent-card .agent-card-head { font-size: 17px; gap: 10px; }
+  #agent-card .agent-card-meta, #agent-card .agent-card-row { font-size: 12.5px; }
+  #agent-card button.small { width: 44px; height: 44px; border-radius: 12px; font-size: 20px; }
+  #agent-card .row .btn { flex: 1; min-width: 0; height: 46px; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; }
+
+  /* lead log: no collapsed bar (the Lead tab opens it), a full sheet when open */
+  #lead-log { display: none; }
+  #lead-log.open {
+    display: flex; flex-direction: column; position: fixed; left: 0; right: 0; top: var(--bar-h); bottom: var(--tab-h); width: auto; transform: none; z-index: 34;
+    border: 0; border-radius: 0; background: var(--sheet); box-shadow: none; backdrop-filter: none; animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  #lead-log .bar { flex: none; height: 60px; padding: 0 var(--gut-r) 0 var(--gut-l); gap: 10px; font: 600 15px var(--font); color: #dfe3ec; border-bottom: 1px solid var(--line); cursor: default; }
+  #lead-log .bar .dot { width: 8px; height: 8px; }
+  #lead-log .bar .car { display: none; }
+  #lead-log .lead-x { display: grid; }
+  #lead-log.open .con { flex: 1; height: auto; padding: 10px var(--gut-r) 10px var(--gut-l); font-size: 12.5px; border-top: 0; overscroll-behavior: contain; }
+  #lead-log.open form { flex: none; gap: 8px; padding: 10px var(--gut-r) 10px var(--gut-l); }
+  #lead-log form input { height: 48px; border-radius: 12px; font-size: 16px; }
+  #lead-log form button { height: 48px; padding: 0 18px; border-radius: 12px; font-size: 15px; }
+
+  /* voice: the orb is a floating button above the tab bar; open, the overlay covers the screen */
+  #voice-orb.mini { left: auto; right: var(--gut-r); bottom: calc(var(--tab-h) + 14px); width: 52px; height: 52px; z-index: 26; }
+  #voice-orb.mini .orb { width: 52px; height: 52px; }
+  #voice-orb.open {
+    position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: auto; z-index: 70; border: 0; border-radius: 0;
+    padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); background: rgba(10, 12, 18, 0.975); animation: sheet-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  #voice-orb.open .vx { top: calc(var(--safe-t) + 10px); right: calc(var(--safe-r) + 12px); width: 48px; height: 48px; font-size: 26px; }
+  #voice-orb.open .stage { gap: 22px; padding: 0 20px; }
+  #voice-orb.open .orb { width: 150px; height: 150px; }
+  #voice-orb.open .cap { font-size: 12px; }
+  #voice-orb.open .hint { font-size: 14px; line-height: 1.4; max-width: 320px; color: #8d93a1; }
+  #voice-bar { gap: 8px; padding: 12px var(--gut-r) 16px var(--gut-l); }
+  #voice-bar .tbox { min-width: 0; min-height: 58px; border-radius: 14px; }
+  #voice-text { width: 0; font-size: 16px; max-height: 66px; overflow-y: auto; }
+  .vbtn { width: 58px; height: 58px; border-radius: 14px; }
+}
+/* landscape phone: shorter bars, tab icons beside their labels */
+@media (max-height: 500px) and (max-width: 1000px) {
+  :root { --bar-h: calc(44px + var(--safe-t)); --tab-h: calc(50px + var(--safe-b)); }
+  #topbar { padding-top: var(--safe-t); }
+  #ask-open, .bell, #brand, #avatar { height: 42px; }
+  #tabs { padding-top: 3px; }
+  #tabs .tab { flex-direction: row; gap: 7px; height: 44px; font-size: 12.5px; }
+  #tabs .tab .tab-ic { font-size: 19px; }
+  #tabs .tab .badge { position: static; }
+  #tabs .tab .lead-dot { position: static; }
+  #room-label { max-width: 420px; }
+  #voice-orb.open .stage { gap: 12px; padding-top: 8px; }
+  #voice-orb.open .orb { width: 84px; height: 84px; }
+  #voice-orb.open .orb::after { inset: -12px; }
+  #voice-bar { padding-bottom: 10px; }
+  /* short screens: the whole sheet scrolls, not just its list */
+  .panel, #task-board { overflow-y: auto; overscroll-behavior: contain; }
+  .panel .pbody { flex: none; overflow: visible; }
+  .panel > * { flex-shrink: 0; }
+  #toasts { left: auto; width: min(380px, 48vw); }
+  #voice-orb .ghost { display: none; }
+  #subagent-cards { top: calc(var(--bar-h) + 60px); left: auto; width: 46%; }
 }

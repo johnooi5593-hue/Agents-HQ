@@ -30,6 +30,14 @@
   const OVERVIEW = { yaw: 45 * DEG, pitch: 40 * DEG, dist: 170, target: new THREE.Vector3(0, 1.5, 0) };
   const ROOM_VIEW = { pitch: 37 * DEG, dist: 68 };
   const CHAR_SCALE = 1.22;                       // characters are ~1.6 desk-heights tall in the video
+  // Phones (the same query as hud.css): a lower pixel ratio, half-resolution bloom (dropped if the frame rate sags),
+  // fewer particles, portrait framing that fits the ring of rooms by width, double-tap on a room. Desktop is untouched.
+  // ?fx=low forces the light path, ?fx=full keeps the full one on a phone.
+  const PHONE_Q = '(max-width: 600px), (max-height: 500px) and (max-width: 1000px)';
+  const isPhone = () => !!(window.matchMedia && window.matchMedia(PHONE_Q).matches);
+  const FX = (/[?&]fx=(low|full)\b/.exec(location.search) || [])[1] || '';
+  const PHONE_AT_BOOT = isPhone();
+  const DESKTOP_PITCH = 40 * DEG, PORTRAIT_PITCH = 56 * DEG;
 
   // Fallback metadata (the contract's table) used only if /api/teams cannot be read.
   const FALLBACK_TEAMS = [
@@ -233,14 +241,16 @@
     teams: [], agents: [], rooms: {}, roomList: [], seats: {}, walkers: [], subs: {}, built: false,
     mode: 'overview', userActiveUntil: 0, tween: null, selected: null, selectRing: null, fallbackRunning: {},
     size: { w: 0, h: 0 }, labelRules: { agentMaxDist: 110 },
+    phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
   };
+  const maxPixelRatio = () => Math.min(state.phone ? (state.lowFx ? 1 : 1.25) : 1.5, window.devicePixelRatio || 1);
   const labels = { team: {}, agent: {}, brain: {}, sub: {} };
   const pickables = [];
   const anim = { dashboards: [], crawlers: [], glows: [], particles: null, rings: [], brain: {}, dust: null };
 
   function setupRenderer() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));
+    renderer.setPixelRatio(maxPixelRatio());
     renderer.setClearColor(0x13151f);
     renderer.domElement.style.display = 'block';
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
@@ -280,7 +290,7 @@
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(760, 760), new THREE.MeshBasicMaterial({ map: groundTex }));
     ground.rotation.x = -Math.PI / 2; ground.position.y = GROUND_Y; scene.add(ground);
     const dust = [], r = rng(99);
-    for (let i = 0; i < 520; i++) { const a = r() * Math.PI * 2, d = 12 + Math.sqrt(r()) * 250; dust.push(Math.cos(a) * d, GROUND_Y + 0.15 + (i % 5 === 0 ? r() * 40 : 0), Math.sin(a) * d); }
+    for (let i = 0; i < (PHONE_AT_BOOT ? 220 : 520); i++) { const a = r() * Math.PI * 2, d = 12 + Math.sqrt(r()) * 250; dust.push(Math.cos(a) * d, GROUND_Y + 0.15 + (i % 5 === 0 ? r() * 40 : 0), Math.sin(a) * d); }
     const dg = new THREE.BufferGeometry(); dg.setAttribute('position', new THREE.Float32BufferAttribute(dust, 3));
     anim.dust = new THREE.Points(dg, new THREE.PointsMaterial({ size: 1.0, map: glowTex, color: 0xd6dbe6, transparent: true, opacity: 0.55, depthWrite: false, sizeAttenuation: true }));
     scene.add(anim.dust);
@@ -297,14 +307,28 @@
     let h = host.clientHeight;
     if (h < 40) { h = Math.max(320, Math.round(w * 0.56)); host.style.height = h + 'px'; }     // a bare container gets a 16:9-ish height
     state.size = { w, h };
+    state.phone = isPhone();
+    const pr = maxPixelRatio();
+    if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); if (composer.setPixelRatio) composer.setPixelRatio(pr); }
     renderer.setSize(w, h); composer.setSize(w, h); css.setSize(w, h);
+    if (state.phone) bloomPass.setSize(Math.round(w * pr * 0.5), Math.round(h * pr * 0.5));   // half-resolution bloom on a phone
+    bloomPass.enabled = !state.lowFx;
     camera.aspect = w / h; camera.updateProjectionMatrix();
     // The overview distance fits the ring of rooms into the frame the way the video frames it: the far room's wall top
     // (plus room for its floating card) sits just under the top bar and the bottom room is slightly cut.
+    const portrait = camera.aspect < 0.95;
+    OVERVIEW.pitch = portrait ? PORTRAIT_PITCH : DESKTOP_PITCH;
     const hfov = 2 * Math.atan(Math.tan(camera.fov * DEG / 2) * camera.aspect);
     const dh = (RING_R + S * 0.85) / Math.tan(hfov / 2);
     const dv = ((RING_R + S * 0.72) * Math.sin(OVERVIEW.pitch) + WALL_H * Math.cos(OVERVIEW.pitch) + 6) / Math.tan(camera.fov * DEG / 2);
     OVERVIEW.dist = Math.max(dh * 0.9, dv) * 0.92;
+    // A portrait screen (a phone held upright): a steeper look-down so the ring fills more of the tall frame, fitted by
+    // width so all eight rooms and the Brain are in view; close-ups move back by the same rule. Landscape keeps 1.
+    const tanH = Math.tan(hfov / 2);
+    if (portrait) OVERVIEW.dist = Math.max((RING_R + S * 0.78) / tanH * 1.02, dv * 0.92);
+    state.fit = portrait ? Math.max(1, (S * 0.8) / tanH / ROOM_VIEW.dist) : 1;
+    state.fitBrain = portrait ? Math.max(1, (PLATFORM_R + 3) / tanH / 62) : 1;
+    controls.maxDistance = Math.max(360, OVERVIEW.dist * 1.5);
     if (state.mode === 'overview' && !state.tween) placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
   }
 
@@ -703,8 +727,8 @@
     // particles: walkway LEDs, wire sparks, ring riders, the orbit cloud, beam risers (one Points object)
     const r = rng(17);
     for (const ring of anim.rings) for (let k = 0; k < 2; k++) particleSets.rider.push({ ring, a: r() * 6.28, speed: 0.6 + r() * 0.5 });
-    for (let k = 0; k < 48; k++) { const n = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize(), u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = new THREE.Vector3().crossVectors(n, u); particleSets.orbit.push({ u, v, radius: 3.6 + r() * 4.5, phase: r() * 6.28, speed: (0.2 + r() * 0.5) * (r() < 0.5 ? 1 : -1) }); }
-    for (let k = 0; k < 18; k++) particleSets.rise.push({ x: (r() - 0.5) * 2.2, z: (r() - 0.5) * 2.2, phase: r(), speed: 0.05 + r() * 0.08 });
+    for (let k = 0; k < (PHONE_AT_BOOT ? 26 : 48); k++) { const n = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize(), u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = new THREE.Vector3().crossVectors(n, u); particleSets.orbit.push({ u, v, radius: 3.6 + r() * 4.5, phase: r() * 6.28, speed: (0.2 + r() * 0.5) * (r() < 0.5 ? 1 : -1) }); }
+    for (let k = 0; k < (PHONE_AT_BOOT ? 10 : 18); k++) particleSets.rise.push({ x: (r() - 0.5) * 2.2, z: (r() - 0.5) * 2.2, phase: r(), speed: 0.05 + r() * 0.08 });
     const count = particleSets.walk.length + particleSets.wire.length + particleSets.rider.length + particleSets.orbit.length + particleSets.rise.length;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
@@ -831,7 +855,7 @@
   }
   const _w = new THREE.Vector3();
   function updateLabels() {
-    const maxD = state.labelRules.agentMaxDist;
+    const maxD = state.labelRules.agentMaxDist * state.fit;
     for (const kind of ['agent', 'sub']) for (const key in labels[kind]) {
       const L = labels[kind][key]; if (!L.has) { L.obj.visible = false; continue; }
       L.obj.getWorldPosition(_w); L.obj.visible = _w.distanceTo(camera.position) < maxD;
@@ -845,7 +869,7 @@
     _w.project(camera);
     const x = (_w.x + 1) / 2 * state.size.w, y = (1 - _w.y) / 2 * state.size.h;
     const onScreen = _w.z > -1 && _w.z < 1 && x > -200 && x < state.size.w + 200 && y > -200 && y < state.size.h + 200;
-    return { x, y, visible: onScreen, dist, near: dist < state.labelRules.agentMaxDist, scale: clamp(OVERVIEW.dist / Math.max(1, dist), 0.6, 2.2) };
+    return { x, y, visible: onScreen, dist, near: dist < state.labelRules.agentMaxDist * state.fit, scale: clamp(OVERVIEW.dist / Math.max(1, dist), 0.6, 2.2) };
   }
 
   // ------------------------------------------------------------------ camera
@@ -884,7 +908,7 @@
     const room = state.rooms[teamKey]; if (!room) return false;
     opts = opts || {};
     state.mode = 'room:' + teamKey;
-    const dist = ROOM_VIEW.dist * (room.big ? 1.26 : 1) * (opts.zoom || 1);
+    const dist = ROOM_VIEW.dist * (room.big ? 1.26 : 1) * (opts.zoom || 1) * state.fit;
     tweenTo({ yaw: OVERVIEW.yaw, pitch: ROOM_VIEW.pitch, dist, target: shiftTarget(new THREE.Vector3(room.center.x, 2.2, room.center.z), dist, opts.shiftX) }, opts.duration || 950);
     return true;
   }
@@ -893,10 +917,11 @@
     const seat = state.seats[name]; if (!seat) return false;
     opts = opts || {};
     state.mode = 'agent:' + name; const p = seat.ch.group.position;
-    tweenTo({ yaw: OVERVIEW.yaw, pitch: 38 * DEG, dist: 34, target: shiftTarget(new THREE.Vector3(p.x, p.y + 1.8, p.z), 34, opts.shiftX) }, opts.duration || 900);
+    const d = 34 * Math.sqrt(state.fit);
+    tweenTo({ yaw: OVERVIEW.yaw, pitch: 38 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(p.x, p.y + 1.8, p.z), d, opts.shiftX) }, opts.duration || 900);
     return true;
   }
-  function focusBrain(opts) { opts = opts || {}; state.mode = 'brain'; tweenTo({ yaw: OVERVIEW.yaw, pitch: 46 * DEG, dist: 62, target: shiftTarget(new THREE.Vector3(0, 4, 0), 62, opts.shiftX) }, opts.duration || 1000); }
+  function focusBrain(opts) { opts = opts || {}; state.mode = 'brain'; const d = 62 * state.fitBrain; tweenTo({ yaw: OVERVIEW.yaw, pitch: 46 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(0, 4, 0), d, opts.shiftX) }, opts.duration || 1000); }
   function getZoomPercent() { return Math.round(OVERVIEW.dist / Math.max(1, currentView().dist) * 100); }
   function setZoomPercent(p) { const v = currentView(); p = clamp(+p || 100, 25, 900); tweenTo({ yaw: v.yaw, pitch: v.pitch, dist: OVERVIEW.dist * 100 / p, target: v.target }, 450); if (state.mode === 'overview') state.mode = 'free'; }
   function zoom(delta) { const v = currentView(); tweenTo({ yaw: v.yaw, pitch: v.pitch, dist: clamp(v.dist * Math.pow(0.82, +delta || 0), controls.minDistance, controls.maxDistance), target: v.target }, 400); if (state.mode === 'overview') state.mode = 'free'; }
@@ -937,7 +962,7 @@
 
   // ------------------------------------------------------------------ picking
   function setupPicking() {
-    const el = renderer.domElement, ray = new THREE.Raycaster(); let down = null;
+    const el = renderer.domElement, ray = new THREE.Raycaster(); let down = null, lastTap = null;
     el.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, b: e.button }; });
     el.addEventListener('pointerup', (e) => {
       if (!down || down.b !== 0 || Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y) > 6) { down = null; return; }
@@ -946,6 +971,11 @@
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
       const hit = ray.intersectObjects(pickables, false)[0]; if (!hit) return;
       const u = hit.object.userData, api = window.HQ_OFFICE;
+      if (e.pointerType === 'touch' && (u.room || u.brain)) {            // touch: a room or the Brain needs a double-tap (one-finger drags orbit)
+        const id = u.room || 'brain', now = performance.now();
+        if (!lastTap || lastTap.id !== id || now - lastTap.t > 450) { lastTap = { id, t: now }; return; }
+        lastTap = null;
+      }
       if (u.agent) { if (typeof api.onAgentClick === 'function') api.onAgentClick(u.agent); else { select(u.agent); focusAgent(u.agent); } }
       else if (u.room) { if (typeof api.onRoomClick === 'function') api.onRoomClick(u.room); else flyTo(u.room); }
       else if (u.brain) { if (typeof api.onBrainClick === 'function') api.onBrainClick(); else focusBrain(); }
@@ -969,8 +999,9 @@
   function isVisible() { return !document.hidden && host.offsetWidth > 0 && host.offsetHeight > 0 && host.getClientRects().length > 0; }
   function frame() {
     requestAnimationFrame(frame);
-    if (!state.built || !isVisible()) return;
+    if (!state.built || state.paused || !isVisible()) return;
     const now = performance.now(), t = clock.getElapsedTime(), dt = Math.min(0.1, t - lastT); lastT = t;
+    if (state.phone && !state.lowFx && !FX) watchFrameRate(now);
     if (host.clientWidth !== state.size.w || host.clientHeight !== state.size.h) resize();
     updateCamera(now); controls.update();
     const run = runningMap();
@@ -981,7 +1012,7 @@
     anim.brain.light.intensity = 0.75 + Math.sin(t * 1.4) * 0.15;
     anim.brain.lattice.rotation.y = t * 0.05;
     // the beam fades while the camera is close to a room so it never washes out a close-up
-    const near = clamp((currentView().dist - 80) / 60, 0, 1);
+    const near = clamp((currentView().dist / state.fit - 80) / 60, 0, 1);
     anim.brain.beam.material.opacity = 0.85 * near; anim.brain.beam.visible = anim.brain.halo.visible = near > 0.02; anim.brain.halo.material.opacity = 0.07 * near; anim.brain.glow.material.opacity *= 0.5 + 0.5 * near;
     const neon = 0.88 + Math.sin(t * 1.1) * 0.12; anim.brain.neon.forEach((m, k) => m.material.color.setRGB(0.78 * neon, 0.96 * neon, 1 * neon));
     for (const r of anim.rings) r.holder.rotation.y = r.phase + t * r.speed;
@@ -1012,8 +1043,19 @@
     }
     animateWalkers(t, dt); animateSubs(t); updateLabels();
     if (state.selectRing && state.selectRing.visible) state.selectRing.material.opacity = 0.6 + Math.sin(t * 4) * 0.3;
-    composer.render();
+    if (bloomPass.enabled) composer.render(); else renderer.render(scene, camera);
     css.render(scene, camera);
+  }
+  // Phones only: after a short warm-up, if frames average slower than ~28 fps, drop bloom and render at pixel ratio 1.
+  function watchFrameRate(now) {
+    const p = state.perf;
+    if (!p.t0) { p.t0 = now; p.last = now; return; }
+    const d = now - p.last; p.last = now;
+    if (now - p.t0 < 2500 || d > 500) return;                                // skip the warm-up and tab switches
+    p.n++; p.sum += d;
+    if (p.n < 90) return;
+    if (p.sum / p.n > 1000 / 28) { state.lowFx = true; resize(); }
+    p.n = 0; p.sum = 0;
   }
 
   // ------------------------------------------------------------------ data and boot
@@ -1049,6 +1091,7 @@
     fullscreen, resize, minimapState: () => (state.built ? minimapState() : { rooms: [], brain: { x: 0.5, y: 0.5 }, camera: { x: 0.5, y: 0.5 }, target: { x: 0.5, y: 0.5 }, zoom: 100 }),
     bloom: (strength, threshold, radius) => { if (!bloomPass) return; if (strength != null) bloomPass.strength = +strength; if (threshold != null) bloomPass.threshold = +threshold; if (radius != null) bloomPass.radius = +radius; return { strength: bloomPass.strength, threshold: bloomPass.threshold, radius: bloomPass.radius }; },
     labelRules: (rules) => Object.assign(state.labelRules, rules || {}),
+    pause: (on) => { state.paused = !!on; }, fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
     teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size })),
     _three: () => ({ scene, camera, renderer, composer, controls, state }),
   });

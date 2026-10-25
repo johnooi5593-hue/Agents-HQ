@@ -37,7 +37,7 @@ Every agent is one file in `.claude/agents/` with its job, its team, its tools a
 
 The buttons at the bottom (Standup, Edit clips, What's next, Stats, Script…, Post copy…) and the message box talk to the chief of staff, which is Claude Code running headless in this folder with the repository's own permission rules. Each message continues the same conversation, so "OK" and "make it shorter" work.
 
-**The office is live from the terminal too.** Hooks in `.claude/settings.json` append every agent start and stop to `hq/events.jsonl`; the office reads it. Run `claude` in this folder in one window, the app in another, give the chief of staff a task, and watch the characters work.
+**The office shows every Claude session on your computer.** Claude Code keeps a live log of each session in `~/.claude/projects/`, including every sub-agent with its type and whether it has finished. The engine reads those logs (`hq/activity.py`, read-only), so the characters light up whenever Claude is working, even in a session started in another folder, such as a project on your D: drive. Hooks in `.claude/settings.json` add exact sub-agent starts and stops for sessions inside this folder. Set `HQ_WATCH_CLAUDE=0` to turn the watcher off.
 
 **It updates itself.** Every time you open the app it pulls the newest Agents HQ from GitHub before starting (set `HQ_NO_UPDATE=1` to skip that).
 
