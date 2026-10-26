@@ -31,7 +31,7 @@ from urllib.parse import unquote, urlparse, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from status import CLIP_EXT, brain_entities, brain_notes, collect  # noqa: E402
+from status import CLIP_EXT, brain_entities, brain_notes, collect, files  # noqa: E402
 import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
@@ -406,7 +406,10 @@ def task_footage(task):
 
 def edit_prompt(rel, ch, task_id):
     """The lead's instruction for the Edit button: edit-clips for that one video, for its channel."""
-    who = f" Channel: {channels.name(ch)} (key {ch}); its brain entities are " + " and ".join(f'"{n}"' for n in channels.brain_names(ch)) + "." if ch else ""
+    n = channels.name(ch)
+    who = (f" Channel: {n} (key {ch}). Same procedures as the main channel: follow \"Brand rules\" and \"Lessons\" as always, read "
+           f"\"{n} · Company\" instead of \"Company\" and \"{n} · Brand rules\" on top (its rules win where they differ); never use the "
+           f"main channel's name, logo, slogans or hashtags.") if ch else ""
     return f'/edit-clips "{rel}"{who} Board task {task_id} is this video\'s New footage task.'
 
 
@@ -638,6 +641,9 @@ def status_payload():
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
+    s["channels"] = [{"key": c["key"], "name": c.get("name") or ("Main channel" if c["main"] else c["key"])} for c in channels.payload()["channels"]]
+    for c in s["channels"][1:]:                             # a channel's clips wait in inbox/<key>/
+        s["inbox"]["clips"] += [c["key"] + "/" + n for n in files(channels.inbox(c["key"]), CLIP_EXT)]
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
     s["update"] = dict(UPDATE)
     s["brain_notes"] = sum(s.get("brain", {}).values())
@@ -1400,7 +1406,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": f"file larger than {MAX_UPLOAD // (1024 * 1024)} MB"}, 413)
         if not SAFE_NAME.match(name) or os.path.splitext(name)[1].lower() not in UPLOAD_EXT[kind]:
             return self.send_json({"error": f"{kind} accepts {' '.join(sorted(UPLOAD_EXT[kind]))} files with a plain name"}, 400)
-        folder = os.path.join(ROOT, UPLOAD_DIRS[kind])
+        ch = (parse_qs(urlparse(self.path).query).get("channel") or [""])[0] if kind == "clips" else ""
+        if ch and not channels.get(ch):
+            return self.send_json({"error": "no such channel"}, 404)
+        folder = channels.inbox(ch) if kind == "clips" else os.path.join(ROOT, UPLOAD_DIRS[kind])
         os.makedirs(folder, exist_ok=True)
         dst = os.path.join(folder, name)
         if os.path.exists(dst):
@@ -1415,7 +1424,10 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(chunk)
                 left -= len(chunk)
         os.replace(tmp, dst)
-        return self.send_json({"saved": os.path.relpath(dst, ROOT), "bytes": n}, 201)
+        rel = os.path.relpath(dst, ROOT).replace(os.sep, "/")
+        if kind == "clips":                                 # like a video from Drive: it waits on the board for the Edit button
+            channels.footage_task(rel, ch)
+        return self.send_json({"saved": rel, "bytes": n}, 201)
 
 
 def restart_into_update():

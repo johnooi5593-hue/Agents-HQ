@@ -62,11 +62,20 @@ class Channels:
         return (c or {}).get("name") or ("Main channel" if not key else key)
 
     def brain_names(self, key):
-        """The brain entities a channel's agents read instead of "Company" and "Brand rules"."""
+        """The brain entities a channel's agents read: its own Company instead of the main one, and the shared Brand rules
+        (the same procedures for every channel) with the channel's own rules on top."""
         if not key:
             return ["Company", "Brand rules"]
         n = self.name(key)
-        return [f"{n} · Company", f"{n} · Brand rules"]
+        return [f"{n} · Company", "Brand rules", f"{n} · Brand rules"]
+
+    def footage_task(self, rel, key):
+        """A New footage task: the video waits in the inbox for the owner's Edit button."""
+        if self.add_task:
+            label = os.path.splitext(os.path.basename(rel))[0]
+            who = f" ({self.name(key)})" if key else ""
+            self.add_task(title=f"New footage · {label}{who}", team="Creative", status="todo",
+                          note=(f"channel:{key} " if key else "") + f"inbox:{rel}")   # the path last: it may hold spaces
 
     def inbox(self, key):
         return os.path.join(self.root, "inbox", key) if key else os.path.join(self.root, "inbox")
@@ -100,8 +109,9 @@ class Channels:
             self.add_brain(f"{name} · Company", "company",
                            [about] if about else [f"Not set up yet. Owner: tell the chief of staff what {name} is about, who it is for and how it should sound."])
             self.add_brain(f"{name} · Brand rules", "style_guide",
-                           [f"Not set up yet. Until the owner gives {name} its own rules, follow the main \"Brand rules\" for format and length, "
-                            f"but never use the main channel's name, logo, slogans or hashtags for {name}."])
+                           [f"{name} works with the same procedures as the main channel: follow every rule in \"Brand rules\" too (format, "
+                            f"length, captions, covers, posting). Rules saved here are {name}'s own and win where they differ. Never use the "
+                            f"main channel's name, logo, slogans or hashtags for {name}."])
         return key
 
     def update(self, key, name=None, drive=None):
@@ -181,11 +191,7 @@ class Channels:
                     os.replace(tmp, self.ledger_path)
                 rel = os.path.relpath(os.path.join(dst_dir, name), self.root).replace(os.sep, "/")
                 got.append(rel)
-                if self.add_task:
-                    label = os.path.splitext(fn)[0]
-                    who = f" ({c.get('name')})" if c["key"] and c.get("name") else ""
-                    self.add_task(title=f"New footage · {label}{who}", team="Creative", status="todo",
-                                  note=(f"channel:{c['key']} " if c["key"] else "") + f"inbox:{rel}")   # the path last: it may hold spaces
+                self.footage_task(rel, c["key"])
         return got
 
     def run_watcher(self, every=30):

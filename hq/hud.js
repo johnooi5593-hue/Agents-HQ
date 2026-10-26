@@ -771,7 +771,7 @@
       <form class="add-task" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team"><option value="">Auto</option>${teamOpts}</select><button class="btn blue" type="submit">Add</button></form>
       <div class="ftabs">${[["all", "All"], ["running", "Running"], ["waiting", "Waiting"], ["done", "Done"]].map(([k, l]) => `<button class="ftab ${f === k ? "active" : ""}" data-filter="${k}" type="button">${l} <b>${counts[k]}</b></button>`).join("")}</div>
       <div class="pbody">${body}</div>
-      <div class="drop-strip"><div class="lbl"><span>Drop files · how work enters</span><span>${(st.inbox && st.inbox.clips || []).length} clips · ${(st.inbox && st.inbox.radar || []).length} notes · ${(st.inbox && st.inbox.stats || []).length} csv · ${(st.inbox && st.inbox.messages || []).length} mail</span></div><div class="drops">
+      <div class="drop-strip"><div class="lbl"><span>Drop files · how work enters${(st.channels || []).length > 1 ? ` · clips for <select id="drop-ch" aria-label="Channel for dropped clips">${st.channels.map((c) => `<option value="${esc(c.key)}" ${c.key === (state.dropCh || "") ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}</span><span>${(st.inbox && st.inbox.clips || []).length} clips · ${(st.inbox && st.inbox.radar || []).length} notes · ${(st.inbox && st.inbox.stats || []).length} csv · ${(st.inbox && st.inbox.messages || []).length} mail</span></div><div class="drops">
         <div class="drop" data-kind="clips">Clips<small>mp4 mov mkv webm</small></div><div class="drop" data-kind="radar">Comments<small>txt md csv json</small></div><div class="drop" data-kind="stats">Analytics<small>csv exports</small></div><div class="drop" data-kind="messages">Emails<small>eml txt md json</small></div></div></div>`;
     if ($("#task-team") && state.addTeam) $("#task-team").value = state.addTeam;
     p.querySelector(".pbody").scrollTop = scrollTop;
@@ -785,8 +785,9 @@
     catch (e) { toast("creative", "Approve", e.message || "could not approve", { bad: true }); }
   }
   async function upload(kind, files) {                     // PUT /api/inbox/<kind>/<name>: clips, comment exports, csv, emails
+    const ch = kind === "clips" ? state.dropCh || "" : "", chName = ch ? (((state.status || {}).channels || []).find((c) => c.key === ch) || {}).name || ch : "";
     for (const f of files) {
-      try { await getJSON(`/api/inbox/${kind}/${encodeURIComponent(f.name)}`, { method: "PUT", body: f }); toast("chief", "Inbox", `${f.name} saved to inbox/${kind === "clips" ? "" : kind}`); }
+      try { await getJSON(`/api/inbox/${kind}/${encodeURIComponent(f.name)}${ch ? "?channel=" + encodeURIComponent(ch) : ""}`, { method: "PUT", body: f }); toast("chief", "Inbox", kind === "clips" ? `${f.name} is on the board as New footage${chName ? " for " + chName : ""}. Press Edit when you want it edited.` : `${f.name} saved to inbox/${kind}`); }
       catch (e) { toast("chief", "Inbox", `${f.name}: ${e.message}`, { bad: true }); }
     }
     await refresh();
@@ -1545,6 +1546,7 @@
     // drag and drop onto the board's strip
     document.addEventListener("dragover", (e) => { const z = e.target.closest(".drop"); if (z) { e.preventDefault(); z.classList.add("over"); } });
     document.addEventListener("dragleave", (e) => { const z = e.target.closest(".drop"); if (z) z.classList.remove("over"); });
+    document.addEventListener("change", (e) => { if (e.target && e.target.id === "drop-ch") state.dropCh = e.target.value; });
     document.addEventListener("drop", (e) => { const z = e.target.closest(".drop"); if (!z) return; e.preventDefault(); z.classList.remove("over"); if (e.dataTransfer.files.length) upload(z.dataset.kind, Array.from(e.dataTransfer.files)); });
     // ask box
     const ask = $("#ask-input");

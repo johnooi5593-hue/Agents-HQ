@@ -40,9 +40,9 @@ Company facts, brand rules and lessons live in the memory MCP server (`memory`, 
 
 ## Channels
 The owner can run more than one brand (Channels & accounts in the app). The main channel uses "Company" and "Brand rules". Every other channel has its own entities **"<channel name> · Company"** and **"<channel name> · Brand rules"**, its own `inbox/<key>/` folder and its own posting accounts.
-- Work for a channel: read that channel's two entities instead of the main ones, pass the line "Channel: <name>. Read "<name> · Company" and "<name> · Brand rules" instead of "Company" and "Brand rules"; never use the main channel's name, logo, slogans or hashtags." to every sub-agent, and write the key into `out/<name>/channel.txt`.
+- Every channel runs exactly the same procedures as the main channel (the same teams, commands, skills, checks, Final tasks and posting screen); only its brand is its own. Work for a channel: read "Brand rules" and "Lessons" as always, "<name> · Company" instead of "Company", and "<name> · Brand rules" on top (it wins where they differ). Pass the line "Channel: <name>. Same procedures as the main channel: follow "Brand rules" and "Lessons" as always, and read "<name> · Company" instead of "Company" and "<name> · Brand rules" on top (its rules win where they differ). Never use the main channel's name, logo, slogans or hashtags." to every sub-agent, and write the key into `out/<name>/channel.txt`.
 - A preference the owner states about one channel goes on that channel's entity, not the main one. A new channel starts with "Not set up yet": ask the owner about its brand once and save the answers.
-- New videos in a channel's Google Drive folder arrive on the board as "New footage" tasks. They wait for the owner's Edit button; don't start editing them on your own.
+- New videos (from a channel's Google Drive folder, or dropped into the app for a channel) arrive on the board as "New footage" tasks. They wait for the owner's Edit button; don't start editing them on your own.
 
 ## Folders
 - `inbox/` raw clips waiting to be edited (can be a cloud-synced folder; a channel's clips are in `inbox/<key>/`); `inbox/radar/` comments, notes and links; `inbox/stats/` exported analytics CSVs; `inbox/messages/` exported emails, DMs and forms
