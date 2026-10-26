@@ -487,6 +487,7 @@ def status_payload():
     s = collect()
     ag, running, tasks = agents()["agents"], events()["running"], load_tasks()["tasks"]
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
+    s["update"] = dict(UPDATE)
     s["brain_notes"] = sum(s.get("brain", {}).values())
     s["counts"] = {"agents": len(ag), "running": sum(running.values()),
                    "tasks_running": sum(1 for t in tasks if t["status"] == "doing"),
@@ -585,21 +586,115 @@ class Notifier:
 notifier = Notifier()
 
 
+UPDATE = {"ok": None, "version": "", "from": "", "message": "not checked", "at": 0}
+USER_DATA = ("brain/memory.jsonl",)          # the owner's own data inside tracked files: never lost in an update
+
+
+def git(*args, timeout=60):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def merge_brain(mine, theirs):
+    """Union of two memory.jsonl files: every entity, every observation from both, the owner's order first."""
+    def parse(text):
+        rows = []
+        for line in (text or "").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+        return rows
+    out, index = [], {}
+    for row in parse(mine) + parse(theirs):
+        if row.get("type") == "entity":
+            key = ("entity", row.get("name"))
+            if key in index:
+                obs = index[key]["observations"]
+                for o in row.get("observations", []):
+                    if o not in obs:
+                        obs.append(o)
+                continue
+            row = dict(row, observations=list(row.get("observations", [])))
+            index[key] = row
+        else:
+            key = ("other", json.dumps(row, sort_keys=True))
+            if key in index:
+                continue
+            index[key] = row
+        out.append(row)
+    return "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out)
+
+
 def auto_update():
-    """Pull the newest Agents HQ from GitHub before starting, so the app keeps itself up to date."""
-    if os.environ.get("HQ_NO_UPDATE") or not os.path.isdir(os.path.join(ROOT, ".git")):
+    """Pull the newest Agents HQ from GitHub before starting, so the app keeps itself up to date.
+    Robust to the owner's own changes: files the office edits locally (the brain) are backed up, the update is applied,
+    and the two brains are merged so no rule or lesson is lost. Local commits are merged, never thrown away. The result
+    is kept in UPDATE and shown in the app (user menu, and a warning when an update could not be applied)."""
+    now = int(time.time())
+    if not os.path.isdir(os.path.join(ROOT, ".git")):
+        UPDATE.update(ok=None, message="not a git folder, so no updates", at=now)
+        return
+    if os.environ.get("HQ_NO_UPDATE"):
+        try:
+            UPDATE["version"] = git("rev-parse", "--short", "HEAD", timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        UPDATE.update(ok=None, message="updates off", at=now)
         return
     try:
-        before = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip()
-        p = subprocess.run(["git", "pull", "--ff-only", "--quiet"], cwd=ROOT, capture_output=True, text=True, timeout=60)
-        after = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=10).stdout.strip()
-        if p.returncode != 0:
-            print("update check skipped:", (p.stderr or p.stdout).strip().splitlines()[-1] if (p.stderr or p.stdout).strip() else "git pull failed")
-        elif before != after:
-            print(f"Agents HQ updated {before} -> {after}")
+        before = git("rev-parse", "--short", "HEAD").stdout.strip()
+        UPDATE.update(version=before, **{"from": before})
+        f = git("fetch", "--quiet")
+        if f.returncode != 0:
+            UPDATE.update(ok=False, message="no internet or GitHub refused: " + (f.stderr.strip().splitlines() or ["fetch failed"])[-1], at=now)
+            print("update check skipped:", UPDATE["message"]); return
+        if git("rev-parse", "--abbrev-ref", "@{u}").returncode != 0:
+            UPDATE.update(ok=False, message="this folder has no upstream branch to update from", at=now)
+            print("update check skipped:", UPDATE["message"]); return
+        if git("merge-base", "--is-ancestor", "@{u}", "HEAD").returncode == 0:
+            UPDATE.update(ok=True, message="up to date", at=now); print(f"Agents HQ is up to date ({before})"); return
+        # the owner's local edits to tracked files: back them up, set them aside, update, then put them back
+        dirty = [l[3:].strip().strip('"') for l in git("status", "--porcelain", "--untracked-files=no").stdout.splitlines() if l.strip()]
+        saved = {}
+        if dirty:
+            backup = os.path.join(ROOT, ".hq-backup", time.strftime("%Y%m%d-%H%M%S"))
+            for rel in dirty:
+                src = os.path.join(ROOT, rel)
+                if os.path.isfile(src):
+                    os.makedirs(os.path.dirname(os.path.join(backup, rel)), exist_ok=True)
+                    shutil.copy2(src, os.path.join(backup, rel))
+                    with open(src, encoding="utf-8", errors="replace") as fh:
+                        saved[rel] = fh.read()
+            git("stash", "push", "--quiet", "-m", "agents-hq auto-update")
+        m = git("merge", "--ff-only", "--quiet", "@{u}")
+        if m.returncode != 0:                                  # the office committed on this computer too: merge, don't drop
+            m = git("-c", "user.name=Agents HQ", "-c", "user.email=agents-hq@localhost", "merge", "--no-edit", "--quiet", "@{u}")
+            if m.returncode != 0:
+                git("merge", "--abort")
+        merged_ok = m.returncode == 0
+        if dirty:
+            pop = git("stash", "pop", "--quiet")
+            if pop.returncode != 0:                            # both sides changed a file: keep the update, restore the owner's data
+                git("reset", "--quiet")                         # clear the half-merged state, then take the update's files
+                git("checkout", "--", ".")
+                for rel, text in saved.items():
+                    path = os.path.join(ROOT, rel)
+                    if rel in USER_DATA:
+                        with open(path, encoding="utf-8", errors="replace") as fh:
+                            upstream = fh.read()
+                        with open(path, "w", encoding="utf-8") as fh:
+                            fh.write(merge_brain(text, upstream))
+                if all(rel in USER_DATA for rel in saved):      # anything else stays in the stash and in .hq-backup
+                    git("stash", "drop", "--quiet")
+        after = git("rev-parse", "--short", "HEAD").stdout.strip()
+        if merged_ok:
+            UPDATE.update(ok=True, version=after, message=f"updated {before} -> {after}", at=now)
+            print(f"Agents HQ updated {before} -> {after}" + (f" (your local changes kept; backup in .hq-backup)" if dirty else ""))
         else:
-            print(f"Agents HQ is up to date ({after})")
+            UPDATE.update(ok=False, version=after, message="the update conflicts with changes made on this computer: " + ((m.stderr or m.stdout).strip().splitlines() or ["merge failed"])[-1], at=now)
+            print("update not applied:", UPDATE["message"])
     except (OSError, subprocess.SubprocessError) as e:
+        UPDATE.update(ok=False, message=f"update check failed: {e}", at=now)
         print("update check skipped:", e)
 
 

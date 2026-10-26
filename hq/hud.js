@@ -219,8 +219,19 @@
       noteHookStarts(hookRun());
       if (!state.agents.length) await loadAgents();
       attachOngoingRun(s);
+      showUpdate(s.update);
       renderAll();
     } catch (e) { /* offline or logging in: keep the last state */ }
+  }
+  function showUpdate(u) {                                 // which version runs, and whether the start-up update worked
+    if (!u) return;
+    const el = document.getElementById("hq-version");
+    if (el) el.textContent = (u.version || "?") + " · " + (u.ok === false ? "couldn't update" : u.message || "");
+    if (el) el.title = u.message || "";
+    if (u.ok === false && !state.updateWarned) {
+      state.updateWarned = true;
+      toast("dev", "Update", "Agents HQ couldn't update itself: " + shortTask(u.message, 120) + ". Tray → Open engine log for details.", { bad: true });
+    }
   }
   async function pollEvents() {                            // every 2 s: the hook feed's running map (lighter and quicker than /api/status)
     try {

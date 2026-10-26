@@ -26,3 +26,4 @@ inbox/messages/*
 !.claude/skills/yellow-serif/scripts/fonts/FONTS.md
 .claude/skills/yellow-serif/assets/overlays/*
 !.claude/skills/yellow-serif/assets/overlays/README.md
+.hq-backup/
