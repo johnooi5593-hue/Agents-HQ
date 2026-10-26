@@ -1012,13 +1012,19 @@
   function folderOfTask(t) { const m = /out:([^\s,;]+)/.exec((t && t.note) || ""); return m ? "out/" + m[1].replace(/\/+$/, "") : null; }
   function ensureReviewHost() {
     let host = $("#review");
-    if (!host) { host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host); }
+    if (!host) {
+      host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host);
+      host.addEventListener("input", (e) => { const f = e.target.dataset && e.target.dataset.pubField; if (f) rv.edits[f] = e.target.value; });
+      host.addEventListener("change", (e) => { const k = e.target.dataset && e.target.dataset.pubSel; if (k) { rv.sel[k] = e.target.checked; renderReview(); } });
+    }
     return host;
   }
-  async function openReview({ folder, taskId }) {
+  async function openReview({ folder, taskId, accounts }) {
     const host = ensureReviewHost(), st = state.status || {};
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
-    Object.assign(rv, { open: true, folder: folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null });
+    stopPubPoll();
+    Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
+      accounts: !!accounts, acc: null, accBusy: "", pub: null, pubSub: "", edits: {}, sel: null, pick: {} });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1026,11 +1032,162 @@
       try { rv.data = await getJSON(`/api/work?folder=${encodeURIComponent(rv.folder)}`); }
       catch (e) { rv.data = { error: e.message || "could not open this folder", files: [] }; }
       if (rv.open) renderReview();
+      loadPub();
     }
+    if (rv.accounts) loadAccounts();
+  }
+  // ---- posting: the overview of what goes where, and the owner's Approve & post (the only thing that posts)
+  const PUB = [["facebook", "Facebook"], ["instagram", "Instagram"], ["youtube", "YouTube Shorts"]];
+  const PUB_URL = "/api/" + "publish";
+  // what can be posted: the folder itself, or each topic of a long talk (a subfolder with its own post.md)
+  const pubTargets = () => ((rv.data && rv.data.files) || []).filter((f) => /^post\.md$/i.test(f.name) && f.path.split("/").length <= 2).map((f) => f.path.split("/").slice(0, -1).join("/"));
+  const pubFolder = () => rv.folder + (rv.pubSub ? "/" + rv.pubSub : "");
+  async function loadPub(sub) {
+    const targets = pubTargets();
+    if (!rv.folder || !targets.length) { rv.pub = null; return; }
+    if (sub != null) rv.pubSub = sub; else if (!targets.includes(rv.pubSub)) rv.pubSub = targets[0];
+    if (sub != null) { rv.sel = null; rv.edits = {}; rv.pick = {}; }
+    try { rv.pub = await getJSON(`${PUB_URL}?folder=${encodeURIComponent(pubFolder())}`); } catch (e) { rv.pub = null; }
+    if (rv.pub && !rv.sel) { rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && ((rv.pub.posted[k] || {}).state !== "posted"); }
+    if (rv.pub && rv.pub.busy) startPubPoll();
+    if (rv.open) renderReview();
+  }
+  function stopPubPoll() { if (rv.poll) { clearInterval(rv.poll); rv.poll = null; } }
+  function startPubPoll() {
+    stopPubPoll();
+    rv.poll = setInterval(async () => {
+      if (!rv.open || !rv.folder) return stopPubPoll();
+      try { rv.pub = await getJSON(`${PUB_URL}?folder=${encodeURIComponent(pubFolder())}`); } catch (e) { return; }
+      renderReview();
+      if (!rv.pub.busy) {
+        stopPubPoll();
+        const r = rv.pub.posted || {}, ok = PUB.filter(([k]) => (r[k] || {}).state === "posted").map(([, n]) => n), bad = PUB.filter(([k]) => (r[k] || {}).state === "failed").map(([, n]) => n);
+        if (ok.length) toast("social", "Posted", ok.join(", ") + (bad.length ? ` · failed: ${bad.join(", ")}` : ""));
+        else if (bad.length) toast("social", "Posting failed", bad.join(", ") + ": see the review screen", { bad: true });
+      }
+    }, 3000);
+  }
+  const chosenPub = () => PUB.filter(([k]) => rv.pub && rv.sel && rv.sel[k] && (rv.pub.accounts[k] || {}).connected).map(([k]) => k);
+  function pubValue(k, f) { const key = k + "." + f; return rv.edits[key] != null ? rv.edits[key] : ((rv.pub.drafts[k] || {})[f] || ""); }
+  function pickPub(kind, val) {                             // the owner picks the cover, the video version, or a caption option
+    if (kind === "topic") { stopPubPoll(); loadPub(val); return; }
+    if (kind === "video" || kind === "cover") rv.pick[kind] = val;
+    else if (kind.startsWith("opt:")) {
+      const k = kind.slice(4), o = ((rv.pub.drafts[k] || {}).options || [])[+val];
+      if (o) { for (const f of Object.keys(o)) rv.edits[k + "." + f] = o[f]; rv.pick[kind] = +val; }
+    }
+    renderReview();
+  }
+  async function startPost() {
+    const folder = pubFolder();
+    if (!folder.startsWith("approved/") || !rv.pub) return;
+    const platforms = {};
+    for (const k of chosenPub()) {
+      platforms[k] = k === "youtube" ? { title: pubValue(k, "title"), description: pubValue(k, "description") } : { caption: pubValue(k, "caption") };
+      if (((rv.pub.posted || {})[k] || {}).state === "posted") platforms[k].again = true;
+    }
+    if (!Object.keys(platforms).length) return;
+    const body = { folder, platforms, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover };
+    try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", "Posting", Object.keys(platforms).map((k) => PUB.find((p) => p[0] === k)[1]).join(", ")); }
+    catch (e) { toast("social", "Post", e.message || "could not post", { bad: true }); }
+  }
+  function pubSection(vids, imgs) {
+    const p = rv.pub; if (!p) return "";
+    const sub = rv.pubSub || "", inSub = (f) => f.path === (sub ? sub + "/" : "") + f.name;   // posting uses the files of this clip or topic
+    const post = ((rv.data && rv.data.files) || []).find((f) => /^post\.md$/i.test(f.name) && inSub(f));
+    const plan = post ? postSections(post.text).find((x) => /^plan\b/i.test(x.title)) : null;
+    const vSel = rv.pick.video || p.video, cSel = rv.pick.cover || p.cover;
+    const vOpts = vids.filter(inSub), cOpts = imgs.filter(inSub), targets = pubTargets();
+    let h = `<div class="rv-sec pub"><div class="rv-h">Posting overview <span>prepared by Social</span><button class="rv-copy" data-rv-accounts type="button">Accounts</button></div>`;
+    if (targets.length > 1) h += `<div class="pub-h">Topic <span>each topic is its own post</span></div><div class="rv-chips">${targets.map((t) => `<button class="rv-chip ${t === sub ? "on" : ""}" data-pub-pick="topic" data-pub-val="${esc(t)}" type="button">${esc(prettyName(t || "main"))}</button>`).join("")}</div>`;
+    if (plan) h += `<div class="md pub-plan">${mdHtml(plan.body)}</div>`;
+    if (cOpts.length > 1) h += `<div class="pub-h">Thumbnail <span>tap one</span></div><div class="pub-pick">${cOpts.map((i) => `<button class="pub-thumb ${i.name === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(i.name)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy">${i.name === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
+    if (vOpts.length > 1) h += `<div class="pub-h">Video <span>which version to post</span></div><div class="rv-chips">${vOpts.map((x) => `<button class="rv-chip ${x.name === vSel ? "on" : ""}" data-pub-pick="video" data-pub-val="${esc(x.name)}" type="button">${x.name === vSel ? svg("check") : svg("play")}${esc(prettyName(x.path))}</button>`).join("")}</div>`;
+    for (const [k, label] of PUB) {
+      const acc = p.accounts[k] || {}, done = (p.posted || {})[k] || {}, on = !!(rv.sel && rv.sel[k]) && acc.connected;
+      const opts = (p.drafts[k] || {}).options || [];
+      const st = done.state === "posted" ? `<a class="pub-ok" href="${esc(done.link || "#")}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
+        : done.state === "failed" ? `<span class="pub-bad">Failed: ${esc(done.error || "")}</span>`
+        : done.state === "posting" || done.state === "waiting" ? `<span class="pub-run"><span class="spin"></span> ${done.state === "posting" ? "Posting…" : "Waiting…"}</span>` : "";
+      h += `<div class="pub-row ${on ? "on" : ""}"><label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${on ? "checked" : ""} ${acc.connected ? "" : "disabled"}><b>${label}</b>
+        <span class="pub-acc">${acc.connected ? esc(acc.name || "connected") : acc.problem ? esc(acc.problem) : "not connected"}</span></label>${st}`;
+      if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts type="button">Connect</button>`;
+      if (done.warning) h += `<div class="pub-warn">${esc(done.warning)}</div>`;
+      if (on && opts.length > 1) h += `<div class="rv-chips">${opts.map((o, i) => `<button class="rv-chip ${(rv.pick["opt:" + k] || 0) === i ? "on" : ""}" data-pub-pick="opt:${k}" data-pub-val="${i}" type="button">Option ${i + 1}</button>`).join("")}</div>`;
+      if (on) h += k === "youtube"
+        ? `<input class="pub-in" data-pub-field="youtube.title" maxlength="100" value="${esc(pubValue(k, "title"))}" placeholder="Title"><textarea class="pub-in" rows="3" data-pub-field="youtube.description" placeholder="Description">${esc(pubValue(k, "description"))}</textarea>`
+        : `<textarea class="pub-in" rows="4" data-pub-field="${k}.caption" placeholder="Caption">${esc(pubValue(k, "caption"))}</textarea>`;
+      h += "</div>";
+    }
+    h += `<div class="pub-note">Posts <b>${esc(vSel || "the video")}</b>${cSel ? ` with the thumbnail <b>${esc(cSel)}</b>` : ""}. You can edit any text above before posting. TikTok: post by hand with the TikTok text below.</div></div>`;
+    return h;
+  }
+  // ---- accounts: connect Facebook + Instagram (one Meta app) and YouTube (one Google OAuth client), once
+  async function loadAccounts() {
+    try { rv.acc = await getJSON("/api/accounts"); } catch (e) { rv.acc = { error: e.message }; }
+    if (rv.open && rv.accounts) renderReview();
+  }
+  async function accountAction(kind) {
+    const v = (id) => { const x = $("#" + id); return x ? x.value.trim() : ""; };
+    let body;
+    if (kind === "meta") body = { action: "meta", app_id: v("acc-app-id"), app_secret: v("acc-app-secret"), token: v("acc-token"), page: v("acc-page") };
+    else if (kind === "youtube") body = { action: "youtube", client_json: v("acc-yt-json") };
+    else body = { action: "disconnect", which: kind.replace(/^off-/, "") };
+    rv.accBusy = kind; renderReview();
+    try {
+      const r = await postJSON("/api/accounts", body);
+      if (r.url) {
+        window.open(r.url, "_blank");
+        toast("social", "YouTube", "Sign in with Google in the browser window, then come back here.");
+        let n = 0; const t = setInterval(async () => { n++; await loadAccounts(); if ((rv.acc && rv.acc.youtube && rv.acc.youtube.connected) || n > 100 || !rv.open) clearInterval(t); }, 3000);
+      } else {
+        if (r.accounts) rv.acc = r.accounts;
+        if (kind === "meta") toast("social", "Connected", `Facebook Page ${r.page || ""}${r.instagram ? " and Instagram @" + r.instagram : " (no Instagram linked)"}`);
+      }
+    } catch (e) { toast("social", "Accounts", e.message || "could not connect", { bad: true }); }
+    rv.accBusy = ""; if (rv.open) renderReview();
+  }
+  function accountsCard() {
+    const a = rv.acc || {}, fb = a.facebook || {}, ig = a.instagram || {}, yt = a.youtube || {}, busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
+    const line = (ok, name, label) => `<div class="acc-line ${ok ? "ok" : ""}">${ok ? svg("check") : "○"} <b>${label}</b> ${ok ? esc(name || "connected") : "not connected"}</div>`;
+    return `<div class="rv-card">
+      <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
+        <div class="rv-title"><div class="t">Accounts for posting</div><div class="s"><span>Connect once. Agents never post: only your Approve &amp; post button does.</span></div></div></div>
+      <div class="rv-body">
+      ${a.error ? `<div class="rv-empty">${esc(a.error)}</div>` : !rv.acc ? '<div class="rv-empty"><span class="spin"></span> Loading…</div>' : ""}
+      <div class="rv-sec acc"><div class="rv-h">Facebook + Instagram</div>
+        ${line(fb.connected, fb.name, "Facebook Page")}${line(ig.connected, ig.name, "Instagram")}${ig.problem ? `<div class="pub-warn">${esc(ig.problem)}: in the Instagram app switch to a Professional account and link it to your Facebook Page, then connect again.</div>` : ""}
+        <input class="pub-in" id="acc-app-id" placeholder="App ID" autocomplete="off">
+        <input class="pub-in" id="acc-app-secret" type="password" placeholder="App secret" autocomplete="off">
+        <textarea class="pub-in" id="acc-token" rows="2" placeholder="User access token from the Graph API Explorer"></textarea>
+        <input class="pub-in" id="acc-page" placeholder="Page name (only if you manage several Pages)" autocomplete="off">
+        <div class="acc-row"><button class="btn primary" data-acc="meta" type="button">${busy("meta")}Connect Facebook + Instagram</button>${fb.connected ? '<button class="btn" data-acc="off-meta" type="button">Disconnect</button>' : ""}</div>
+        <details class="acc-help"><summary>How to get these (about 10 minutes, once)</summary><ol>
+          <li>Instagram must be a <b>Professional</b> account (Business or Creator) <b>linked to your Facebook Page</b>.</li>
+          <li>Open <b>developers.facebook.com</b> → My Apps → <b>Create app</b>. Pick the use cases for managing a Page and publishing to Instagram (Facebook Login for Business).</li>
+          <li>App settings → Basic: copy the <b>App ID</b> and <b>App secret</b>.</li>
+          <li>Tools → <b>Graph API Explorer</b>: choose your app, <b>Get User Access Token</b>, tick <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>pages_manage_posts</code>, <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>business_management</code> (and <code>publish_video</code> if it is listed). Generate, allow your Page and Instagram, copy the token.</li>
+          <li>Paste all three here and press Connect. Agents HQ swaps the token for one that keeps working, so you do this once. You are the app's admin, so it works for your own Page without Meta's app review.</li></ol></details>
+      </div>
+      <div class="rv-sec acc"><div class="rv-h">YouTube Shorts</div>
+        ${line(yt.connected, yt.name, "YouTube channel")}
+        <textarea class="pub-in" id="acc-yt-json" rows="3" placeholder="${yt.client ? "Client saved. Paste a new client_secret.json only to replace it" : "Paste everything from your client_secret_….json file"}"></textarea>
+        <div class="acc-row"><button class="btn primary" data-acc="youtube" type="button">${busy("youtube")}Connect YouTube</button>${yt.connected ? '<button class="btn" data-acc="off-youtube" type="button">Disconnect</button>' : ""}</div>
+        <div class="pub-note">Do this on the computer, not the phone: Google sends you back to this computer after you sign in.</div>
+        <details class="acc-help"><summary>How to get the file (about 10 minutes, once)</summary><ol>
+          <li>Open <b>console.cloud.google.com</b> and create a project called Agents HQ.</li>
+          <li>APIs &amp; Services → Library → enable <b>YouTube Data API v3</b>.</li>
+          <li>OAuth consent screen: External, add your Google account as a test user, then <b>Publish app</b> (otherwise the sign-in stops working after 7 days).</li>
+          <li>Credentials → Create credentials → OAuth client ID → <b>Desktop app</b> → Download JSON. Open it in Notepad, copy everything, paste it here.</li>
+          <li>Press Connect YouTube, sign in and allow. Google says it hasn't verified the app: press Advanced → Go to Agents HQ (it is your own app).</li>
+          <li><b>Good to know:</b> Google keeps videos uploaded by a new project <b>private</b> until the project passes its free YouTube API audit (a form in the Google Cloud console). Until then, Shorts arrive private and Agents HQ tells you so.</li></ol></details>
+      </div>
+      <div class="rv-sec acc"><div class="rv-h">TikTok</div><div class="pub-note">Not yet: TikTok only allows private posts from an app until TikTok reviews it. Post TikTok by hand with the TikTok text the Social team writes.</div></div>
+      </div><div class="rv-actions"><button class="btn" data-rv-close type="button">Done</button></div></div>`;
   }
   function closeReview(fromHistory) {
     if (!rv.open) return;
-    rv.open = false;
+    rv.open = false; stopPubPoll();
     const host = $("#review");
     if (host) { host.querySelectorAll("video").forEach((v) => { try { v.pause(); } catch (e) { /* gone */ } }); host.hidden = true; host.innerHTML = ""; }
     document.body.classList.remove("review-open");
@@ -1085,6 +1242,7 @@
   }
   function renderReview() {
     const host = $("#review"); if (!host || !rv.open) return;
+    if (rv.accounts) { host.innerHTML = accountsCard(); return; }
     const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
     const name = rv.folder ? rv.folder.split("/").slice(1).join("/") : "";
     const title = task ? task.title : prettyName(name);
@@ -1110,8 +1268,9 @@
       html += "</div>";
     }
     if (imgs.length) html += `<div class="rv-sec"><div class="rv-h">Covers and images <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`).join("")}</div></div>`;
+    html += pubSection(vids, imgs);
     if (post) {
-      const secs = postSections(post.text);
+      const secs = postSections(post.text).filter((x) => !/^plan\b/i.test(x.title));
       html += `<div class="rv-sec"><div class="rv-h">Post copy <button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="all" type="button">Copy all</button></div>${secs.map((s, i) => `<div class="rv-post"><div class="rv-post-h"><b>${esc(s.title || "Copy")}</b><button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="${i}" type="button">Copy</button></div><div class="md">${mdHtml(s.body)}</div></div>`).join("")}</div>`;
     }
     if (srt) {
@@ -1126,8 +1285,13 @@
     if (!rv.folder && task) html += `<div class="rv-sec"><div class="rv-h">Details</div><div class="md">${mdHtml([task.subtitle, task.agent ? "By " + task.agent : "", task.date ? "Date: " + task.date + (task.time ? " " + task.time : "") : "", "Created " + timeAgo(task.created)].filter(Boolean).join("\n"))}</div></div>`;
     html += "</div>";
     if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence" required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
-    else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved. It's in <b>approved/</b> for you to post. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
-    else html += `<div class="rv-actions">${canApprove ? `<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button><button class="btn primary" data-rv-approve type="button">Approve</button>` : `<button class="btn" data-rv-close type="button">Close</button>`}</div>`;
+    else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
+    else {
+      const n = chosenPub().length, busyPub = rv.pub && rv.pub.busy;
+      const postBtn = n ? `<button class="btn primary" data-rv-approve="post" type="button">${area === "approved" ? "Post now" : "Approve &amp; post"} (${n})</button>` : "";
+      html += `<div class="rv-actions">${canApprove ? `<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button><button class="btn ${n ? "" : "primary"}" data-rv-approve type="button">Approve${n ? " only" : ""}</button>${postBtn}`
+        : area === "approved" && rv.pub ? `<button class="btn" data-rv-close type="button">Close</button>${busyPub ? '<button class="btn" disabled type="button"><span class="spin"></span> Posting…</button>' : postBtn}` : `<button class="btn" data-rv-close type="button">Close</button>`}</div>`;
+    }
     html += "</div>";
     if (rv.img) html += `<div class="rv-light" data-rv-img=""><img src="${esc(rv.img)}" alt=""><button class="rv-back" data-rv-img="" type="button">${svg("close")}<span>Close</span></button></div>`;
     const keepTime = $("#rv-player") && $("#rv-player").getAttribute("src") === (v && v.url) ? $("#rv-player").currentTime : null;
@@ -1137,7 +1301,8 @@
     const b = host.querySelector(".rv-body"); if (b) b.scrollTop = scroll;
     if (rv.mode === "changes") { const t = $("#rv-change-text"); if (t) t.focus(); }
   }
-  async function reviewApprove() {
+  async function reviewApprove(andPost) {
+    if (andPost && (rv.folder || "").startsWith("approved/")) return startPost();
     const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
     const name = rv.folder && rv.folder.startsWith("out/") ? rv.folder.slice(4) : null;
     try {
@@ -1146,6 +1311,7 @@
       if (task && name && folderOfTask(task) !== rv.folder) { try { await postJSON("/api/approve", { name }); } catch (e) { /* already moved */ } }
       rv.mode = "approved"; if (rv.folder && rv.folder.startsWith("out/")) rv.folder = "approved/" + rv.folder.slice(4);
       try { rv.data = await getJSON(`/api/work?folder=${encodeURIComponent(rv.folder)}`); } catch (e) { /* keep the last */ }
+      if (andPost) await startPost();
       renderReview(); refresh();
     } catch (e) { toast("creative", "Approve", e.message || "could not approve", { bad: true }); }
   }
@@ -1158,9 +1324,12 @@
     closeReview();
   }
   function reviewClick(e) {                                 // returns true when the click belonged to the review screen
-    const b = e.target.closest("[data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
+    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-pub-pick], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
     if (!b) return false;
     const d = b.dataset;
+    if (d.rvAccounts != null) { openReview({ accounts: true }); return true; }
+    if (d.acc) { if (!rv.accBusy) accountAction(d.acc); return true; }
+    if (d.pubPick) { pickPub(d.pubPick, d.pubVal); return true; }
     if (d.rvFolder) { openReview({ folder: d.rvFolder, taskId: d.rvTask || null }); return true; }
     if (d.rvTask) { openReview({ taskId: d.rvTask }); return true; }
     if (d.rvClose != null) { closeReview(); return true; }
@@ -1174,7 +1343,7 @@
       return true;
     }
     if (d.rvMode != null) { rv.mode = d.rvMode || null; renderReview(); return true; }
-    if (d.rvApprove != null) { reviewApprove(); return true; }
+    if (d.rvApprove != null) { reviewApprove(d.rvApprove === "post"); return true; }
     if (d.rvRetro != null) { send(`/retro ${rv.folder || "board task " + rv.taskId} (the owner approved it)`); toast("chief", "Retro started", "The team is writing down what worked."); closeReview(); return true; }
     return false;
   }
@@ -1206,6 +1375,7 @@
       if (d.overview != null) { openPanel("office"); goOverview(); return; }
       if (b.id === "user-btn") { const m = $("#user-dropdown"); const was = m.hidden; closeMenus(); m.hidden = !was; return; }
       if (b.id === "menu-overview") { openPanel("office"); goOverview(); return; }
+      if (b.id === "menu-accounts") { openReview({ accounts: true }); return; }
       if (b.id === "menu-lead") { setLead(true); $("#lead-input").focus(); return; }
       if (b.id === "menu-life") { setLife(!state.life); return; }
       if (b.id === "bell") { const was = $("#notif-list").hidden; closeMenus(); toggleBell(was); return; }

@@ -29,7 +29,7 @@ Everyone runs on **Opus 5.5** (`claude-opus-5-5`): you, the heads and the worker
 3. **Parallel.** Start every independent worker in the same message so they run at the same time (one `clip-editor` per clip, one analyst per market, and so on).
 4. **Review.** Hand the workers' files back to the head for its merge and review pass. Creative work also goes through `brand-checker`, code through `code-reviewer`. Fix what they flag, then check again.
 5. **Track.** Every routed request is a task on the board: `node hq/tasks.js add "<title>" --team "<Team>"` when you start, `node hq/tasks.js move <id> doing|review|done` as it moves. The office shows the board.
-6. **Report.** Short: what was done, where the files are, what needs a decision. End with "Nothing is published. Reply OK to approve."
+6. **Report.** Short: what was done, where the files are, what needs a decision. A finished edit goes to Social for its posting pass first (`post.md`), so the owner reviews video, cover and the posting overview together. End with "Nothing is published. Reply OK to approve."
 7. **Learn.** When the owner approves or corrects finished work, run `/retro` on it: save up to five specific lessons to the brain as `[<Team> · for <Team>, <Team>] <lesson>`. Every agent reads "Lessons" before it works, so the next project starts from what this one taught. Once a week (the board shows a "Coffee chat" task on Mondays) run `/coffee-chat`: the team heads cross-review each other's lessons and propose improvements; changes to skills or agents still wait for the owner's OK.
 
 ## The shared brain
@@ -50,7 +50,7 @@ Company facts, brand rules and lessons live in the memory MCP server (`memory`, 
 
 ## Rules
 - One command per Bash call, no `&&` chains. Use only the commands the permission rules allow (`.claude/settings.json`).
-- Nothing gets published, uploaded, posted, emailed or pushed. Finished work waits for the owner's OK.
+- Nothing gets published, uploaded, posted, emailed or pushed. Finished work waits for the owner's OK. The only thing that posts is the owner's **Approve & post** button in the app (accounts connected under the user menu → Accounts); agents never post, never call `/api/publish` or `/api/accounts`, and never read `.hq-accounts.json`.
 - Never delete files. Only move raw clips from `inbox/` to `done/` after their edit passed the brand check.
 - Keep agents to one job each. If a task needs a skill no agent has, say so and suggest `/hire`.
 - Skills and agents improve over time: when a step keeps failing or the owner repeats a correction, propose an edit to that `SKILL.md` or agent file, show the diff, and save it only after the owner says OK.

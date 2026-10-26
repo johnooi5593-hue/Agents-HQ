@@ -32,7 +32,11 @@
       "Bash(curl:*)",
       "Bash(wget:*)",
       "Bash(git push --force:*)",
-      "Read(.env)"
+      "Read(.env)",
+      "Read(.hq-accounts.json)",
+      "Bash(*hq-accounts*)",
+      "Bash(*api/publish*)",
+      "Bash(*api/accounts*)"
     ],
     "defaultMode": "bypassPermissions"
   },

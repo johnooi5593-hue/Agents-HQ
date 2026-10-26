@@ -21,7 +21,7 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
   HQ_LOCAL_TRUST=1  phone access from the desktop app: requests from this computer itself need no login, every other
                     device (a phone on Wi-Fi or Tailscale) does. Never combine with HQ_TRUST_PROXY.
 """
-import datetime, hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+import datetime, hashlib, hmac, html, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from followups import FollowUps
 from http import cookies
@@ -33,6 +33,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from status import CLIP_EXT, brain_entities, brain_notes, collect  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
+import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
 HOST = os.environ.get("HQ_HOST", "127.0.0.1")
@@ -313,6 +314,36 @@ def approve_folder(name):
     shutil.move(src, dst)
     on_approved(name)
     return 200, {"approved": name}
+
+
+html_escape = html.escape
+accounts = publish.Accounts(ROOT)
+publisher = publish.Publisher(ROOT, accounts)
+
+
+def approved_dir(folder, areas=("approved",)):
+    """approved/<name> → its path, or None. Only approved work can be posted; the overview may also read out/."""
+    m = re.match(r"^(approved|out)/([^/]+)(?:/([^/]+))?$", str(folder or ""))         # a clip, or one topic of a long talk
+    ok = m and m[1] in areas and SAFE_NAME.match(m[2]) and (not m[3] or SAFE_NAME.match(m[3]))
+    d = safe_join(os.path.join(ROOT, m[1]), m[2] + ("/" + m[3] if m[3] else "")) if ok else None
+    return d if d and os.path.isdir(d) else None
+
+
+def accounts_action(body, redirect):
+    """POST /api/accounts: connect Meta, start the YouTube sign-in, or disconnect. Returns (http code, payload)."""
+    act = body.get("action")
+    try:
+        if act == "meta":
+            r = accounts.connect_meta(body.get("app_id"), body.get("app_secret"), body.get("token"), body.get("page"))
+            return 200, {**r, "accounts": accounts.summary()}
+        if act == "youtube":
+            return 200, {"url": accounts.youtube_begin(body.get("client_json"), redirect)}
+        if act == "disconnect" and body.get("which") in ("meta", "youtube"):
+            accounts.disconnect(body["which"])
+            return 200, {"accounts": accounts.summary()}
+    except publish.PostError as e:
+        return 400, {"error": str(e)}
+    return 400, {"error": "unknown action"}
 
 
 def task_action(body):
@@ -1098,6 +1129,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/") if not PASSWORD or self.authed() else self.send_file(os.path.join(HERE, "login.html"))
         if path in ("/", "/index.html"):
             return self.guard(page=True) and self.send_file(os.path.join(HERE, "app.html"))
+        if path == "/oauth/youtube":                       # Google sends the browser back here; the one-time state is the check
+            try:
+                if qs.get("error"):
+                    raise publish.PostError(qs["error"][0])
+                name = accounts.youtube_finish(qs.get("state", [""])[0], qs.get("code", [""])[0])
+                msg, ok = f"YouTube is connected{(' (' + name + ')') if name else ''}. You can close this tab and go back to Agents HQ.", True
+            except publish.PostError as e:
+                msg, ok = f"YouTube was not connected: {e}", False
+            page = (f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agents HQ</title>'
+                    f'<body style="font:16px system-ui;background:#0f1115;color:#e8e8ea;display:grid;place-items:center;height:90vh;text-align:center">'
+                    f'<p style="max-width:28em">{"✅" if ok else "⚠️"} {html_escape(msg)}</p></body>').encode()
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+            return
         if not self.guard():
             return
         if path == "/api/status":
@@ -1122,6 +1170,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(w) if w else self.send_json({"error": "no such work folder"}, 404)
         if path == "/api/chatter":
             return self.send_json(chatter_payload())
+        if path == "/api/accounts":
+            return self.send_json(accounts.summary())
+        if path == "/api/publish":                         # the posting overview: also for work still waiting for the OK
+            d = approved_dir(qs.get("folder", [""])[0], ("approved", "out"))
+            return self.send_json(publisher.payload(d)) if d else self.send_json({"error": "no such work folder"}, 404)
         if path == "/api/brain/notes":
             return self.send_json({"notes": brain_notes()})
         if path == "/api/runs":
@@ -1176,6 +1229,20 @@ class Handler(BaseHTTPRequestHandler):
             if code < 400:
                 notifier.refresh()               # so the bell rings on the next poll, not the one after
             return self.send_json(payload, code)
+        if path == "/api/accounts":
+            code, payload = accounts_action(self.read_json(), f"http://127.0.0.1:{self.server.server_address[1]}/oauth/youtube")
+            return self.send_json(payload, code)
+        if path == "/api/publish":                         # the owner's Post button: the only way anything gets posted
+            body = self.read_json()
+            d = approved_dir(body.get("folder"))
+            if not d:
+                return self.send_json({"error": "only approved work can be posted"}, 404)
+            chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
+            try:
+                started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""))
+            except publish.PostError as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_json({"started": started, **publisher.payload(d)}, 202)
         if path == "/api/approve":
             name = self.read_json().get("name") or ""
             code, payload = approve_folder(name if isinstance(name, str) else "")

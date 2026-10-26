@@ -132,6 +132,16 @@ Deliverables land in `work/<team>/<task>/` and `out/<clip>/`. Nothing is posted;
 
 The default caption style (黄字重点衬线动态字幕, the `yellow-serif` skill): white heavy serif captions, key words in warm yellow `#FBC238`, and one motion per sentence (typing, pop, burst, shine, flash), with full-screen, darkened-speaker and torn-paper layouts and light-leak transitions. A long talk becomes two 45-60 s topics. Each gets a planning page (`plan.md`: original line, key words, motion, picture and notes) that you can approve before anything is rendered. Every render keeps editable captions (`edit.ass` for Aegisub, `edit.srt` for CapCut) beside the video. Speech-to-text handles Chinese and English. The fonts (Noto Serif SC and Ma Shan Zheng, both SIL OFL) download on first use. The full guide is `.claude/skills/yellow-serif/GUIDE.md`. Ask for "word-by-word captions" to get the older reel style.
 
+## Posting: Facebook, Instagram, YouTube Shorts in one press
+
+After Creative finishes a clip (one captioned video, one cover), the Social team writes `post.md`: the posting plan and 2-3 text options for every platform. Open the task in the app and you get the **posting overview**: the video, the thumbnail (tap another one if there are several), the video version, and the text for each platform (tap an option, edit anything). **Approve & post** posts to every ticked account at the same time; each one shows its link, or what went wrong. A long talk cut into topics shows one tab per topic, and each topic is its own post. TikTok you post by hand with the TikTok text.
+
+Connect the accounts once under your name (top right) → **Accounts for posting**; the screen walks you through it:
+- **Facebook + Instagram:** a Meta app of your own (App ID, App secret and a token from the Graph API Explorer). Instagram must be a Professional account linked to your Facebook Page.
+- **YouTube:** a Google Cloud OAuth client (Desktop app); you sign in once. Google keeps uploads from a new API project **private** until the project passes Google's free YouTube API audit.
+
+The keys stay in `.hq-accounts.json` on this computer: never committed, and the agents are blocked from reading it or calling the posting API. Only your button posts.
+
 ## Your phone, with no "Not Secure" warning
 
 In the app, open **Phone access**, turn it on with a password, then press **Turn on secure link**. It uses Tailscale's free HTTPS (`tailscale serve`) to give your computer a real https address like `https://my-pc.my-tailnet.ts.net/`, shown with a QR code. Safari shows no warning, and the microphone and Copy buttons work on the phone. The first time, Tailscale may ask you to turn on HTTPS certificates in its admin page; the app shows the button. Phones still log in with your password: requests that arrive through Tailscale are never treated as this computer's own window.
@@ -155,7 +165,7 @@ Or on any VPS with Docker: `cp deploy/.env.example deploy/.env`, fill it in, `do
 
 - The office runs on full auto: nothing asks for permission (`defaultMode: bypassPermissions` in `.claude/settings.json`). Only the hard blocks remain: `rm`, `curl`, `wget`, force pushes and reading `.env` are never allowed. If you'd rather be asked before the office edits its own agents or skills, change `defaultMode` to `default`.
 - `rm`, `curl`, `wget`, force pushes and reading `.env` are blocked. `git push` asks.
-- Every deliverable is reviewed by a checker or a team head before you see it. Nothing is posted; you publish.
+- Every deliverable is reviewed by a checker or a team head before you see it. Agents never post: only your **Approve & post** button does, and the agents can't read your account keys (`.hq-accounts.json`).
 - Installing agents or skills from other people? Read them first, or ask the chief of staff to list every file, command and network call in one.
 
 ## Credits and license
