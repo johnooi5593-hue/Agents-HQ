@@ -49,7 +49,10 @@ def speech_segments(path, noise_db=-32, min_silence=0.45):
 
 def report(**kw):
     """One JSON line on stdout, so the agent can read the result."""
-    print(json.dumps(kw, ensure_ascii=False))
+    try:
+        print(json.dumps(kw, ensure_ascii=False))
+    except UnicodeEncodeError:                  # a Windows console without UTF-8: keep the JSON, escape the text
+        print(json.dumps(kw))
     sys.stdout.flush()
 
 
