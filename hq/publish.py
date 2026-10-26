@@ -64,6 +64,20 @@ def meta_error(e):
     return e
 
 
+def duration(video):
+    """The video's length in seconds (from ffmpeg's banner), or None."""
+    ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if not ff:
+        return None
+    try:
+        r = subprocess.run([ff, "-hide_banner", "-i", video], capture_output=True, text=True, timeout=60,
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+        h, mi, sec = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr).groups()
+        return int(h) * 3600 + int(mi) * 60 + float(sec)
+    except (OSError, subprocess.SubprocessError, AttributeError):
+        return None
+
+
 def ig_ready(video):
     """An Instagram-ready copy of the video, to Meta's Reels rules (H.264 with closed GOPs, AAC 128k 48 kHz, at most 25 Mbps,
     index at the front, no edit lists: ffmpeg writes those by default and Instagram refuses them), or None without ffmpeg."""
@@ -624,33 +638,7 @@ class Publisher:
             time.sleep(5)
         raise PostError("Instagram is still processing the video after 10 minutes; try Post again later")
 
-    def video_url(self, video, m, parked):
-        """Instagram fetches the video from a web address: park it on the Page as an unpublished video and use its address."""
-        boundary = "hq" + secrets.token_hex(8)
-        with open(video, "rb") as f:
-            data = f.read()
-        head = "".join(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n"
-                       for k, v in (("published", "false"), ("access_token", m["page_token"])))
-        body = (head + f"--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"video.mp4\"\r\n"
-                       f"Content-Type: video/mp4\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
-        try:
-            _, _, j = http("POST", f"https://graph-video.facebook.com/v23.0/{m['page_id']}/videos", body=body,
-                           headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))}, timeout=1800)
-        except PostError as e:
-            raise meta_error(e) from None
-        parked.append(j["id"])
-        for _ in range(120):                                   # up to 10 minutes until Facebook has the file ready
-            _, _, v = http("GET", f"{GRAPH}/{j['id']}?" + urllib.parse.urlencode({"fields": "source,status", "access_token": m["page_token"]}))
-            st = (v.get("status") or {}).get("video_status")
-            if v.get("source") and st in (None, "ready"):
-                return v["source"]
-            if st == "error":
-                raise PostError("Facebook could not process the video for Instagram")
-            time.sleep(5)
-        raise PostError("Facebook is still processing the video for Instagram after 10 minutes; try Post again later")
-
-    # Instagram Reel: container (direct upload, or from a web address for apps without Facebook Login for Business)
-    # → wait until processed → publish
+    # Instagram Reel: container → the file straight to Instagram's upload host → wait until processed → publish
     def post_instagram(self, video, cover, text, when=None, channel=""):
         ready = ig_ready(video)
         try:
@@ -662,8 +650,8 @@ class Publisher:
                 except OSError:
                     pass
 
-    def ig_direct(self, video, params, m):
-        """Direct upload: the container id, or the reason it was refused."""
+    def ig_direct(self, video, params, m, wait=True):
+        """Direct upload: (container id, None), or (None, why). wait=False only checks that the upload is accepted."""
         tok, ig = m["page_token"], m["ig_id"]
         _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, upload_type="resumable"))
         size = os.path.getsize(video)
@@ -676,81 +664,78 @@ class Publisher:
             if "ProcessingFailedError" not in str(e):
                 raise
             return None, "upload refused"
-        err = self.ig_wait(j["id"], tok)
-        return (None, err) if err else (j["id"], None)
-
-    def ig_from_url(self, vurl, params, m):
-        """From a web address: the container id, or Instagram's error."""
-        _, _, j = http("POST", f"{GRAPH}/{m['ig_id']}/media", data=dict(params, video_url=vurl))
-        err = self.ig_wait(j["id"], m["page_token"])
+        err = self.ig_wait(j["id"], tok) if wait else None
         return (None, err) if err else (j["id"], None)
 
     def unpark(self, parked, tok):
-        for pid in parked:                                     # the hidden copies on the Page aren't needed any more
+        for pid in parked:                                     # the hidden cover on the Page isn't needed any more
             try:
                 http("DELETE", f"{GRAPH}/{pid}?" + urllib.parse.urlencode({"access_token": tok}))
             except PostError:
                 pass
         parked.clear()
 
-    def ig_test(self, base, m):
-        """When everything failed: send a 5-second test clip both ways (never published) to tell the route from the video."""
-        ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
-        if not ff:
-            return []
+    def ig_limit(self, video, base, m):
+        """Instagram refused the upload: test clips (never published) tell whether it is the length, and up to how long
+        this account takes videos from apps. Returns the longest accepted length in seconds, 0 when the length is not the
+        reason, or None when it can't tell."""
+        d, ff = duration(video), os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+        if not d or not ff:
+            return None
         fd, clip = tempfile.mkstemp(prefix="hq-igtest-", suffix=".mp4")
         os.close(fd)
-        parked, out = [], []
+
+        def takes(sec):
+            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=s=1080x1920:r=30:d={sec:.1f}",
+                            "-f", "lavfi", "-i", f"sine=f=440:d={sec:.1f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "38",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
+                            "-use_editlist", "0", "-shortest", clip],
+                           capture_output=True, timeout=600, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
+            return bool(self.ig_direct(clip, base, m, wait=False)[0])
         try:
-            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=5",
-                            "-f", "lavfi", "-i", "sine=f=440:d=5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-                            "-ar", "48000", "-ac", "2", "-movflags", "+faststart", "-use_editlist", "0", "-shortest", clip],
-                           capture_output=True, timeout=300, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
-            for name, go in (("direct upload", lambda: self.ig_direct(clip, base, m)),
-                             ("web address", lambda: self.ig_from_url(self.video_url(clip, m, parked), base, m))):
-                try:
-                    cid, err = go()
-                    out.append(f"test clip by {name}: " + ("works" if cid else err))
-                except PostError as e:
-                    out.append(f"test clip by {name}: {e}")
-        except (OSError, subprocess.SubprocessError):
-            pass
+            if takes(d):
+                return 0                                       # a clip as long is fine: it's something in the file itself
+            lo, hi = 5.0, d
+            while hi - lo > 5:
+                mid = (lo + hi) / 2
+                lo, hi = (mid, hi) if takes(mid) else (lo, mid)
+            return int(lo)
+        except (OSError, subprocess.SubprocessError, PostError):
+            return None
         finally:
-            self.unpark(parked, m["page_token"])
             try:
                 os.remove(clip)
             except OSError:
                 pass
-        return out
 
     def post_instagram_file(self, video, cover, text, m):
         tok, ig = m["page_token"], m["ig_id"]
         base = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
-        parked, tried, extra = [], [], {}                      # the hidden Page copies; what was tried, for the error
-        url = self.cover_url(cover, m, parked)
-        params = dict(base, cover_url=url) if url else base
-        if cover and not url:
-            tried.append("cover: Facebook would not hold it")
-        cid, err = self.ig_direct(video, params, m)            # 1. direct upload
-        if not cid:
-            tried.append("direct upload: " + err)
-            vurl = self.video_url(video, m, parked)             # 2. from the web address
-            cid, err = self.ig_from_url(vurl, params, m)
-            if not cid:
-                tried.append("web address: " + err)
-                time.sleep(30)                                 # 3. again, without the cover (the other file Instagram fetches)
-                cid, err = self.ig_from_url(vurl, base, m)
-                if not cid:
-                    tried.append("web address without cover: " + err)
-                elif url:
+        parked, extra = [], {}                                 # the hidden cover on the Page
+        try:
+            url = self.cover_url(cover, m, parked)
+            cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
+            if not cid and url and err != "upload refused":   # taken but not processed: try once without the cover
+                cid, err2 = self.ig_direct(video, base, m)
+                if cid:
                     extra["warning"] = "Posted without your cover: Instagram would not take it."
-        if not cid:
+                else:
+                    err = err2
+            if not cid and err == "upload refused":
+                cap, d = self.ig_limit(video, base, m), duration(video)
+                long = f"{int(d // 60)}:{int(d % 60):02d}" if d else ""
+                if cap:
+                    raise PostError(f"Instagram refused this video: this account only takes videos up to about {cap} seconds from apps, "
+                                    f"and this one is {long}. In the Instagram app itself longer Reels work, so post this one by hand there, "
+                                    f"or ask Creative for an Instagram cut under {cap} seconds.")
+                raise PostError("Instagram refused this video file" + (" (a test clip just as long was fine, so it isn't the length)" if cap == 0 else "")
+                                + ". Post this one by hand in the Instagram app, and send a screenshot of this to Claude.")
+            if not cid:
+                raise PostError(f"Instagram could not process the video ({err}). Try Post again in a few minutes; if it keeps failing, "
+                                "post this one by hand in the Instagram app.")
+            _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
+        finally:
             self.unpark(parked, tok)
-            tried += self.ig_test(base, m)
-            raise PostError("Instagram could not process the video. What Agents HQ tried: " + "; ".join(tried) +
-                            ". Send a screenshot of this to Claude, or post this one by hand in the Instagram app.")
-        _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
-        self.unpark(parked, tok)
         link = ""
         try:
             _, _, q = http("GET", f"{GRAPH}/{p['id']}?" + urllib.parse.urlencode({"fields": "permalink", "access_token": tok}))
