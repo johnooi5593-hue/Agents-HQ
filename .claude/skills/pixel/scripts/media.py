@@ -56,7 +56,8 @@ def report(**kw):
     sys.stdout.flush()
 
 
-FILLERS = {"um", "uh", "erm", "er", "hmm", "ah", "uhm", "mm"}
+FILLERS = {"um", "umm", "uh", "uhh", "erm", "er", "hmm", "ah", "ahh", "uhm", "mm", "oh", "ohh", "ooh", "eh"}
+FILLERS_ZH = set("嗯呃啊额哦噢唔诶欸")
 
 
 class STT:
@@ -88,8 +89,11 @@ KEEP = {"okay", "ok", "yes", "yeah", "no", "so", "right", "wow", "hi", "hey", "g
 
 def only_fillers(text, seconds=None):
     """True for "um", "uh"... A lone sound shorter than 0.55 s that is not a real short word counts too:
-    small models often write a stray "um" as "armed" or "1"."""
-    words = [re.sub(r"[^a-z]", "", w.lower()) for w in text.split()]
+    small models often write a stray "um" as "armed" or "1". Chinese: only 嗯, 呃, 啊... (no short-sound rule: 对 is a word)."""
+    zh = [c for c in text if "一" <= c <= "鿿"]
+    if zh:
+        return all(c in FILLERS_ZH for c in zh)
+    words =[re.sub(r"[^a-z]", "", w.lower()) for w in text.split()]
     words = [w for w in words if w]
     if seconds is not None and seconds < 0.55 and len(words) <= 1 and not (words and words[0] in KEEP):
         return True

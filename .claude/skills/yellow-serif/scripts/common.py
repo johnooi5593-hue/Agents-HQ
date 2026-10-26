@@ -10,7 +10,7 @@ SKILL = os.path.dirname(HERE)
 REEL = os.path.join(os.path.dirname(SKILL), "reel", "scripts")
 sys.path.insert(0, HERE)
 sys.path.insert(1, REEL)
-from media import FFMPEG, audio, probe, report, run, speech_segments  # noqa: E402,F401  (reel skill)
+from media import FFMPEG, audio, only_fillers, probe, report, run, speech_segments  # noqa: E402,F401  (reel skill)
 
 # ---- the guide, in numbers (1080 x 1920 at 30 fps) --------------------------------------------------------------
 FPS = 30
@@ -222,6 +222,33 @@ def plan_md(plan):
             "1-2 key words per line; few bursts; shine only after the text is readable; flash only for short cues.",
             "", "Waiting for the owner's OK before rendering."]
     return "\n".join(out) + "\n"
+
+
+FILLER_PROMPT = {"zh": "嗯，呃，啊，这个。", "en": "Um, uh, ah, oh, hmm."}   # so whisper writes the sounds down instead of skipping them
+
+
+def drop_fillers(path, segs, longest=1.6):
+    """The reel skill's filler cut for a multilingual clip: a phrase between two pauses that is only filler sounds
+    (um, uh, ah, oh; 嗯, 呃, 啊) goes. Returns (kept segments, [(start, text)] dropped, None) or (segs, [], why kept)."""
+    if not any(e - s < longest for s, e in segs):
+        return segs, [], None
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return segs, [], "fillers kept: faster-whisper is not installed (python3 -m pip install faster-whisper)"
+    model = WhisperModel(os.environ.get("YS_WHISPER_MODEL", "small"), compute_type="int8")
+    pcm = audio(path, 16000)
+    lang = os.environ.get("YS_LANG") or model.transcribe(pcm[:30 * 16000], without_timestamps=True)[1].language
+    kept, dropped = [], []
+    for s, e in segs:
+        if e - s < longest:
+            out, _ = model.transcribe(pcm[int(s * 16000):int(e * 16000)], language=lang, without_timestamps=True,
+                                      initial_prompt=FILLER_PROMPT.get(lang[:2], FILLER_PROMPT["en"]))
+            txt = " ".join(x.text.strip() for x in out).strip()
+            if txt and only_fillers(txt, e - s):
+                dropped.append((round(s, 2), txt)); continue
+        kept.append((s, e))
+    return kept, dropped, None
 
 
 def load(path):
