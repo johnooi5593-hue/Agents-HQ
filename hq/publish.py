@@ -62,34 +62,15 @@ def meta_error(e):
     return e
 
 
-def duration(video):
-    """The video's length in seconds (from ffmpeg's banner), or None."""
-    ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
-    if not ff:
-        return None
-    try:
-        r = subprocess.run([ff, "-hide_banner", "-i", video], capture_output=True, text=True, timeout=60,
-                           creationflags=0x08000000 if os.name == "nt" else 0)
-        h, m, sec = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr).groups()
-        return int(h) * 3600 + int(m) * 60 + float(sec)
-    except (OSError, subprocess.SubprocessError, AttributeError):
-        return None
-
-
-def ig_refused(video, err):
-    """Instagram's processing errors in plain words: some accounts only take Reels up to about 40-55 s from apps."""
-    d = duration(video)
-    if d and d <= 40:
-        return PostError(f"Instagram could not process the video ({err}). Meta's servers fail like this now and then: try Post again "
-                         "in a few minutes. If it keeps failing, post this one by hand in the Instagram app.")
-    long = f"This video is {int(d // 60)}:{int(d % 60):02d} long. " if d else ""
-    return PostError(f"Instagram refused the video ({err}). {long}Instagram limits some accounts to Reels of about 40-55 seconds "
-                     "when posted from an app, though the Instagram app itself takes longer ones. Post this one by hand in the "
-                     "Instagram app, or ask Creative for a cut under 40 seconds for Instagram.")
+def ig_refused(err):
+    """Instagram's processing errors in plain words."""
+    return PostError(f"Instagram could not process the video ({err}). Meta's servers fail like this now and then: try Post again "
+                     "in a few minutes. If it keeps failing, post this one by hand in the Instagram app.")
 
 
 def ig_ready(video):
-    """An Instagram-ready copy of the video (H.264, AAC 128k, at most 25 Mbps, index at the front), or None without ffmpeg."""
+    """An Instagram-ready copy of the video, to Meta's Reels rules (H.264 with closed GOPs, AAC 128k 48 kHz, at most 25 Mbps,
+    index at the front, no edit lists: ffmpeg writes those by default and Instagram refuses them), or None without ffmpeg."""
     ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
     if not ff:
         return None
@@ -98,7 +79,7 @@ def ig_ready(video):
     cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", video, "-map", "0:v:0", "-map", "0:a:0?",
            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-maxrate", "20M", "-bufsize", "40M", "-profile:v", "high",
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
-           "-movflags", "+faststart", out]
+           "-movflags", "+faststart", "-use_editlist", "0", out]
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=1800, creationflags=0x08000000 if os.name == "nt" else 0)
         if r.returncode == 0 and os.path.getsize(out) > 0:
@@ -677,28 +658,20 @@ class Publisher:
         url = self.cover_url(cover, m, parked)
         if url:
             params["cover_url"] = url
-        cid = None
-        if not m.get("ig_by_url"):
-            _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, upload_type="resumable"))
-            size = os.path.getsize(video)
-            try:
-                with open(video, "rb") as f:                     # the upload host takes the user token, not the Page token
-                    http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{j['id']}", body=f,
-                         headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
-                                  "Content-Length": str(size)}, timeout=1800)
-                cid = j["id"]
-            except PostError as e:
-                if "ProcessingFailedError" not in str(e):
-                    raise
-                d = duration(video)
-                if d and d > 40:                                 # most likely the length limit: the web address won't help
-                    raise ig_refused(video, "ProcessingFailedError") from None
-                with self.accounts.lock:                          # this app can't upload directly: use the web address from now on
-                    a = self.accounts.load()
-                    a.setdefault("meta", {})["ig_by_url"] = True
-                    self.accounts.save(a)
+        cid = None                                             # direct upload first, the web address if it is refused
+        _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, upload_type="resumable"))
+        size = os.path.getsize(video)
+        try:
+            with open(video, "rb") as f:                         # the upload host takes the user token, not the Page token
+                http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{j['id']}", body=f,
+                     headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
+                              "Content-Length": str(size)}, timeout=1800)
+            cid = j["id"]
+        except PostError as e:
+            if "ProcessingFailedError" not in str(e):
+                raise
         vurl = None
-        for attempt in range(2):                               # Instagram's processing fails now and then: one fresh try a minute later
+        for attempt in range(2):                               # a failed upload goes again from the web address (a minute later)
             if not cid:
                 vurl = vurl or self.video_url(video, m, parked)
                 _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=vurl))
@@ -706,10 +679,11 @@ class Publisher:
             err = self.ig_wait(cid, tok)
             if not err:
                 break
-            if attempt or not vurl:
-                raise ig_refused(video, err)
+            if attempt:
+                raise ig_refused(err)
+            if vurl:
+                time.sleep(60)
             cid = None
-            time.sleep(60)
         _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
         for pid in parked:                                     # posted: the hidden copies on the Page aren't needed any more
             try:
