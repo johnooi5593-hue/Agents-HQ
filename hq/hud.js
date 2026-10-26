@@ -556,12 +556,20 @@
     return ms && ms.floorView != null ? String(ms.floorView) : "all";
   }
   function syncFloors(ms) { const on = floorOfMode(ms); for (const b of $$("#floor-ctl button")) b.classList.toggle("on", b.dataset.floor === on); }
-  function wireMinimap() {
+  function buildFloorButtons() {                         // one button per floor of the office, top floor first, then All
+    const host = $("#floor-ctl"), floors = hasFn("floors") ? callScene("floors") : null;
+    if (!host || !Array.isArray(floors) || !floors.length) return;
+    const short = (f) => (f.floor === 0 ? "G" : f.floor === floors.length - 1 && /roof/i.test(f.name) ? "R" : f.floor + "F");
+    const title = (f) => esc(f.rooms && f.rooms.length ? `${f.name} · ${f.rooms.map((k) => (teamByKey(k) || { name: k }).name).join(", ")}` : f.name);
+    host.innerHTML = floors.slice().reverse().map((f) => `<button type="button" data-floor="${f.floor}" title="${title(f)}">${short(f)}</button>`).join("") + '<button type="button" data-floor="all" class="on" title="The whole building">All</button>';
+    host.hidden = false;
     for (const b of $$("#floor-ctl button")) b.addEventListener("click", () => {
-      if (!hasFn("showFloor")) return;
       state.focused = null; callScene("showFloor", b.dataset.floor === "all" ? null : +b.dataset.floor); renderAll();
       syncFloors(callScene("minimapState"));
     });
+  }
+  function wireMinimap() {
+    if (window.HQ_OFFICE && window.HQ_OFFICE.ready) buildFloorButtons(); else window.addEventListener("hq-office-ready", buildFloorButtons, { once: true });
     $("#minimap-out").addEventListener("click", () => { if (hasFn("zoom")) callScene("zoom", -1); else if (hasFn("setZoomPercent")) callScene("setZoomPercent", state.zoom - 15); });
     $("#minimap-in").addEventListener("click", () => { if (hasFn("zoom")) callScene("zoom", 1); else if (hasFn("setZoomPercent")) callScene("setZoomPercent", state.zoom + 15); });
     $("#minimap-full").addEventListener("click", () => { if (hasFn("fullscreen")) callScene("fullscreen"); else if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {}); });

@@ -8,12 +8,13 @@ Built from Bekhruz AI's "Build Your AI Team" videos: [I Built an AI Agent Team F
 
 ## The office
 
-The 3D office is **The Stack**: three glass floors around an open atrium, with the Brain glowing at the bottom.
-- **2F · Studios:** Creative, Social, Scripts, Shop, plus a terrace garden.
-- **1F · Think & meet:** Research, Analytics, Dev, Inbox, a glass meeting room and phone booths.
-- **Ground · Commons:** the Brain, a canteen + kitchen, a lounge with sofas, town hall steps with a big screen, and the reception.
+The 3D office is **The Tower**: a glass office tower seen from the front at night, a city skyline behind it.
+- **Roof:** a terrace under a pergola with string lights, the game room, a coffee bar.
+- **4F → 1F:** two teams per floor (Creative + Social, Scripts + Shop, Dev + Inbox, Research + Analytics), with glass meeting rooms, phone booths and sofa nooks at the ends.
+- **Ground:** the lobby and reception, the canteen + kitchen, the lounge.
+- **The plaza:** the Brain glows in the fountain out front; data lines run to it from every room.
 
-A glass lift joins the floors. Idle agents ride it down for lunch, a sofa break or a chat, visit other teams to share lessons, and hurry back when work comes in. The **2F · 1F · G · All** buttons (bottom right; on a phone, the right edge) show one floor at a time; tapping a room does that by itself.
+Spiral stairs and a glass lift join the floors. Idle agents climb down for lunch, a sofa break or a game, visit other teams to share lessons, drop notes that fly out to the Brain, and hurry back when work comes in. The floor buttons (bottom right; on a phone, the right edge) frame one floor; tapping a room flies to it.
 
 | Team | Head | Workers |
 |---|---|---|

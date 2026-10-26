@@ -136,9 +136,19 @@ def mcp_servers():
         return set()
 
 
+POSTING_TOOLS = {"facebook": "facebook", "instagram": "instagram", "youtube": "youtube"}
+
+
+def posting_account(tool):
+    """Facebook, Instagram and YouTube are the posting accounts (user menu → Accounts for posting), whatever an older
+    teams.json says about them."""
+    return tool.get("account") or POSTING_TOOLS.get(slug(tool.get("name") or ""))
+
+
 def tool_status(tool, servers):
-    if tool.get("via") == "posting":                       # an account connected under Accounts for posting
-        return "connected" if (accounts.summary().get(tool.get("account")) or {}).get("connected") else "not connected"
+    acct = posting_account(tool)
+    if acct:                                               # an account connected under Accounts for posting
+        return "connected" if (accounts.summary().get(acct) or {}).get("connected") else "not connected"
     if tool.get("via") == "skill":
         script = tool.get("script") or ""
         return "connected" if script and os.path.isfile(os.path.join(ROOT, script)) else "not connected"
@@ -155,9 +165,13 @@ def teams_payload(agent_list=None, running=None):
         members = sorted((a for a in agent_list if a["team"] == t["name"]), key=lambda a: (a["role"] != "head", a["name"]))
         team = dict(t)
         team["lead_label"] = label_of(t.get("lead", ""))
-        team["tools"] = [{**tool, "status": tool_status(tool, servers),
-                          **({"detail": (accounts.summary().get(tool.get("account")) or {}).get("name", "")} if tool.get("via") == "posting" else {})}
-                         for tool in t.get("tools", []) if isinstance(tool, dict)]
+        tools = [tool for tool in t.get("tools", []) if isinstance(tool, dict)]
+        if t.get("key") == "social":                       # the Social team always shows the three posting accounts first
+            have = {posting_account(x) for x in tools}
+            tools = [{"name": n.title() if n != "youtube" else "YouTube", "account": n} for n in ("facebook", "instagram", "youtube") if n not in have] + tools
+            tools.sort(key=lambda x: 0 if posting_account(x) else 1)
+        team["tools"] = [{**tool, **({"via": "posting", "account": posting_account(tool), "detail": (accounts.summary().get(posting_account(tool)) or {}).get("name", "")} if posting_account(tool) else {}),
+                          "status": tool_status(tool, servers)} for tool in tools]
         team["skills"] = [s for s in t.get("skills", []) if isinstance(s, dict)]
         team["agents"] = [a["name"] for a in members]
         team["agent_count"] = len(members)

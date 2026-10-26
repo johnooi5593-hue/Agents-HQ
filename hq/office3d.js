@@ -1,13 +1,13 @@
 // Agents HQ: the 3D office (hq/office3d.js). Built on Three.js r128 (hq/vendor/three.min.js) and the vendored UMD
 // examples (EffectComposer, UnrealBloomPass, RoundedBoxGeometry, CSS2DRenderer, OrbitControls).
 //
-// The Stack: three glass floors around an open atrium. The Brain glows on the ground floor at the bottom of the atrium
-// (round platform, neon rings, a light beam rising through every floor, orbit rings, particles) with the commons around
-// it (canteen + kitchen, lounge, town hall steps, reception); the eight team rooms (floor, carpet, two back walls, trims,
-// desks, monitors, dashboards, lamps, shelves, plants, sofas) stand in the corners of floors 1 and 2; a glass lift joins
-// the floors; data wires with travelling sparks run from every room into the beam; chibi characters work, walk, ride the
-// lift and take breaks; ghost sub-agents; bloom on everything that glows. A floor view (showFloor) hides the floors above
-// one floor so you can look into it; flying to a room does that by itself.
+// The Tower: a glass office tower seen from the front at night, a city skyline behind it. Ground: the lobby with the
+// reception, the canteen + kitchen and the lounge. Floors 1-4: two team rooms each (floor, carpet, two back walls, trims,
+// desks, monitors, dashboards, lamps, shelves, plants, sofas) with glass meeting rooms and nooks at the ends. The roof:
+// a terrace under a pergola, the game room and a coffee bar. Spiral stairs and a glass lift join the floors. In the plaza
+// out front the Brain glows in a fountain (round platform, neon rings, a light beam, orbit rings, water jets); data wires
+// with travelling sparks run from every room to it. Chibi characters work, climb the stairs, take breaks and drop notes
+// that fly out to the Brain; ghost sub-agents; bloom on everything that glows.
 // The interface follows docs/build-contract.md: window.HQ_OFFICE (flyTo, overview, select, focusAgent, project,
 // setLabel, spawnSubagents, clearSubagents, zoom, setZoomPercent, getZoomPercent, fullscreen, resize, minimapState,
 // onRoomClick / onAgentClick / onBrainClick), plus focusBrain(), showFloor(n|null) / floorView() / floors(),
@@ -30,25 +30,26 @@
   const S = 20;                                  // room side in world units
   const WALL_H = 9.4, WALL_T = 0.45, SLAB_H = 0.7;
   const PLATFORM_R = 17;                         // the Brain platform
-  const GROUND_Y = -6.5;                         // the void floor under the floating slabs
+  const GROUND_Y = -0.05;                        // street level
   const WALK_W = 4.2, WALK_Y = 0.45;             // walkway width and top height
   const CORE_Y = 9.5;                            // the Brain sphere height
   const SQ = Math.SQRT1_2;
   const DEG = Math.PI / 180;
-  const OVERVIEW = { yaw: 45 * DEG, pitch: 40 * DEG, dist: 170, target: new THREE.Vector3(0, 1.5, 0) };
-  const ROOM_VIEW = { pitch: 37 * DEG, dist: 68 };
+  const OVERVIEW = { yaw: 82 * DEG, pitch: 10 * DEG, dist: 220, target: new THREE.Vector3(0, 40, 8) };   // from the plaza, a little to the right
+  const ROOM_VIEW = { pitch: 15 * DEG, dist: 64 };
   const CHAR_SCALE = 1.22;                       // characters are ~1.6 desk-heights tall in the video
-  // The Stack. Corner c is a clock position (0 = top of the screen, 2 right, 4 bottom, 6 left); a corner room's centre
-  // is (±ROOM_D, ±ROOM_D) on its floor. Floor f stands at y = f * FLOOR_H.
-  const FLOOR_H = 22, FLOORS = 3;
-  const ROOM_D = 24;                             // a corner room's centre offset on each axis
-  const HOLE = 9.5;                              // half the atrium opening in floors 1 and 2
-  const PLATE_MIN = 38;                          // half a floor plate (grown to fit a big room)
-  const CORR = 12;                               // the corridor loop around the atrium
-  const LIFT = { x: 0, z: -20, r: 2.3 };         // the glass lift in the band behind the atrium
-  const FLOOR_PLAN = { creative: [2, 0], social: [2, 2], shop: [2, 4], scripts: [2, 6], research: [1, 0], analytics: [1, 2], inbox: [1, 4], dev: [1, 6] };
-  const FLOOR_NAMES = ['Ground · Commons', '1F · Think & meet', '2F · Studios'];
-  const cornerSign = (c) => ({ 0: [-1, -1], 2: [1, -1], 4: [1, 1], 6: [-1, 1] })[c];
+  // The Tower. Floor f stands at y = f * FLOOR_H; floor 0 is the lobby, FLOORS - 1 the roof. Each team floor holds two
+  // rooms, slot 0 on the left (x = -ROOM_X) and slot 1 on the right, backs to the building's back wall; a corridor runs
+  // along the glass front (z = CZ); the core between the rooms has the spiral stairs and the lift.
+  const FLOOR_H = 15, FLOORS = 6, ROOF = FLOORS - 1;
+  const WX = 60, DZ = 16;                        // half the building's width and depth
+  const ROOM_X = 30, CZ = 13.5;                  // the rooms' centre offset; the corridor line along the front
+  const STAIR = { x: -6, z: -6, r: 3, hole: 4.2 };   // the spiral stairs (and the opening in each floor above them)
+  const LIFT = { x: 8, z: -10, r: 2.2 };         // the glass lift (lobby to the top team floor)
+  const BRAIN = new THREE.Vector3(0, 0, 50);     // the fountain in the plaza
+  const FLOOR_PLAN = { research: [1, 0], analytics: [1, 1], dev: [2, 0], inbox: [2, 1], scripts: [3, 0], shop: [3, 1], creative: [4, 0], social: [4, 1] };
+  const FLOOR_NAMES = ['Ground · Lobby & canteen', '1F', '2F', '3F', '4F', 'Roof · Terrace & game room'];
+  const FLOOR_SHORT = ['G', '1F', '2F', '3F', '4F', 'R'];
   // Phones (the same query as hud.css): a lower pixel ratio, half-resolution bloom (dropped if the frame rate sags),
   // fewer particles, portrait framing that fits the ring of rooms by width, double-tap on a room. Desktop is untouched.
   // ?fx=low forces the light path, ?fx=full keeps the full one on a phone.
@@ -56,7 +57,7 @@
   const isPhone = () => !!(window.matchMedia && window.matchMedia(PHONE_Q).matches);
   const FX = (/[?&]fx=(low|full)\b/.exec(location.search) || [])[1] || '';
   const PHONE_AT_BOOT = isPhone();
-  const DESKTOP_PITCH = 33 * DEG, PORTRAIT_PITCH = 50 * DEG;   // low enough to see the floors stacked
+  const DESKTOP_PITCH = 9 * DEG, PORTRAIT_PITCH = 11 * DEG;    // almost level: looking in through the glass front
 
   // Fallback metadata (the contract's table) used only if /api/teams cannot be read.
   const FALLBACK_TEAMS = [
@@ -261,10 +262,10 @@
     mode: 'overview', userActiveUntil: 0, tween: null, selected: null, selectRing: null, fallbackRunning: {},
     size: { w: 0, h: 0 }, labelRules: { agentMaxDist: 110 },
     phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
-    floors: [], floorView: null, ext: PLATE_MIN, plates: [], commons: [], lift: null, people: null, wires: [],
+    floors: [], floorView: null, commons: [], lift: null, people: null, wires: [],
   };
   const floorOfY = (y) => clamp(Math.floor((y + 3) / FLOOR_H), 0, FLOORS - 1);
-  const floorShown = (f) => state.floorView == null || f <= state.floorView;
+  const floorShown = () => true;                                              // the glass front shows every floor at once
   // The floor the camera is about (a room, a floor view, the Brain, an agent), or null in the overview. Labels (room
   // cards, names, bubbles) show only for that floor, so cards from the floor below never sit on top of a close-up.
   function focusFloor() {
@@ -275,9 +276,8 @@
     if (m.startsWith('agent:')) { const st = state.seats[m.slice(6)]; return st ? floorOfY(st.ch.group.position.y) : null; }
     return null;
   }
-  // On a phone the overview has room for one floor's cards: the top one (the floor buttons open the others).
-  const labelShown = (f) => { const ff = focusFloor(); return ff == null ? (state.phone ? f === (state.floorView == null ? FLOORS - 1 : state.floorView) : floorShown(f)) : f === ff; };
-  const TOP_Y = (FLOORS - 1) * FLOOR_H + SLAB_H + WALL_H;
+  const labelShown = (f) => { const ff = focusFloor(); return ff == null || f === ff; };
+  const TOP_Y = FLOORS * FLOOR_H;
   const maxPixelRatio = () => Math.min(state.phone ? (state.lowFx ? 1 : 1.25) : 1.5, window.devicePixelRatio || 1);
   const labels = { team: {}, agent: {}, brain: {}, sub: {}, bubble: {} };
   const pickables = [];
@@ -299,8 +299,9 @@
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.dampingFactor = 0.08;
     controls.minDistance = 18; controls.maxDistance = 360;
-    controls.minPolarAngle = 0.25; controls.maxPolarAngle = 1.35;
-    controls.autoRotateSpeed = -0.1;                                      // the idle drift: about ten minutes per orbit
+    controls.minPolarAngle = 0.35; controls.maxPolarAngle = 1.52;
+    controls.minAzimuthAngle = -1.15; controls.maxAzimuthAngle = 1.15;   // look around the front, never from behind the tower
+    controls.autoRotateSpeed = 0;                                         // no drift: the tower faces you
     controls.screenSpacePanning = false;
     controls.addEventListener('start', () => { state.userActiveUntil = performance.now() + 9000; state.mode = 'free'; state.tween = null; controls.autoRotate = false; });
 
@@ -349,28 +350,25 @@
     if (state.phone) bloomPass.setSize(Math.round(w * pr * 0.5), Math.round(h * pr * 0.5));   // half-resolution bloom on a phone
     bloomPass.enabled = !state.lowFx;
     camera.aspect = w / h; camera.updateProjectionMatrix();
-    // The overview fits the whole building: the floor plates' diagonal across the frame (they are diamonds on screen)
-    // and the height of the three floors plus the plates' depth up and down the frame.
+    // The overview frames the tower from the plaza: its full height with a little of the plaza below; a portrait screen
+    // fits the height and crops the sides (pan to see the ends), a landscape one fits the width too.
     const portrait = camera.aspect < 0.95;
     OVERVIEW.pitch = portrait ? PORTRAIT_PITCH : DESKTOP_PITCH;
     const hfov = 2 * Math.atan(Math.tan(camera.fov * DEG / 2) * camera.aspect);
-    const tanH = Math.tan(hfov / 2), tanV = Math.tan(camera.fov * DEG / 2), half = state.ext * SQ * 2;   // the plate's half-diagonal
-    const dh = half / tanH;
-    const dv = (half * Math.sin(OVERVIEW.pitch) + TOP_Y * Math.cos(OVERVIEW.pitch) * 0.5 + 4) / tanV;
-    OVERVIEW.dist = Math.max(dh * 0.86, dv * 0.94);
-    OVERVIEW.target.set(0, TOP_Y * 0.36, 0);
-    // A portrait screen (a phone held upright): a steeper look-down, fitted by width so the whole building is in view;
-    // close-ups move back by the same rule. Landscape keeps 1.
-    if (portrait) OVERVIEW.dist = Math.max(half / tanH * 1.02, dv * 0.9);
+    const tanH = Math.tan(hfov / 2), tanV = Math.tan(camera.fov * DEG / 2), H = FLOORS * FLOOR_H;
+    const dh = (WX + 12) / tanH, dv = (H * 0.5 + 14) / tanV;
+    OVERVIEW.dist = portrait ? Math.max(dv, (WX * 0.62) / tanH) : Math.max(dh, dv);
+    OVERVIEW.target.set(0, H * 0.43, DZ);
     state.fit = portrait ? Math.max(1, (S * 0.8) / tanH / ROOM_VIEW.dist) : 1;
-    state.fitBrain = portrait ? Math.max(1, (PLATFORM_R + 3) / tanH / 62) : 1;
+    state.fitBrain = portrait ? Math.max(1, (PLATFORM_R + 6) / tanH / 62) : 1;
     controls.maxDistance = Math.max(360, OVERVIEW.dist * 1.5);
     if (state.mode === 'overview' && !state.tween) placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
   }
 
   // ------------------------------------------------------------------ the Brain
   function buildBrain() {
-    const g = new THREE.Group(); scene.add(g);
+    const g = new THREE.Group(); g.position.copy(BRAIN); scene.add(g);
+    anim.brain.light.position.set(BRAIN.x, CORE_Y + 3.5, BRAIN.z);
     // Low gloss on purpose: the point light above the centre would otherwise put a hard specular hotspot on the discs,
     // and bloom turns any hotspot into a white blob.
     const phong = (c, o) => new THREE.MeshPhongMaterial(Object.assign({ color: c, shininess: 16, specular: 0x2a333d }, o || {}));
@@ -405,7 +403,7 @@
     const lattice = new THREE.Mesh(new THREE.IcosahedronGeometry(5.6, 2), basic(0xbfe9ff, { wireframe: true, transparent: true, opacity: 0.08 })); lattice.position.y = CORE_Y; g.add(lattice); anim.brain.lattice = lattice;
     // a few faint network lines fanning out into space
     const netGeo = new THREE.BufferGeometry(), pts = [];
-    for (let i = 0; i < 7; i++) { const a = r() * 6.28; pts.push(0, CORE_Y, 0, Math.cos(a) * 60, CORE_Y + 10 + r() * 40, Math.sin(a) * 60); }
+    for (let i = 0; i < 7; i++) { const a = r() * 6.28; pts.push(0, CORE_Y, 0, Math.cos(a) * 60, CORE_Y + 30 + r() * 60, Math.sin(a) * 60); }
     netGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     g.add(new THREE.LineSegments(netGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 })));
     // the small amber marker under the platform's front edge (seen in the overview)
@@ -435,8 +433,8 @@
   function buildRoom(team, i, members, floor) {
     const big = team.key === 'creative';
     const size = big ? S * 1.4 : S, h = size / 2;
-    const dir = roomDir(i), sg = cornerSign(i), D = ROOM_D + (big ? (size - S) / 2 : 0);
-    const cx = sg[0] * D, cz = sg[1] * D, Y = floor * FLOOR_H;
+    const dir = new THREE.Vector3(0, 0, 1);
+    const cx = (i ? 1 : -1) * ROOM_X, cz = big ? -DZ + h : -DZ + 2 + h, Y = floor * FLOOR_H;
     const realScene = scene; scene = state.floors[floor];                     // everything this room adds hides with its floor
     const floorC = col(team.color), carpetC = col(team.color_light), wallC = col(team.color_wall).multiplyScalar(1.3), accentC = col(team.accent || team.color);
     const trimC = mix(accentC, 0xffffff, 0.35), topTrimC = mix(wallC, 0xffffff, 0.25);
@@ -547,10 +545,7 @@
     const shellMesh = shell.mesh(); shellMesh.userData.room = team.key; scene.add(shellMesh); pickables.push(shellMesh);
     scene.add(props.mesh()); scene.add(glow.mesh());
     // the team label above the back corner
-    // the team card: above the back corner on the top floor; lower floors use the room's left corner, so in the
-    // overview a card never sits right under the card of the room above it
-    const top = floor === FLOORS - 1;
-    makeAnchor('team', team.key, scene, new THREE.Vector3(cx - h + 0.3, F + WALL_H + (top ? 4.0 : 1.5), top ? cz - h + 0.3 : cz + h - 0.3));
+    makeAnchor('team', team.key, scene, new THREE.Vector3(cx - h + 0.3, F + WALL_H + 1.4, cz - h + 0.3));   // under the ceiling, over the back corner
     state.rooms[team.key] = room; state.roomList.push(room);
     scene = realScene;
     return room;
@@ -717,77 +712,90 @@
     p.hipL.rotation.x = p.hipR.rotation.x = 0; p.kneeL.rotation.x = p.kneeR.rotation.x = 0; p.armL.rotation.x = p.armR.rotation.x = 0;
   }
 
-  // ------------------------------------------------------------------ the building: plates, atrium, lift, bands, wires
-  const particleSets = { wire: [], rider: [], orbit: [], rise: [] };
-  const glassMat = new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.09, depthWrite: false, side: THREE.DoubleSide });
-  const glassEdgeMat = new THREE.MeshBasicMaterial({ color: 0xbff1ff, transparent: true, opacity: 0.55 });
-  function glassBox(parent, w, h, d, x, y, z) {
+  // ------------------------------------------------------------------ the tower: floors, glass front, stairs, lift, wires
+  const particleSets = { wire: [], rider: [], orbit: [], rise: [], jet: [] };
+  const glassMat = new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide });
+  function glassBox(parent, w, h, d, x, y, z, edges) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), glassMat); m.position.set(x, y, z); m.renderOrder = 3; parent.add(m);
-    const e = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.35 })); e.position.copy(m.position); parent.add(e);
+    if (edges !== false) { const e = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.32 })); e.position.copy(m.position); parent.add(e); }
     return m;
   }
+  const tree = (M, x, y, z, k) => { M.cyl(0.6 * k, 1.0 * k, x, y + 0.5 * k, z, 0xd3d7ce); M.cyl(0.14 * k, 2.6 * k, x, y + 2.2 * k, z, 0x6b4a2e); M.ball(1.6 * k, x, y + 4.0 * k, z, 0x3f9e64); M.ball(1.2 * k, x + 0.8 * k, y + 4.7 * k, z + 0.3 * k, 0x52a775); M.ball(1.1 * k, x - 0.7 * k, y + 4.8 * k, z - 0.4 * k, 0x5db87c); };
+  const sofa = (M, x, y, z, w, c, rot) => { M.box(w, 0.7, 1.7, x, y + 0.45, z, c, { ry: rot || 0 }); M.box(w, 1.0, 0.45, x - Math.sin(rot || 0) * 0.65, y + 1.15, z - Math.cos(rot || 0) * 0.65, c, { ry: rot || 0 }); };
   function buildPaths() {
     for (let f = 0; f < FLOORS; f++) {
-      const g = state.floors[f], Y = f * FLOOR_H, P = state.plates[f], top = Y + WALK_Y, th = 0.9, cy = top - th / 2;
+      const g = state.floors[f], Y = f * FLOOR_H, top = Y + WALK_Y, th = 0.9, cy = top - th / 2, roof = f === ROOF, inner = FLOOR_H - th;
       const M = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 18, specular: 0x23262e }));
       const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
-      // floors 1 and 2 are tinted glass: the floor below shows through (the rooms keep their own solid slabs)
-      const PM = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 60, specular: 0x5a6a80, transparent: true, opacity: 0.62, depthWrite: false }));
-      const plateC = f ? 0x2c3446 : 0x242936, corrC = f ? 0x323a4c : 0x2b303d;
-      if (!f) M.box(2 * P, th, 2 * P, 0, cy, 0, plateC);
-      else {                                                                   // a square ring around the atrium
-        const w = P - HOLE;
-        PM.box(2 * P, th, w, 0, cy, -(HOLE + w / 2), plateC); PM.box(2 * P, th, w, 0, cy, HOLE + w / 2, plateC);
-        PM.box(w, th, 2 * HOLE, -(HOLE + w / 2), cy, 0, plateC); PM.box(w, th, 2 * HOLE, HOLE + w / 2, cy, 0, plateC);
-        // the corridor loop around the atrium, a shade lighter, with a dashed guide line
-        for (const sgn of [-1, 1]) { M.box(2 * (CORR + 2), 0.04, 4.4, 0, top + 0.02, sgn * CORR, corrC); M.box(4.4, 0.04, 2 * (CORR + 2), sgn * CORR, top + 0.02, 0, corrC); }
-        // the atrium's edge: a glowing lip, glass railing panes and a lit handrail
-        for (const [x, z, w2, d2] of [[0, -HOLE, 2 * HOLE, 0.12], [0, HOLE, 2 * HOLE, 0.12], [-HOLE, 0, 0.12, 2 * HOLE], [HOLE, 0, 0.12, 2 * HOLE]]) {
-          GL.box(w2 + 0.12, 0.1, d2 + 0.12, x, top + 0.05, z, 0x9fe8ff);
-          GL.box(w2 + 0.1, 0.09, d2 + 0.1, x, top + 1.3, z, 0xd9f6ff);
-          glassBox(g, Math.max(w2, 0.06), 1.25, Math.max(d2, 0.06), x, top + 0.65, z);
+      const floorC = f === 0 ? 0xcfc8bc : roof ? 0x7a7f8c : 0xc4bbad;
+      // the floor plate, open over the spiral stairs coming up from the floor below
+      if (!f) M.box(2 * WX, th, 2 * DZ, 0, cy, 0, floorC);
+      else {
+        const H = STAIR.hole, x0 = STAIR.x - H, x1 = STAIR.x + H, z0 = STAIR.z - H, z1 = STAIR.z + H;
+        M.box(x0 + WX, th, 2 * DZ, (-WX + x0) / 2, cy, 0, floorC); M.box(WX - x1, th, 2 * DZ, (x1 + WX) / 2, cy, 0, floorC);
+        M.box(2 * H, th, z0 + DZ, STAIR.x, cy, (-DZ + z0) / 2, floorC); M.box(2 * H, th, DZ - z1, STAIR.x, cy, (z1 + DZ) / 2, floorC);
+        // ceiling lights for the floor below: rows of warm panels under this plate
+        for (let x = -54; x <= 54; x += 12) for (const z of [-9, 1, 10]) if (Math.abs(x - STAIR.x) > 5 || Math.abs(z - STAIR.z) > 5) GL.box(5, 0.08, 0.8, x, top - th - 0.06, z, 0xfff0d6);
+      }
+      // the slab edge: the lit floor line of a glass tower
+      GL.box(2 * WX + 0.4, 0.2, 0.14, 0, top - 0.3, DZ + 0.42, 0xffe2b4);
+      M.box(2 * WX + 0.4, th + 0.1, 0.3, 0, cy, DZ + 0.2, 0x2a2f3b);
+      if (!roof) {
+        M.box(2 * WX, inner, 0.5, 0, top + inner / 2, -DZ - 0.25, 0x2b3242);                 // the back wall
+        const gf = new THREE.Mesh(new THREE.BoxGeometry(2 * WX, inner, 0.08), glassMat); gf.position.set(0, top + inner / 2, DZ + 0.3); gf.renderOrder = 3; g.add(gf);
+        for (let x = -WX; x <= WX + 0.1; x += 10) M.box(0.28, inner, 0.32, x, top + inner / 2, DZ + 0.3, 0x1c2130);   // mullions
+        for (const sx of [-1, 1]) { glassBox(g, 0.08, inner, 2 * DZ, sx * WX, top + inner / 2, 0, false); M.box(0.32, inner, 0.32, sx * WX, top + inner / 2, -DZ, 0x1c2130); }
+      } else {
+        for (const [w, d, x, z] of [[2 * WX, 0.08, 0, DZ - 0.1], [2 * WX, 0.08, 0, -DZ + 0.1], [0.08, 2 * DZ, -WX + 0.1, 0], [0.08, 2 * DZ, WX - 0.1, 0]]) {
+          glassBox(g, w, 1.3, d, x, top + 0.65, z, false); GL.box(w + 0.1, 0.09, d + 0.1, x, top + 1.32, z, 0xd9f6ff);
         }
       }
-      // the plate's outer edge: a thin light strip
-      for (const sgn of [-1, 1]) { GL.box(2 * P, 0.08, 0.14, 0, top + 0.04, sgn * (P - 0.07), 0x8fc6e6); GL.box(0.14, 0.08, 2 * P, sgn * (P - 0.07), top + 0.04, 0, 0x8fc6e6); }
-      // slim pillars carry this floor from the one below (they hide with it)
-      if (f) {
-        const d = Math.min(state.plates[f], state.plates[f - 1]) - 1.4;
-        for (const [px, pz] of [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [0, 1], [-1, 0], [1, 0]]) M.cyl(0.38, FLOOR_H - th, px * d, Y - FLOOR_H + WALK_Y + (FLOOR_H - th) / 2, pz * d, 0x3a4152);
-      }
-      bandProps(f, M, GL, g, top);
+      floorProps(f, M, GL, g, top);
       g.add(M.mesh()); g.add(GL.mesh());
-      if (f) { const pm = PM.mesh(); pm.renderOrder = 2; g.add(pm); }
     }
-    // the glass lift: a shaft through every floor, light rails and a car that follows whoever rides it
+    // the spiral stairs: a white helix of steps round a pole, a pink rail, from the lobby to the roof
+    const ST = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), SG = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+    for (let f = 0; f < ROOF; f++) {
+      const Y = f * FLOOR_H + WALK_Y, n = 24;
+      ST.cyl(0.32, FLOOR_H, STAIR.x, Y + FLOOR_H / 2, STAIR.z, 0xd9d4cc);
+      for (let k = 0; k < n; k++) {
+        const a = Math.PI / 2 + (k + 0.5) * (2 * Math.PI / n), y = Y + (k + 0.5) * (FLOOR_H / n);
+        ST.box(STAIR.r, 0.2, 0.95, STAIR.x + Math.cos(a) * STAIR.r / 2, y, STAIR.z + Math.sin(a) * STAIR.r / 2, 0xf2efe8, { ry: -a });
+        ST.box(0.07, 1.1, 0.07, STAIR.x + Math.cos(a) * (STAIR.r + 0.05), y + 0.6, STAIR.z + Math.sin(a) * (STAIR.r + 0.05), 0xe7c3d6);
+        SG.box(0.16, 0.12, 0.16, STAIR.x + Math.cos(a) * (STAIR.r + 0.05), y + 1.18, STAIR.z + Math.sin(a) * (STAIR.r + 0.05), 0xffd6ec);
+      }
+    }
+    scene.add(ST.mesh()); scene.add(SG.mesh());
+    // the glass lift: a shaft from the lobby to the top team floor, light rails, a car going up and down
     {
-      const h = TOP_Y + 2, gL = new THREE.Group(); scene.add(gL);
+      const h = ROOF * FLOOR_H, gL = new THREE.Group(); scene.add(gL);
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(LIFT.r, LIFT.r, h, 32, 1, true), glassMat); shaft.position.set(LIFT.x, h / 2, LIFT.z); shaft.renderOrder = 3; gL.add(shaft);
       const rails = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
       for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + k * Math.PI / 2; rails.box(0.09, h, 0.09, LIFT.x + Math.cos(a) * LIFT.r, h / 2, LIFT.z + Math.sin(a) * LIFT.r, 0xbff1ff); }
-      for (let f = 0; f < FLOORS; f++) rails.add(G.cyl, 0x9fe8ff, LIFT.x, f * FLOOR_H + WALK_Y + 0.06, LIFT.z, { sx: LIFT.r + 0.25, sy: 0.12, sz: LIFT.r + 0.25 });
       gL.add(rails.mesh());
       const car = new THREE.Group(); car.position.set(LIFT.x, WALK_Y, LIFT.z); gL.add(car);
       const deck = new THREE.Mesh(new THREE.CylinderGeometry(LIFT.r - 0.2, LIFT.r - 0.2, 0.25, 32), new THREE.MeshLambertMaterial({ color: 0x4a5368 })); deck.position.y = 0.05; car.add(deck);
       const ring = new THREE.Mesh(new THREE.TorusGeometry(LIFT.r - 0.25, 0.06, 6, 40), basic(0xc6f4ff)); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.2; car.add(ring);
-      const roof = ring.clone(); roof.position.y = 4.6; car.add(roof);
-      state.lift = { car, y: WALK_Y };
+      const roofRing = ring.clone(); roofRing.position.y = 4.6; car.add(roofRing);
+      state.lift = { car, top: (ROOF - 1) * FLOOR_H + WALK_Y };
     }
-    // data wires: from the back corner of every room into the Brain's beam at that floor's height
+    // data wires: from the back corner of every room out through the glass to the Brain in the fountain
+    const core = new THREE.Vector3(BRAIN.x, CORE_Y, BRAIN.z);
     for (const room of state.roomList) {
-      const F = room.y + SLAB_H, corner = new THREE.Vector3(room.center.x - room.half + 0.3, F + WALL_H + 1.4, room.center.z - room.half + 0.3);
-      const end = new THREE.Vector3(0, F + 6.5, 0), ctrl = new THREE.Vector3(corner.x * 0.42, F + WALL_H + 5, corner.z * 0.42);
-      const curve = new THREE.QuadraticBezierCurve3(corner, ctrl, end);
-      const wire = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)), new THREE.LineBasicMaterial({ color: mix(room.team.accent || room.color, 0xffffff, 0.25), transparent: true, opacity: 0.55 }));
+      const F = room.y + SLAB_H, corner = new THREE.Vector3(room.center.x - room.half + 0.3, F + WALL_H - 0.6, room.center.z - room.half + 0.3);
+      const ctrl = new THREE.Vector3(corner.x * 0.55, corner.y + 4, (corner.z + core.z) * 0.5);
+      const curve = new THREE.QuadraticBezierCurve3(corner, ctrl, core);
+      const wire = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(60)), new THREE.LineBasicMaterial({ color: mix(room.team.accent || room.color, 0xffffff, 0.25), transparent: true, opacity: 0.4 }));
       state.floors[room.floor].add(wire); room.wire = curve;
       for (let k = 0; k < 5; k++) particleSets.wire.push({ curve, k, floor: room.floor });
     }
-    // particles: wire sparks, ring riders, the orbit cloud, beam risers (one Points object)
+    // particles: wire sparks, ring riders, the orbit cloud, beam risers, fountain jets (one Points object)
     const r = rng(17);
     for (const ring of anim.rings) for (let k = 0; k < 2; k++) particleSets.rider.push({ ring, a: r() * 6.28, speed: 0.6 + r() * 0.5 });
     for (let k = 0; k < (PHONE_AT_BOOT ? 26 : 48); k++) { const n = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize(), u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = new THREE.Vector3().crossVectors(n, u); particleSets.orbit.push({ u, v, radius: 3.6 + r() * 4.5, phase: r() * 6.28, speed: (0.2 + r() * 0.5) * (r() < 0.5 ? 1 : -1) }); }
     for (let k = 0; k < (PHONE_AT_BOOT ? 12 : 24); k++) particleSets.rise.push({ x: (r() - 0.5) * 2.2, z: (r() - 0.5) * 2.2, phase: r(), speed: 0.04 + r() * 0.06 });
-    const count = particleSets.wire.length + particleSets.rider.length + particleSets.orbit.length + particleSets.rise.length;
+    for (let j = 0; j < 10; j++) for (let k = 0; k < (PHONE_AT_BOOT ? 5 : 9); k++) particleSets.jet.push({ a: j * Math.PI / 5 + 0.3, phase: k / (PHONE_AT_BOOT ? 5 : 9) });
+    const count = particleSets.wire.length + particleSets.rider.length + particleSets.orbit.length + particleSets.rise.length + particleSets.jet.length;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(count * 3).fill(1), 3));
@@ -795,83 +803,81 @@
     anim.particles.frustumCulled = false; scene.add(anim.particles);
   }
 
-  // The bands between the corner rooms: a glass meeting room and phone booths on 1F, a terrace garden and a sofa nook
-  // on 2F, benches and plants elsewhere. Kept clear of the walking lines (the corridor loop, the porches at x = ±12.3,
-  // the lift in the back band).
-  function bandProps(f, M, GL, g, top) {
-    const tree = (x, z, k) => { M.cyl(0.7 * k, 1.1 * k, x, top + 0.55 * k, z, 0xd3d7ce); M.ball(1.5 * k, x, top + 2.4 * k, z, 0x3f9e64); M.ball(1.1 * k, x + 0.7 * k, top + 3.1 * k, z + 0.3 * k, 0x52a775); M.ball(1.0 * k, x - 0.6 * k, top + 3.2 * k, z - 0.4 * k, 0x5db87c); };
-    const bench = (x, z, rot) => { M.box(3.6, 0.22, 1.0, x, top + 1.0, z, 0xc8925a, { ry: rot }); M.box(0.25, 0.9, 0.9, x + Math.cos(rot) * 1.5, top + 0.45, z - Math.sin(rot) * 1.5, 0x3a3d42, { ry: rot }); M.box(0.25, 0.9, 0.9, x - Math.cos(rot) * 1.5, top + 0.45, z + Math.sin(rot) * 1.5, 0x3a3d42, { ry: rot }); };
+  // The ends of each floor (x beyond ±44, outside the rooms) and the lobby core: glass meeting rooms, phone booths,
+  // reading and sofa nooks, plants. Nothing here is on a walking line (the corridor runs along the front at z = CZ).
+  function meetingRoom(M, GL, g, x, top) {
+    M.box(13, 0.05, 13, x, top + 0.03, -6, 0x323a4e); glassBox(g, 13, 7.2, 13, x, top + 3.6, -6);
+    M.box(7, 0.16, 2.8, x, top + 1.95, -6, 0xd2b07a); M.box(0.3, 1.9, 1.4, x - 2.8, top + 0.95, -6, 0x2a2d35); M.box(0.3, 1.9, 1.4, x + 2.8, top + 0.95, -6, 0x2a2d35);
+    for (let k = 0; k < 3; k++) for (const side of [-1, 1]) { const cx = x - 2.4 + k * 2.4, cz = -6 + side * 2.2; M.box(1.2, 0.16, 1.2, cx, top + 1.18, cz, 0x2a2d31); M.box(1.2, 1.2, 0.14, cx, top + 1.9, cz + side * 0.6, 0x2a2d31); }
+    M.box(5.6, 3.0, 0.16, x, top + 4.0, -12.3, 0x0d0d12); GL.box(5.3, 2.7, 0.04, x, top + 4.0, -12.18, 0x4f7fd8);
+  }
+  function floorProps(f, M, GL, g, top) {
+    const L = -52, R = 52;
     if (f === 0) {
-      tree(-25, 0, 1); tree(25, 0, 0.9); tree(0, 26, 1); bench(-25, 6, 0); bench(25, -6, 0); bench(6, 26, Math.PI / 2);
-      tree(-7, -27, 0.8); bench(7, -27, Math.PI / 2);
+      // the lobby: the front desk with the receptionist, a big sign, plants by the doors
+      M.box(9, 1.8, 1.6, 4, top + 0.9, 2, 0x3b4560); M.box(9.2, 0.12, 1.8, 4, top + 1.86, 2, 0xe8e2d6); GL.box(8.6, 0.08, 0.04, 4, top + 1.2, 2.82, 0xf5c84b);
+      const rc = makeCharacter({ skin: 0xf1c9a5, hair: 0x2a2a2e, style: 'short', hat: 0xf5c542, shirt: 0xf5c542, trousers: 0x2b3350 }, { seated: true, head: true });
+      rc.group.position.set(4, top + 0.25, 0.4); rc.group.scale.setScalar(CHAR_SCALE); g.add(rc.group);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(14, 2.6), new THREE.MeshBasicMaterial({ map: signTex('AGENTS HQ', '#f5c84b'), transparent: true, depthWrite: false }));
+      sign.position.set(2, top + 9.6, -DZ + 0.05); g.add(sign);
+      tree(M, -14, top, 11, 0.85); tree(M, 18, top, 11, 0.85); tree(M, L, top, 8, 1); tree(M, R, top, 8, 1);
+      sofa(M, L + 2, top, -6, 6, 0xc3d1d1, 0); sofa(M, R - 2, top, -6, 6, 0xc3d1d1, 0);
       return;
     }
-    if (f === 1) {
-      // the glass meeting room (left band): a long table, eight chairs and a screen
-      const mx = -25.5, mz = 0;
-      M.box(19, 0.05, 15, mx, top + 0.03, mz, 0x323a4e);
-      glassBox(g, 19, 7.2, 15, mx, top + 3.6, mz);
-      M.box(10, 0.16, 3.0, mx, top + 1.95, mz, 0xd2b07a); M.box(0.3, 1.9, 1.6, mx - 4, top + 0.95, mz, 0x2a2d35); M.box(0.3, 1.9, 1.6, mx + 4, top + 0.95, mz, 0x2a2d35);
-      for (let k = 0; k < 4; k++) for (const side of [-1, 1]) { const x = mx - 3.6 + k * 2.4, z = mz + side * 2.3; M.box(1.2, 0.16, 1.2, x, top + 1.18, z, 0x2a2d31); M.box(1.2, 1.2, 0.14, x, top + 1.9, z + side * 0.6, 0x2a2d31); M.cyl(0.07, 0.9, x, top + 0.6, z, 0x3a3d42); }
-      M.box(0.18, 3.2, 6.6, mx - 9.2, top + 4.0, mz, 0x0d0d12); GL.box(0.04, 2.9, 6.3, mx - 9.08, top + 4.0, mz, 0x4f7fd8);
-      // phone booths (right band)
-      for (const z of [-6, 0, 6]) { glassBox(g, 3.0, 6.0, 3.6, 25, top + 3.0, z); M.box(3.0, 0.3, 3.6, 25, top + 6.15, z, 0x2a2f3c); M.box(1.4, 0.12, 0.9, 25.6, top + 2.0, z, 0xe2d8c6); M.box(0.9, 0.12, 0.9, 24.2, top + 1.2, z, 0x6d5bd0); GL.box(1.6, 0.06, 0.3, 25, top + 5.9, z, 0xfff1d6); }
-      tree(-7, 27, 0.8); tree(7, 27, 0.8); bench(0, 30, 0); tree(-7, -28, 0.75); tree(7, -28, 0.75);
+    if (f === ROOF) {
+      tree(M, L, top, -8, 1.1); tree(M, R, top, -8, 1.1); tree(M, L + 2, top, 8, 0.9); tree(M, R - 2, top, 8, 0.9);
+      for (const x of [-14, 18]) { M.box(3.2, 0.5, 1.4, x, top + 0.6, 10, 0xf2efe8); M.box(3.2, 0.4, 1.4, x, top + 1.05, 9.4, 0xf2efe8, { rx: -0.5 }); }   // sun loungers
       return;
     }
-    // 2F: the terrace (left band): a green deck, trees and benches; a sofa nook (right band); standing tables (bottom)
-    M.box(19, 0.08, 20, -25.5, top + 0.04, 0, 0x2f6b4a);
-    tree(-30, -6, 1.1); tree(-30, 6, 1.0); tree(-21, 0, 0.8); bench(-24, -6, 0); bench(-24, 6, 0);
-    M.box(1.6, 0.06, 18, -16.4, top + 0.07, 0, 0x8a6a4a);
-    const sx = 26; M.box(2.0, 0.7, 7, sx + 4, top + 0.45, 0, 0xd9cdd7); M.box(0.5, 1.1, 7, sx + 5, top + 1.2, 0, 0xd9cdd7); M.box(2.2, 0.12, 2.2, sx, top + 0.95, 0, 0xc8925a); M.box(1.8, 0.85, 1.8, sx, top + 0.45, 0, 0x8a6a4a);
-    tree(sx + 4.5, -6.5, 0.7); tree(sx + 4.5, 6.5, 0.7);
-    for (const x of [-5, 0, 5]) { M.cyl(0.9, 0.12, x, top + 2.4, 27, 0xe8e2d6); M.cyl(0.12, 2.4, x, top + 1.2, 27, 0x3a3d42); }
-    tree(-7, -28, 0.8); tree(7, -28, 0.8);
+    // team floors: a meeting room at one end, a nook at the other, alternating up the tower
+    const mx = f % 2 ? R : L, nx = f % 2 ? L : R;
+    meetingRoom(M, GL, g, mx, top);
+    if (f === 2) for (const z of [-10, -4]) { glassBox(g, 3.2, 6.0, 3.6, nx, top + 3.0, z); M.box(3.2, 0.3, 3.6, nx, top + 6.15, z, 0x2a2f3c); M.box(1.4, 0.12, 0.9, nx + 0.6, top + 2.0, z, 0xe2d8c6); GL.box(1.6, 0.06, 0.3, nx, top + 5.9, z, 0xfff1d6); }
+    else if (f === 3) { for (let k = 0; k < 3; k++) M.box(3.6, 6, 1.0, nx - 4 + k * 4, top + 3, -14.6, [0x8a6a4a, 0x6b4a2e, 0x8a6a4a][k]); sofa(M, nx, top, -6, 5, 0x6d5bd0, 0); tree(M, nx + 5, top, 6, 0.8); }
+    else { sofa(M, nx, top, -8, 6, 0xd9cdd7, 0); M.box(2.2, 0.12, 2.2, nx, top + 0.95, -4.6, 0xc8925a); tree(M, nx - 5, top, 5, 0.85); tree(M, nx + 5, top, 5, 0.85); }
   }
 
-  // ------------------------------------------------------------------ the commons (ground floor corners)
-  // Corner rooms without desks: canteen + kitchen (0), lounge (2), town hall steps (6) and the reception (4, no walls:
-  // it faces the camera). Spots for office life (stools, sofas, steps, the kitchen counter) are room-local (x, z from
-  // the centre; back walls at -x and -z) and become graph nodes in buildLife.
+  // ------------------------------------------------------------------ the commons (lobby floor and roof)
+  // Rooms without desks in the team slots: the canteen + kitchen and the lounge in the lobby, the terrace (open air,
+  // under a pergola) and the game room on the roof, plus the roof's coffee bar in the core. Spots for office life
+  // (stools, sofas, bean bags, arcade machines, the counter) are room-local (x, z from the centre; back walls at -x
+  // and -z) and become graph nodes in buildLife.
   const COMMONS = [
-    { key: 'canteen', name: 'CANTEEN', corner: 0, floorC: 0x8b6b4e, wallC: 0x5d4b3e, walls: true, sign: '#f5c84b' },
-    { key: 'lounge', name: 'LOUNGE', corner: 2, floorC: 0x35545c, wallC: 0x2a3f4a, walls: true, sign: '#7fe0d4' },
-    { key: 'townhall', name: 'TOWN HALL', corner: 6, floorC: 0x383d58, wallC: 0x2a2e45, walls: true, sign: '#9fb4ff' },
-    { key: 'reception', name: 'RECEPTION', corner: 4, floorC: 0x474d5c, wallC: 0x2e3340, walls: false, sign: '#f5c84b' },
+    { key: 'canteen', name: 'CANTEEN', floor: 0, slot: 0, floorC: 0x8b6b4e, wallC: 0x5d4b3e, walls: true, sign: '#f5c84b' },
+    { key: 'lounge', name: 'LOUNGE', floor: 0, slot: 1, floorC: 0x35545c, wallC: 0x2a3f4a, walls: true, sign: '#7fe0d4' },
+    { key: 'terrace', name: 'ROOF TERRACE', floor: ROOF, slot: 0, floorC: 0x3d6b52, walls: false, sign: '#ffd98a' },
+    { key: 'gameroom', name: 'GAME ROOM', floor: ROOF, slot: 1, floorC: 0x2a2440, wallC: 0x1d1830, walls: true, sign: '#ff5fd2' },
   ];
   function signTex(text, color) {
-    return canvasTex(512, 128, (c, w, h) => { c.clearRect(0, 0, w, h); c.font = '800 64px Inter, system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.shadowColor = color; c.shadowBlur = 18; c.fillStyle = color; c.fillText(text, w / 2, h / 2 + 4); });
+    return canvasTex(512, 128, (c, w, h) => { c.clearRect(0, 0, w, h); c.font = '800 60px Inter, system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.shadowColor = color; c.shadowBlur = 18; c.fillStyle = color; c.fillText(text, w / 2, h / 2 + 4); });
   }
   function buildCommons() {
-    const realScene = scene; scene = state.floors[0];
-    const shell = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 14, specular: 0x202024 }));
-    const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }));
-    const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
-    const h = S / 2, F = SLAB_H;
+    const h = S / 2;
     for (const def of COMMONS) {
-      const sg = cornerSign(def.corner), cx = sg[0] * ROOM_D, cz = sg[1] * ROOM_D;
+      const realScene = scene; scene = state.floors[def.floor];
+      const shell = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 14, specular: 0x202024 }));
+      const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }));
+      const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+      const Y = def.floor * FLOOR_H, F = Y + SLAB_H, cx = (def.slot ? 1 : -1) * ROOM_X, cz = -DZ + 2 + h;
       const box = (m, w, hh, d, lx, y, lz, c, o) => m.box(w, hh, d, cx + lx, y, cz + lz, c, o);
-      const C = { key: def.key, corner: def.corner, center: new THREE.Vector3(cx, 0, cz), half: h, dir: roomDir(def.corner), lanes: {}, edges: '', spots: [], entry: null };
+      const C = { key: def.key, floor: def.floor, center: new THREE.Vector3(cx, Y, cz), half: h, y: Y, lanes: Object.assign({}, LIFE_LAYOUT.normal.lanes), edges: LIFE_LAYOUT.normal.edges, spots: [] };
       const spot = (list, lx, lz, o) => { o = o || {}; C.spots.push({ list, x: lx, z: lz, y: o.y || 0, face: o.face || null, lane: o.lane, sit: !!o.sit }); };
-      shell.box(S, SLAB_H, S, cx, SLAB_H / 2, cz, def.floorC);
+      shell.box(S, SLAB_H, S, cx, Y + SLAB_H / 2, cz, def.floorC);
       shell.box(S, 0.1, 0.22, cx, F + 0.05, cz + h - 0.11, mix(def.floorC, 0xffffff, 0.45));
       shell.box(0.22, 0.1, S, cx + h - 0.11, F + 0.05, cz, mix(def.floorC, 0xffffff, 0.45));
       if (def.walls) {
         shell.box(WALL_T, WALL_H, S, cx - h + WALL_T / 2, F + WALL_H / 2, cz, def.wallC);
         shell.box(S, WALL_H, WALL_T, cx, F + WALL_H / 2, cz - h + WALL_T / 2, def.wallC);
         shell.box(0.55, WALL_H + 1.6, 0.55, cx - h + 0.27, F + (WALL_H + 1.6) / 2, cz - h + 0.27, 0x1d2029);
-        const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.8), new THREE.MeshBasicMaterial({ map: signTex(def.name, def.sign), transparent: true, depthWrite: false }));
-        sign.position.set(cx + 1.2, F + 7.6, cz - h + WALL_T + 0.03); scene.add(sign);
       }
-      C.lanes = Object.assign({}, LIFE_LAYOUT.normal.lanes); C.edges = LIFE_LAYOUT.normal.edges;
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.8), new THREE.MeshBasicMaterial({ map: signTex(def.name, def.sign), transparent: true, depthWrite: false }));
+      sign.position.set(cx + 1.2, F + (def.walls ? 7.6 : 6.4), cz - h + WALL_T + 0.03); scene.add(sign);
       if (def.key === 'canteen') {
-        // the kitchen: a counter along the back wall (sink, hob, coffee machine), upper cabinets and a tall fridge
         box(M, 12, 1.5, 1.6, -1, F + 0.75, -8.75, 0xefe9df); box(M, 12.2, 0.1, 1.75, -1, F + 1.55, -8.75, 0x8a6a4a);
         box(M, 1.4, 0.05, 0.9, -3, F + 1.62, -8.75, 0x9aa3ad); box(M, 1.2, 0.08, 0.9, 1.5, F + 1.63, -8.75, 0x22252c);
         box(M, 0.8, 1.0, 0.7, 4, F + 2.1, -8.9, 0x2b2e36); GL.box(0.07, 0.07, 0.07, 4.25, F + 2.45, -8.5, 0x7dffb0);
         box(M, 10, 1.4, 0.9, -1, F + 5.4, -9.1, 0xd8cfc0);
         box(M, 1.8, 4.4, 1.6, -8.6, F + 2.2, -8.75, 0xd9dde3); box(M, 0.08, 1.2, 0.1, -7.75, F + 2.6, -7.95, 0x9aa3ad);
-        // two round tables with stools under pendant lights
         for (const tx of [-3.5, 3.0]) {
           M.cyl(1.25, 0.12, cx + tx, F + 1.6, cz + 3.6, 0xc8925a); M.cyl(0.12, 1.5, cx + tx, F + 0.8, cz + 3.6, 0x3a3d42); M.cyl(0.6, 0.06, cx + tx, F + 0.03, cz + 3.6, 0x3a3d42);
           M.cyl(0.04, 3.4, cx + tx, F + 6.7, cz + 3.6, 0x15151a); GL.cyl(0.55, 0.3, cx + tx, F + 4.9, cz + 3.6, 0xfff1d6); addGlowSprite(cx + tx, F + 4.7, cz + 3.6, 0xffe2b8, 3.2, 0.4);
@@ -881,52 +887,95 @@
           spot('sits', sx, 3.6, { sit: true, face: [tx, 3.6], lane: sx < -2 ? 'ML' : sx < 2 ? 'MM' : 'MR' });
         }
         spot('food', -4.5, -6.7, { face: [-4.5, -8.75], lane: 'ML' }); spot('food', 1.5, -6.7, { face: [1.5, -8.75], lane: 'MM' });
-        plant(M, cx + h - 1.6, F, cz - h + 1.9, 1); plant(M, cx - h + 1.8, F, cz + h - 1.8, 0.9);
-      } else if (def.key === 'lounge') {
-        box(M, 12, 0.06, 9, 0.5, F + 0.03, -3.5, 0x4f7f86);                                                   // the rug
-        box(M, 8.4, 0.7, 1.8, -1, F + 0.45, -8.5, 0xd9cdd7); box(M, 8.4, 1.1, 0.45, -1, F + 1.2, -9.3, 0xd9cdd7);   // the sofa
-        box(M, 0.45, 1.0, 1.8, -5.0, F + 0.9, -8.5, 0xd9cdd7); box(M, 0.45, 1.0, 1.8, 3.0, F + 0.9, -8.5, 0xd9cdd7);
-        for (const k of [-3.5, -1, 1.5]) box(M, 2.2, 0.18, 1.5, k, F + 0.88, -8.4, 0xefe6ee);
+        plant(M, cx + h - 1.6, F, cz - h + 1.9, 1);
+      } else if (def.key === 'lounge' || def.key === 'terrace') {
+        const sc = def.key === 'lounge' ? 0xd9cdd7 : 0xf2efe8;
+        box(M, 12, 0.06, 9, 0.5, F + 0.03, -3.5, def.key === 'lounge' ? 0x4f7f86 : 0x8a6a4a);
+        box(M, 8.4, 0.7, 1.8, -1, F + 0.45, -8.5, sc); box(M, 8.4, 1.1, 0.45, -1, F + 1.2, -9.3, sc);
+        box(M, 0.45, 1.0, 1.8, -5.0, F + 0.9, -8.5, sc); box(M, 0.45, 1.0, 1.8, 3.0, F + 0.9, -8.5, sc);
+        for (const k of [-3.5, -1, 1.5]) box(M, 2.2, 0.18, 1.5, k, F + 0.88, -8.4, def.key === 'lounge' ? 0xefe6ee : 0xf5c84b);
         box(M, 1.8, 0.12, 1.2, 1.2, F + 0.95, -5.0, 0xc8925a); box(M, 1.5, 0.85, 0.9, 1.2, F + 0.45, -5.0, 0x8a6a4a);
-        box(M, 0.16, 2.6, 4.6, -9.5, F + 4.4, -1, 0x0d0d12); GL.box(0.04, 2.3, 4.3, -9.38, F + 4.4, -1, 0x3f6fd8);  // the TV wall
         M.add(G.sphere, 0xf59e0b, cx + 3, F + 0.55, cz + 4.2, { sx: 1.1, sy: 0.6, sz: 1.1 }); M.add(G.sphere, 0x8b5cf6, cx + 6, F + 0.55, cz + 3.0, { sx: 1.1, sy: 0.6, sz: 1.1 });
-        props_lamp(M, GL, cx + h - 1.8, F, cz - h + 1.8);
-        plant(M, cx - h + 1.8, F, cz + h - 1.8, 1);
+        if (def.key === 'lounge') { box(M, 0.16, 2.6, 4.6, -9.5, F + 4.4, -1, 0x0d0d12); GL.box(0.04, 2.3, 4.3, -9.38, F + 4.4, -1, 0x3f6fd8); plant(M, cx + h - 1.6, F, cz - h + 1.9, 1); }
+        else {                                                                 // the pergola with string lights
+          for (const [px, pz] of [[-9, -9], [9, -9], [-9, 7], [9, 7]]) box(M, 0.4, 7, 0.4, px, F + 3.5, pz, 0x3a2e24);
+          for (const pz of [-9, -3.7, 1.6, 7]) box(M, 18.4, 0.3, 0.3, 0, F + 7, pz, 0x3a2e24);
+          box(M, 0.3, 0.3, 16.4, -9, F + 7.2, -1, 0x3a2e24); box(M, 0.3, 0.3, 16.4, 9, F + 7.2, -1, 0x3a2e24);
+          for (const pz of [-9, -3.7, 1.6, 7]) for (let k = 0; k < 9; k++) { const lx = -8 + k * 2, sag = Math.sin(k / 8 * Math.PI) * 0.6; GL.ball(0.14, cx + lx, F + 6.75 - sag, cz + pz, 0xffe7a8); }
+          tree(M, cx - 7.5, F, cz + 5.5, 0.7); tree(M, cx + 8, F, cz - 7.5, 0.7);
+        }
         C.lanes = Object.assign(C.lanes, { S3: [4.6, -6.6], S2: [1.5, -6.6], S1: [-1, -6.6], S0: [-3.5, -6.6] });
         C.edges += ' MR-S3 S3-S2 S2-S1 S1-S0';
         [[-3.5, 'S0'], [-1, 'S1'], [1.5, 'S2']].forEach(([x, ln]) => spot('sits', x, -8.2, { sit: true, face: [x, 0], lane: ln }));
         spot('sits', 3, 4.2, { sit: true, face: [-9.5, -1], lane: 'MM' }); spot('sits', 6, 3.0, { sit: true, face: [-9.5, -1], lane: 'MR' });
-      } else if (def.key === 'townhall') {
-        box(M, 0.16, 3.8, 8.6, -9.5, F + 4.6, -1, 0x0d0d12); GL.box(0.04, 3.5, 8.3, -9.38, F + 4.6, -1, 0x5a8fe0);     // the big screen
-        for (const [tx, th, tc] of [[-1.5, 0.55, 0xc8925a], [0.5, 1.1, 0xa9773f], [2.5, 1.65, 0x8a5f31]]) box(M, 2.0, th, 12, tx, F + th / 2, -1, tc);
-        C.lanes = { RB: [7.8, -6.0], RM: [7.8, 0.4], RF: [7.8, 6.6], FM: [2, 7.4], FL: [-5.5, 7.4], T0: [5, -4.5], T1: [5, -1], T2: [5, 2.5] };
-        C.edges = 'RB-RM RM-RF RF-FM FM-FL RB-T0 RM-T1 RM-T2 T0-T1 T1-T2';
-        [[-4.5, 'T0'], [-1, 'T1'], [2.5, 'T2']].forEach(([z, ln]) => spot('sits', 2.5, z, { y: 1.65, sit: true, face: [-10, z], lane: ln }));
-        for (const [x, z] of [[-3.6, 2.5], [-4.6, -2.0]]) { M.cyl(0.6, 1.0, cx + x, F + 0.5, cz + z, 0x6d5bd0); spot('sits', x, z, { sit: true, face: [-10, z], lane: 'FL' }); }
-        plant(M, cx + h - 1.6, F, cz - h + 1.9, 1);
       } else {
-        // the reception: the front desk with a gold strip, the chief of staff's receptionist, a waiting sofa
-        box(M, 6.4, 1.8, 1.4, 3, F + 0.9, -7.6, 0x3b4560); box(M, 6.6, 0.12, 1.6, 3, F + 1.86, -7.6, 0xe8e2d6); GL.box(6.0, 0.08, 0.04, 3, F + 1.2, -6.88, 0xf5c84b);
-        box(M, 1.35, 0.16, 1.35, 3, F + 1.18, -9.0, 0x2a2d31); M.cyl(0.07, 0.9, cx + 3, F + 0.64, cz - 9.0, 0x3a3d42);
-        const rc = makeCharacter({ skin: 0xf1c9a5, hair: 0x2a2a2e, style: 'short', hat: 0xf5c542, shirt: 0xf5c542, trousers: 0x2b3350 }, { seated: true, head: true });
-        rc.group.position.set(cx + 3, F, cz - 9.0); rc.group.scale.setScalar(CHAR_SCALE); scene.add(rc.group);
-        box(M, 4.4, 0.7, 1.5, 3.8, F + 0.45, 4.5, 0xc3d1d1); box(M, 4.4, 1.0, 0.4, 3.8, F + 1.05, 5.3, 0xc3d1d1);
-        box(M, 3.4, 0.05, 2.2, -6.6, F + 0.03, -6.6, 0xf5c84b);
-        plant(M, cx + h - 1.6, F, cz + h - 1.6, 1); plant(M, cx - h + 1.6, F, cz + h - 1.6, 0.9); plant(M, cx + h - 1.6, F, cz - h + 1.6, 0.8);
-        const sign = new THREE.Mesh(new THREE.PlaneGeometry(6.2, 1.55), new THREE.MeshBasicMaterial({ map: signTex(def.name, def.sign), transparent: true, depthWrite: false }));
-        sign.position.set(cx + 3, F + 3.0, cz - 8.4); scene.add(sign);
-        C.lanes = { C: [0, 0], D: [-7.5, -7.5] }; C.edges = 'C-D';
-        C.entry = { out: [[-h - 1.7, -h - 1.7, 'w']], door: [-8.7, -8.7], lanes: 'D' };
-        spot('sits', 2.8, 4.3, { sit: true, face: [2.8, -10], lane: 'C' }); spot('sits', 4.8, 4.3, { sit: true, face: [4.8, -10], lane: 'C' });
+        // the game room: arcade machines along the back wall, a foosball table, a neon strip
+        [[-6, 0xff5fd2], [-3.4, 0x5fd2ff], [-0.8, 0xf5c84b]].forEach(([x, c]) => {
+          box(M, 1.7, 3.4, 1.4, x, F + 1.7, -8.6, 0x1b1d26); GL.box(1.3, 1.0, 0.05, x, F + 2.4, -7.88, c); GL.box(1.5, 0.35, 0.05, x, F + 3.2, -7.88, mix(c, 0xffffff, 0.4));
+          spot('play', x, -6.6, { face: [x, -9], lane: x < -2 ? 'ML' : 'MM' });
+        });
+        box(M, 3.6, 0.3, 2.0, 5.5, F + 1.7, 3.6, 0x2f6b4a); box(M, 3.4, 1.55, 0.2, 5.5, F + 0.8, 2.7, 0x3a3d42); box(M, 3.4, 1.55, 0.2, 5.5, F + 0.8, 4.5, 0x3a3d42);
+        spot('play', 3.2, 3.6, { face: [5.5, 3.6], lane: 'MR' }); spot('play', 7.8, 3.6, { face: [5.5, 3.6], lane: 'FR' });
+        box(GL, 0.06, 0.12, 18, -9.5, F + 8.6, 0, 0xff5fd2); box(GL, 18, 0.12, 0.06, 0, F + 8.6, -9.5, 0x5fd2ff);
       }
+      scene.add(shell.mesh()); scene.add(M.mesh()); scene.add(GL.mesh());
       state.commons.push(C);
+      scene = realScene;
     }
-    scene.add(shell.mesh()); scene.add(M.mesh()); scene.add(GL.mesh());
-    scene = realScene;
+    // the roof's coffee bar in the core: a counter against the back wall with a machine, three stools in front
+    {
+      const g = state.floors[ROOF], Y = ROOF * FLOOR_H, F = Y + WALK_Y, M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+      M.box(12, 1.5, 1.6, 7, F + 0.75, -13.4, 0xefe9df); M.box(12.2, 0.1, 1.8, 7, F + 1.55, -13.4, 0x8a6a4a);
+      M.box(0.9, 1.1, 0.8, 4, F + 2.15, -13.6, 0x2b2e36); GL.box(0.07, 0.07, 0.07, 4.25, F + 2.55, -13.15, 0x7dffb0);
+      for (const x of [3.5, 7, 10.5]) { M.cyl(0.45, 0.12, x, F + 1.0, -11.3, 0x2a2d35); M.cyl(0.08, 1.0, x, F + 0.5, -11.3, 0x55596a); }
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(5.5, 1.4), new THREE.MeshBasicMaterial({ map: signTex('COFFEE', '#ffd98a'), transparent: true, depthWrite: false })); sign.position.set(7, F + 4.6, -14.9); g.add(sign);
+      g.add(M.mesh()); g.add(GL.mesh());
+      state.commons.push({ key: 'cafe', floor: ROOF, center: new THREE.Vector3(7, Y, -6), half: 8, y: Y, lanes: { A: [-3.5, 5], B: [3.5, 5] }, edges: 'A-B', door: [0, 12], doorLanes: 'A B', spots: [3.5, 7, 10.5].map((x, k) => ({ list: 'bar', x: x - 7, z: -5.3, y: 0, face: [x - 7, -7.4], lane: k < 1 ? 'A' : 'B', sit: true })) });
+    }
   }
-  function props_lamp(M, GL, x, F, z) {
-    M.cyl(0.42, 0.12, x, F + 0.06, z, 0x15151a); M.cyl(0.07, 5.2, x, F + 2.6, z, 0x15151a); GL.ball(0.42, x, F + 5.45, z, 0xfff6e6);
-    addGlowSprite(x, F + 5.45, z, 0xffecc8, 2.0, 0.45);
+
+  // ------------------------------------------------------------------ the plaza and the city
+  const windowTex = canvasTex(256, 512, (c, w, h) => {
+    c.fillStyle = '#121a2e'; c.fillRect(0, 0, w, h);
+    const r = rng(7);
+    for (let y = 8; y < h - 8; y += 20) for (let x = 8; x < w - 8; x += 18) { const v = r(); c.fillStyle = v < 0.42 ? (v < 0.12 ? '#ffe2a8' : '#fff6e0') : v < 0.6 ? '#2a3a5c' : '#1a2440'; c.fillRect(x, y, 10, 12); }
+  });
+  windowTex.wrapS = windowTex.wrapT = THREE.RepeatWrapping;
+  function buildCity() {
+    const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+    // plaza paving, the road, a sidewalk edge
+    M.box(150, 0.3, 66, 0, 0.0, DZ + 33, 0x4d5363); M.box(150, 0.3, 0.6, 0, 0.18, DZ + 66, 0x8a90a0);
+    M.box(420, 0.2, 22, 0, -0.05, DZ + 78, 0x15181f);
+    for (let x = -200; x <= 200; x += 12) GL.box(5, 0.04, 0.4, x, 0.07, DZ + 78, 0xe8dfc4);
+    // the fountain: a stone rim round a pool of water, the Brain's platform the island in the middle
+    M.cyl(22.5, 1.3, BRAIN.x, 0.65, BRAIN.z, 0x9aa1ae); M.cyl(21.6, 1.32, BRAIN.x, 0.66, BRAIN.z, 0x3a4252);
+    const water = new THREE.Mesh(new THREE.CircleGeometry(21.5, 64), new THREE.MeshPhongMaterial({ color: 0x1d5fb0, emissive: 0x0b2a5a, shininess: 90, specular: 0x9fd8ff, transparent: true, opacity: 0.88 }));
+    water.rotation.x = -Math.PI / 2; water.position.set(BRAIN.x, 1.05, BRAIN.z); scene.add(water);
+    for (let k = 0; k < 10; k++) { const a = k * Math.PI / 5 + 0.3; GL.ball(0.22, BRAIN.x + Math.cos(a) * 20.4, 1.2, BRAIN.z + Math.sin(a) * 20.4, 0xbff1ff); }
+    // trees, benches, street lamps, two parked cars
+    for (const [x, z, k] of [[-52, DZ + 14, 1.5], [52, DZ + 14, 1.5], [-46, DZ + 50, 1.7], [46, DZ + 52, 1.6], [-64, DZ + 34, 1.3], [64, DZ + 30, 1.3]]) tree(M, x, 0.15, z, k);
+    for (const [x, z] of [[-30, DZ + 20], [30, DZ + 20], [-30, DZ + 52], [30, DZ + 52]]) { M.box(4, 0.25, 1.1, x, 1.0, z, 0xc8925a); M.box(0.25, 0.9, 1.0, x - 1.7, 0.45, z, 0x3a3d42); M.box(0.25, 0.9, 1.0, x + 1.7, 0.45, z, 0x3a3d42); }
+    for (const [x, z] of [[-40, DZ + 64], [-12, DZ + 64], [12, DZ + 64], [40, DZ + 64], [-60, DZ + 8], [60, DZ + 8]]) { M.cyl(0.15, 9, x, 4.6, z, 0x23262e); GL.ball(0.45, x, 9.2, z, 0xfff0d0); addGlowSprite(x, 9.2, z, 0xffe2b8, 4.5, 0.5); }
+    const car = (x, z, rot, c) => {
+      const o = new THREE.Matrix4().makeRotationY(rot).setPosition(x, 0, z), at = { parent: o };
+      M.box(4.6, 0.9, 9.2, 0, 1.0, 0, c, at); M.box(3.8, 0.8, 3.6, 0, 1.8, -0.4, mix(c, 0x111111, 0.55), at);
+      for (const [wx, wz] of [[-2.3, 3], [2.3, 3], [-2.3, -3], [2.3, -3]]) M.cyl(0.75, 0.6, wx, 0.75, wz, 0x15151a, Object.assign({ rz: Math.PI / 2 }, at));
+      for (const wx of [-1.5, 1.5]) GL.box(0.8, 0.25, 0.1, wx, 1.15, 4.62, 0xfff6e0, at);
+      for (const wx of [-1.6, 1.6]) GL.box(0.8, 0.22, 0.1, wx, 1.15, -4.62, 0xff4d5e, at);
+    };
+    car(-36, DZ + 42, 1.35, 0xf2c230); car(36, DZ + 44, -1.75, 0xd8323a);
+    scene.add(M.mesh()); scene.add(GL.mesh());
+    // the skyline: dark towers with lit windows behind and beside the office
+    const r = rng(21), mats = [0x9aa4c0, 0x7d88a6, 0xb0b8cc].map((c) => new THREE.MeshBasicMaterial({ map: windowTex, color: c }));
+    const n = PHONE_AT_BOOT ? 18 : 30;
+    for (let k = 0; k < n; k++) {
+      const side = k % 3, w = 18 + r() * 26, d = 16 + r() * 20, h = 50 + r() * 130;
+      const x = side === 0 ? -230 + r() * 460 : (side === 1 ? -1 : 1) * (95 + r() * 120), z = side === 0 ? -50 - r() * 120 : -40 + r() * 70;
+      if (Math.abs(x) < WX + 12 && z > -DZ - 20) continue;
+      const geo = new THREE.BoxGeometry(w, h, d), uv = geo.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 24, uv.getY(i) * h / 48);
+      const b = new THREE.Mesh(geo, mats[k % 3]); b.position.set(x, h / 2, z); scene.add(b);
+    }
   }
 
   const _a = new THREE.Vector3(), _b = new THREE.Vector3();
@@ -936,8 +985,12 @@
     const put = (x, y, z, bright) => { pos.setXYZ(i, x, y, z); if (bright !== undefined) colr.setXYZ(i, bright, bright, bright); i++; };
     for (const p of particleSets.wire) { if (!floorShown(p.floor)) { put(0, -999, 0, 0); continue; } const u = (t * 0.09 + p.k / 5) % 1; p.curve.getPoint(u, _a); put(_a.x, _a.y, _a.z, 1); }
     for (const p of particleSets.rider) { const a = p.a + t * p.speed; _a.set(Math.cos(a) * p.ring.radius, 0, Math.sin(a) * p.ring.radius).applyMatrix4(p.ring.holder.matrixWorld); put(_a.x, _a.y, _a.z, 1); }
-    for (const p of particleSets.orbit) { const a = p.phase + t * p.speed; _a.copy(p.u).multiplyScalar(Math.cos(a) * p.radius).addScaledVector(p.v, Math.sin(a) * p.radius); put(_a.x, CORE_Y + _a.y, _a.z, 0.7); }
-    for (const p of particleSets.rise) { const u = (p.phase + t * p.speed) % 1; put(p.x, 2.4 + u * (TOP_Y + 20), p.z, Math.sin(u * Math.PI) * 0.9); }
+    for (const p of particleSets.orbit) { const a = p.phase + t * p.speed; _a.copy(p.u).multiplyScalar(Math.cos(a) * p.radius).addScaledVector(p.v, Math.sin(a) * p.radius); put(BRAIN.x + _a.x, CORE_Y + _a.y, BRAIN.z + _a.z, 0.7); }
+    for (const p of particleSets.rise) { const u = (p.phase + t * p.speed) % 1; put(BRAIN.x + p.x, 2.4 + u * (TOP_Y + 20), BRAIN.z + p.z, Math.sin(u * Math.PI) * 0.9); }
+    for (const p of particleSets.jet) {                                        // the fountain: arcs from the rim to the island
+      const u = (p.phase + t * 0.55) % 1, r = 20.2 - u * 5.4, a = p.a;
+      put(BRAIN.x + Math.cos(a) * r, 1.1 + 7.5 * 4 * u * (1 - u), BRAIN.z + Math.sin(a) * r, 0.75);
+    }
     pos.needsUpdate = true; colr.needsUpdate = true;
   }
 
@@ -1044,7 +1097,6 @@
   // Bubbles are CSS2D labels of kind 'bubble' (one per character, filled through setLabel): text when the camera is
   // close, a small 💬 above a talking pair from far away. Lines come from GET /api/chatter (lessons with the teams they
   // help, ideas, brand rules, today's done tasks) and a pool of warm generic lines; nothing invents numbers or claims.
-  const LIFE_RING_R = 14.6, LIFE_PLAT_Y = 1.2, LIFE_BAR_A = 22.5 * DEG;
   const LIFE = {
     on: true, ready: false, auto: true, speed: 1, time: 0, max: 7, nodes: [], actors: [], by: {}, talks: [], topics: [], taken: {}, rooms: {}, commons: {}, ring: [], bar: [],
     pulse: 0, pulsed: false, notes: [], wave: null, debug: null, recent: {}, chatterTimer: 0, talkers: {},   // talkers: who is mid-conversation (the HUD hides their name pills)
@@ -1120,6 +1172,7 @@
     solo: ['Ahh, much better ☕', "Coffee o'clock ☕", 'Mmm, fresh brew ☕', 'Recharging… 🔋', 'One sip, then back to it', 'Little break, big help 🌿', '辛苦啦 to me ☕', 'Smells amazing ☕',
       'Warm mug, happy me 😊', 'Brain fuel ☕🧠'],
     lunch: ['Lunch time 🥪', 'Smells so good in here 🍜', 'Refuelling 🍱', 'Best part of the day 😋', '吃饭啦！🍚', 'A quick bite, then back up ⬆️'],
+    play: ['One more round 🕹️', 'High score incoming 🏆', 'Foosball rematch? ⚽', 'Just five minutes 🎮'],
     rest: ['Comfy 🛋️', 'Five minutes on the sofa 😌', 'Nice to sit down for a bit 🌿', 'Watching the big screen 📺', 'Little break, big help ☕', 'Recharging… 🔋'],
     busy: ["Oh, you're busy! Later 👋", "Looks like you're on it. Next time! 🙂", "Ah, deep in work. I'll come back ✌️", 'No worries, catch you later 😊'],
     stretch: ['Stretch time 🙆', 'Ahh, that feels good 🧘', 'Shoulders, meet the ceiling 🙌', 'Quick stretch, back to it 💪'],
@@ -1206,36 +1259,29 @@
   function buildLife() {
     const N = LIFE.nodes;
     const Ms = state.floors.map(() => new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }))), GLs = state.floors.map(() => new Merger(new THREE.MeshBasicMaterial({ vertexColors: true })));
-    // ground: the ring lane on the Brain platform, 16 points between the inner disc and the rim (the bar's point sits inward)
-    for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8, r = k === 1 ? 14.3 : LIFE_RING_R; LIFE.ring.push(lnode(Math.cos(a) * r, LIFE_PLAT_Y, Math.sin(a) * r, { w: 0.5 })); }
-    for (let k = 0; k < 16; k++) ledge(LIFE.ring[k], LIFE.ring[(k + 1) % 16]);
-    const ringAt = (ang) => LIFE.ring[((Math.round(ang / (Math.PI / 8)) % 16) + 16) % 16];
-    // floors 1 and 2: a corridor loop around the atrium (corners and mid-points), joined by the lift
-    const corr = [null];
-    for (let f = 1; f < FLOORS; f++) {
-      const y = f * FLOOR_H + WALK_Y, ids = {};
-      for (const [k, x, z] of [['00', -CORR, -CORR], ['m0', 0, -CORR], ['20', CORR, -CORR], ['2m', CORR, 0], ['44', CORR, CORR], ['m4', 0, CORR], ['64', -CORR, CORR], ['6m', -CORR, 0]]) ids[k] = lnode(x, y, z, { w: 0.6 });
-      'm0 20 2m 44 m4 64 6m 00 m0'.split(' ').reduce((a, b) => { ledge(ids[a], ids[b]); return b; });
-      corr.push({ 0: ids['00'], 2: ids['20'], 4: ids['44'], 6: ids['64'], back: ids.m0 });
+    // every floor: a corridor along the glass front, with a point in front of each room, the stairs and the core
+    const XS = [-52, -40, -ROOM_X, -20, STAIR.x, 0, 7, 14, 20, ROOM_X, 40, 52];
+    const corr = [];
+    for (let f = 0; f < FLOORS; f++) {
+      const y = f * FLOOR_H + WALK_Y, ids = XS.map((x) => lnode(x, y, CZ, { w: 0.9 }));
+      for (let k = 1; k < ids.length; k++) ledge(ids[k - 1], ids[k]);
+      corr.push(ids);
     }
-    let below = null;
+    const corrAt = (f, x) => { let best = 0; XS.forEach((cx, k) => { if (Math.abs(cx - x) < Math.abs(XS[best] - x)) best = k; }); return corr[f][best]; };
+    // the spiral stairs: a landing at the foot of each flight, then a helix of points up to the next floor's landing
+    const WR = 1.9;
+    let last = null;
     for (let f = 0; f < FLOORS; f++) {
       const y = f * FLOOR_H + WALK_Y;
-      const inside = lnode(LIFT.x, y, LIFT.z), door = lnode(LIFT.x, y, LIFT.z + LIFT.r + 0.9, { w: 0.3 });
-      ledge(inside, door);
-      if (f) ledge(door, corr[f].back); else { const rim = lnode(0, LIFE_PLAT_Y, -16.4, { w: 0.3 }); ledge(ringAt(-Math.PI / 2), rim); ledge(rim, door); }
-      if (below != null) ledge(below, inside);                                 // the ride between floors
-      below = inside;
+      const foot = lnode(STAIR.x, y, STAIR.z + WR), landing = lnode(STAIR.x, y, STAIR.z + STAIR.hole + 0.5, { w: 0.2 });
+      ledge(foot, landing); ledge(landing, corrAt(f, STAIR.x));
+      if (last != null) ledge(last, foot);
+      if (f < ROOF) {
+        let prev = foot;
+        for (let k = 1; k < 12; k++) { const a = Math.PI / 2 + k * Math.PI / 6, id = lnode(STAIR.x + Math.cos(a) * WR, y + k / 12 * FLOOR_H, STAIR.z + Math.sin(a) * WR); ledge(prev, id); prev = id; }
+        last = prev;
+      }
     }
-    // From the junction on a floor to a corner place's door (h = half its side): on the ground a short step off the
-    // Brain platform first, then the points outside the slab ('w' walk, 'p' porch around the back walls), then the door.
-    const enter = (place, j, R, spec) => {
-      let prev = j;
-      const Y = place.y || 0, d = place.dir;
-      if (!Y) { const wp = lnode(d.x * 16.6, LIFE_PLAT_Y, d.z * 16.6, { w: 0.5 }), w0 = lnode(d.x * 17.4, WALK_Y, d.z * 17.4, { w: 1.1 }); ledge(j, wp); ledge(wp, w0); prev = w0; }
-      for (const o of spec.out) { const id = lnode(place.center.x + o[0], Y + WALK_Y, place.center.z + o[1], { w: o[2] === 'p' ? 0.35 : 1.1 }); ledge(prev, id); prev = id; }
-      const door = R(spec.door[0], spec.door[1]); ledge(prev, door); return door;
-    };
     for (const room of state.roomList) {
       const lay = room.big ? LIFE_LAYOUT.creative : LIFE_LAYOUT.normal, h = room.half, cx = room.center.x, cz = room.center.z, key = room.key, F = room.y + SLAB_H;
       const M = Ms[room.floor], GL = GLs[room.floor];
@@ -1244,11 +1290,10 @@
       for (const k of Object.keys(lay.lanes)) lanes[k] = R(lay.lanes[k][0], lay.lanes[k][1]);
       lay.edges.split(' ').forEach((e) => { const ab = e.split('-'); ledge(lanes[ab[0]], lanes[ab[1]]); });
       const joinLanes = (id, names) => names.split(' ').forEach((nm) => { if (lanes[nm] != null) ledge(id, lanes[nm]); });
-      const j = corr[room.floor][room.index], spec = LIFE_ENTRY[room.index % 8](h);
-      const door = enter(room, j, R, spec); joinLanes(door, spec.lanes);
+      const j = corrAt(room.floor, cx), door = R(0, h - 1.2);
+      ledge(j, door); joinLanes(door, 'FM');
       // desks: a stand spot beside the chair and a guest spot for a visitor, facing each other. The guest stands
-      // across the screen from the host (world (-1,+1) for a desk facing the back wall, (+1,-1) for a side desk),
-      // so the pair reads side by side from the usual camera angle and neither hides the other.
+      // across the screen from the host, so the pair reads side by side and neither hides the other.
       for (const seat of room.seats) {
         const st = new THREE.Vector3(1.5, 0, 1.9).applyMatrix4(seat.unit), side = Math.abs(wrapA(seat.ch.group.rotation.y - Math.PI)) > 0.5 ? -1 : 1;
         const gu = st.clone().add(new THREE.Vector3(-1.6 * side, 0, 1.6 * side));
@@ -1269,56 +1314,40 @@
       const counterAt = new THREE.Vector3(wx, F, wz);
       const coffee = lay.coffee.map((c) => R(c[0], c[1], { spot: true, faceTo: counterAt }));
       coffee.forEach((id) => joinLanes(id, lay.coffeeLanes));
-      // two phone spots near the open front edge (pace between them) and a note spot at the atrium railing
+      // two phone spots near the open front edge (pace between them) and a note spot at the glass front: the note
+      // flies out over the plaza into the Brain
       const phone = lay.phone.map((c) => { const id = R(c[0], c[1], { spot: true }); joinLanes(id, c[2]); return id; });
       ledge(phone[0], phone[1]);
-      const sg = cornerSign(room.index), ny = room.y + WALK_Y;
-      const note = lnode(sg[0] * (HOLE + 0.9), ny, sg[1] * (HOLE + 0.9), { spot: true, faceTo: new THREE.Vector3(0, ny, 0) });
+      const ny = room.y + WALK_Y, note = lnode(cx + 6, ny, DZ - 1.2, { spot: true, faceTo: new THREE.Vector3(cx + 6, ny, DZ + 30) });
       ledge(note, j);
       LIFE.rooms[key] = { room, lanes, door, coffee, phone, note, junction: j };
     }
-    // the commons on the ground floor: their lanes, spots (sit / food) and the way in from the Brain platform
+    // the commons: their lanes, spots (sit / food / play / bar) and the door from the corridor
     for (const C of state.commons) {
-      const cx = C.center.x, cz = C.center.z, F = SLAB_H;
+      const cx = C.center.x, cz = C.center.z, F = C.y + (C.key === 'cafe' ? WALK_Y : SLAB_H);
       const R = (lx, lz, o) => lnode(cx + lx, F + ((o && o.dy) || 0), cz + lz, Object.assign({ room: C.key }, o || {}));
       const lanes = {};
       for (const k of Object.keys(C.lanes)) lanes[k] = R(C.lanes[k][0], C.lanes[k][1]);
       C.edges.split(' ').forEach((e) => { const ab = e.split('-'); ledge(lanes[ab[0]], lanes[ab[1]]); });
-      const spec = C.entry || LIFE_ENTRY[C.corner % 8](C.half);
-      const door = enter(C, ringAt(Math.atan2(C.dir.z, C.dir.x)), R, spec);
-      spec.lanes.split(' ').forEach((nm) => { if (lanes[nm] != null) ledge(door, lanes[nm]); });
+      const dp = C.door || [0, C.half - 1.2], door = R(dp[0], dp[1]);
+      ledge(door, corrAt(C.floor, cx + dp[0]));
+      (C.doorLanes || 'FM').split(' ').forEach((nm) => { if (lanes[nm] != null) ledge(door, lanes[nm]); });
       const out = { key: C.key, sits: [], food: [] };
       for (const sp of C.spots) {
         const id = R(sp.x, sp.z, { spot: true, dy: sp.y, faceTo: sp.face ? new THREE.Vector3(cx + sp.face[0], F, cz + sp.face[1]) : null });
         N[id].sit = sp.sit; if (lanes[sp.lane] != null) ledge(id, lanes[sp.lane]);
-        out[sp.list].push(id);
+        if (sp.list === 'bar') LIFE.bar.push(id); else out[sp.list === 'play' ? 'sits' : sp.list].push(id);
       }
-      LIFE.commons[C.key] = out;
-    }
-    // the lobby coffee bar on the Brain platform, between the canteen and the lounge
-    {
-      const M = Ms[0], GL = GLs[0];
-      const a = LIFE_BAR_A, cs = Math.cos(a), sn = Math.sin(a), ry = -a, at = (r, t, y) => [cs * r - sn * t, y, sn * r + cs * t];
-      const put = (fn, r, t, y, ...rest) => { const q = at(r, t, y); fn(q[0], q[1], q[2], ...rest); };
-      put((x, y, z) => M.box(0.8, 1.25, 4.4, x, y, z, 0xe6ebf1, { ry }), 16.6, 0, LIFE_PLAT_Y + 0.625);
-      put((x, y, z) => M.box(0.98, 0.1, 4.6, x, y, z, 0x5a6b7e, { ry }), 16.6, 0, LIFE_PLAT_Y + 1.3);
-      put((x, y, z) => M.box(0.62, 0.92, 0.78, x, y, z, 0x2b2e36, { ry }), 16.75, -1.35, LIFE_PLAT_Y + 1.81);
-      put((x, y, z) => M.box(0.2, 0.14, 0.22, x, y, z, 0x3a3e48, { ry }), 16.35, -1.35, LIFE_PLAT_Y + 1.98);
-      put((x, y, z) => M.cyl(0.11, 0.2, x, y, z, 0xffffff), 16.38, -1.35, LIFE_PLAT_Y + 1.45);
-      put((x, y, z) => GL.ball(0.05, x, y, z, 0x7dffb0), 16.42, -1.1, LIFE_PLAT_Y + 2.1);
-      [0xffffff, 0xf2c94c, 0x7fc8ff, 0xff8fa3].forEach((c, k) => put((x, y, z) => M.cyl(0.12, 0.22, x, y, z, c), 16.5, 0.1 + k * 0.42, LIFE_PLAT_Y + 1.46));
-      put((x, y, z) => GL.box(0.05, 0.07, 4.2, x, y, z, 0x9fe8ff, { ry }), 16.19, 0, LIFE_PLAT_Y + 1.08);
-      put((x, y, z) => plant(M, x, y, z, 0.42), 16.7, 1.85, LIFE_PLAT_Y + 1.35);
-      for (const deg of [15.5, 22.5, 29.5]) { const b = deg * DEG, id = lnode(Math.cos(b) * 15.7, LIFE_PLAT_Y, Math.sin(b) * 15.7, { spot: true, faceTo: new THREE.Vector3(Math.cos(b) * 18, 0, Math.sin(b) * 18) }); ledge(id, LIFE.ring[1]); LIFE.bar.push(id); }
+      if (out.sits.length) LIFE.commons[C.key] = out;
     }
     Ms.forEach((m, f) => state.floors[f].add(m.mesh())); GLs.forEach((m, f) => state.floors[f].add(m.mesh()));
     // the note particles that fly into the Brain, and the ring wave of its pulse
     for (let k = 0; k < 3; k++) {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xa8ecff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
       sp.scale.set(1.1, 1.1, 1); sp.visible = false; scene.add(sp);
-      LIFE.notes.push({ sprite: sp, active: false, t: 0, from: new THREE.Vector3(), ctrl: new THREE.Vector3(), to: new THREE.Vector3(0, CORE_Y, 0) });
+      LIFE.notes.push({ sprite: sp, active: false, t: 0, from: new THREE.Vector3(), ctrl: new THREE.Vector3(), to: new THREE.Vector3(BRAIN.x, CORE_Y, BRAIN.z) });
     }
-    const waves = [0, 1].map(() => { const m = new THREE.Mesh(new THREE.RingGeometry(0.86, 1.0, 72), new THREE.MeshBasicMaterial({ color: 0xc8f4ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })); m.rotation.x = -Math.PI / 2; m.position.y = 2.42; m.visible = false; scene.add(m); return m; });
+    const waves = [0, 1].map(() => { const m = new THREE.Mesh(new THREE.RingGeometry(0.86, 1.0, 72), new THREE.MeshBasicMaterial({ color: 0xc8f4ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })); m.rotation.x = -Math.PI / 2; m.position.set(BRAIN.x, 2.42, BRAIN.z); m.visible = false; scene.add(m); return m; });
     LIFE.wave = { meshes: waves, t: -1 };
     LIFE.ready = true;
     loadChatter(); LIFE.chatterTimer = setInterval(loadChatter, 60000);
@@ -1592,7 +1621,7 @@
   // A break downstairs: lunch in the canteen (a plate from the kitchen counter first), the lounge sofas and bean bags,
   // or the town hall steps. Whoever is already there on a break gets a chat; the lift takes them down and back up.
   function actBreak(L, opts) {
-    const want = opts && opts.where, weights = { canteen: 0.45, lounge: 0.35, townhall: 0.2, reception: 0.06 };
+    const want = opts && opts.where, weights = { canteen: 0.4, lounge: 0.3, terrace: 0.22, gameroom: 0.18 };
     const pool = Object.values(LIFE.commons).filter((c) => (!want || c.key === want) && freeSpot(c.sits) != null);
     if (!pool.length) return false;
     let x = Math.random() * pool.reduce((t, c) => t + (weights[c.key] || 0.1), 0), C = pool[0];
@@ -1617,7 +1646,7 @@
       const tl = topicLine(L), lines = [{ who: 0, text: tl.text }, { who: 1, text: pickFresh('reply') }];
       if (Math.random() < 0.6) { lines.push({ who: 1, text: topicLine(other).text }); lines.push({ who: 0, text: pickFresh('reply') }); }
       startTalk(L, other, lines, tl.topic || 'a break downstairs', 'break');
-    } else if (Math.random() < 0.5) say(L, pickFresh(key === 'canteen' ? 'lunch' : 'rest'), 3.2);
+    } else if (Math.random() < 0.5) say(L, pickFresh(key === 'canteen' ? 'lunch' : key === 'gameroom' ? 'play' : 'rest'), 3.2);
   }
   const isFree = (A) => A.mode === 'seated' && !A.running && !A.reservedBy && LIFE.on;
   function freeHost(roomKey, not) {
@@ -1913,14 +1942,13 @@
     state.mode = 'room:' + teamKey;
     const dist = ROOM_VIEW.dist * (room.big ? 1.26 : 1) * (opts.zoom || 1) * state.fit;
     showFloor(room.floor);
-    tweenTo({ yaw: OVERVIEW.yaw, pitch: ROOM_VIEW.pitch, dist, target: shiftTarget(new THREE.Vector3(room.center.x, room.y + 2.2, room.center.z), dist, opts.shiftX) }, opts.duration || 950);
+    tweenTo({ yaw: OVERVIEW.yaw, pitch: ROOM_VIEW.pitch, dist, target: shiftTarget(new THREE.Vector3(room.center.x, room.y + 4.6, room.center.z + 3), dist, opts.shiftX) }, opts.duration || 950);
     return true;
   }
   function overview(opts) { opts = opts || {}; state.mode = 'overview'; showFloor(null); tweenTo({ yaw: OVERVIEW.yaw, pitch: OVERVIEW.pitch, dist: OVERVIEW.dist, target: shiftTarget(OVERVIEW.target.clone(), OVERVIEW.dist, opts.shiftX) }, opts.duration || 1100); }
   // The floor view: null shows the whole building; n hides every floor above n so you look straight into it.
   function showFloor(n) {
     n = n == null || n === 'all' || n === '' ? null : clamp(Math.round(+n), 0, FLOORS - 1);
-    if (n === FLOORS - 1) n = null;
     state.floorView = n;
     state.floors.forEach((g, f) => { g.visible = floorShown(f); });
     return n;
@@ -1930,8 +1958,8 @@
     const v = showFloor(n);
     if (v == null) { overview(opts); return null; }
     state.mode = 'floor:' + v;
-    const P = state.plates[v] || PLATE_MIN, d = Math.max(OVERVIEW.dist * 0.82, (P * SQ * 2) / Math.tan(2 * Math.atan(Math.tan(camera.fov * DEG / 2) * camera.aspect) / 2) * 0.95);
-    tweenTo({ yaw: OVERVIEW.yaw, pitch: Math.max(OVERVIEW.pitch, 48 * DEG), dist: d, target: shiftTarget(new THREE.Vector3(0, v * FLOOR_H + 2, 0), d, opts.shiftX) }, opts.duration || 1000);
+    const tanH = Math.tan(camera.fov * DEG / 2) * camera.aspect, d = (camera.aspect < 0.95 ? WX * 0.55 : WX + 4) / tanH;   // the whole floor across the frame
+    tweenTo({ yaw: OVERVIEW.yaw, pitch: 12 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(0, v * FLOOR_H + 5.5, 4), d, opts.shiftX) }, opts.duration || 1000);
     return v;
   }
   function focusAgent(name, opts) {
@@ -1940,10 +1968,10 @@
     state.mode = 'agent:' + name; const p = seat.ch.group.position;
     const d = 34 * Math.sqrt(state.fit);
     showFloor(floorOfY(p.y));
-    tweenTo({ yaw: OVERVIEW.yaw, pitch: 38 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(p.x, p.y + 1.8, p.z), d, opts.shiftX) }, opts.duration || 900);
+    tweenTo({ yaw: OVERVIEW.yaw, pitch: 18 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(p.x, p.y + 2.2, p.z), d, opts.shiftX) }, opts.duration || 900);
     return true;
   }
-  function focusBrain(opts) { opts = opts || {}; state.mode = 'brain'; showFloor(0); const d = 62 * state.fitBrain; tweenTo({ yaw: OVERVIEW.yaw, pitch: 46 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(0, 4, 0), d, opts.shiftX) }, opts.duration || 1000); }
+  function focusBrain(opts) { opts = opts || {}; state.mode = 'brain'; showFloor(0); const d = 76 * state.fitBrain; tweenTo({ yaw: OVERVIEW.yaw, pitch: 26 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(BRAIN.x, 5, BRAIN.z), d, opts.shiftX) }, opts.duration || 1000); }
   function getZoomPercent() { return Math.round(OVERVIEW.dist / Math.max(1, currentView().dist) * 100); }
   function setZoomPercent(p) { const v = currentView(); p = clamp(+p || 100, 25, 900); tweenTo({ yaw: v.yaw, pitch: v.pitch, dist: OVERVIEW.dist * 100 / p, target: v.target }, 450); if (state.mode === 'overview') state.mode = 'free'; }
   function zoom(delta) { const v = currentView(); tweenTo({ yaw: v.yaw, pitch: v.pitch, dist: clamp(v.dist * Math.pow(0.82, +delta || 0), controls.minDistance, controls.maxDistance), target: v.target }, 400); if (state.mode === 'overview') state.mode = 'free'; }
@@ -1956,18 +1984,15 @@
     if (seat) { const p = seat.ch.group.position; state.selectRing.position.set(p.x, seat.room.y + SLAB_H + 0.07, p.z); }
   }
 
-  // Minimap state in 0..1 map coordinates: the floors side by side (ground on the left with the Brain, then 1F, 2F),
-  // each a small diamond with its rooms at their corners (top, right, bottom, left as on screen). The camera's target
-  // shows in the column of the floor it looks at.
-  const MAP_COL = (f) => 0.18 + f * 0.32;
+  // Minimap state in 0..1 map coordinates: the tower seen from the front, the ground floor at the bottom, each room at
+  // its place on its floor, the Brain (the fountain) under the tower; the camera's target as a point.
   function minimapState() {
-    const v = currentView();
-    const onFloor = (x, z, f) => { const P = state.plates[f] || PLATE_MIN, u = ((x - z) * SQ) / (2 * P * SQ * 2), w = ((x + z) * SQ) / (2 * P * SQ * 2); return { x: MAP_COL(f) + u * 0.3, y: 0.5 + w * 0.92 }; };
-    const rooms = state.roomList.map((r) => Object.assign(onFloor(r.center.x, r.center.z, r.floor), { key: r.key, w: 0.075, h: 0.2, color: r.color, lit: r.lit, floor: r.floor }));
-    const tf = floorOfY(v.target.y);
-    const target = onFloor(v.target.x, v.target.z, tf);
+    const v = currentView(), H = FLOORS * FLOOR_H;
+    const mapOf = (x, y) => ({ x: 0.5 + x / (2 * (WX + 6)), y: 0.86 - (y / H) * 0.8 });
+    const rooms = state.roomList.map((r) => Object.assign(mapOf(r.center.x, r.y + FLOOR_H * 0.5), { key: r.key, w: r.size / (2 * (WX + 6)), h: 0.8 / FLOORS * 0.72, color: r.color, lit: r.lit, floor: r.floor }));
+    const target = mapOf(v.target.x, v.target.y);
     return {
-      rooms, brain: onFloor(0, 0, 0), camera: target, target, view: null, floors: FLOOR_NAMES.map((name, f) => ({ name, x: MAP_COL(f), shown: floorShown(f) })),
+      rooms, brain: { x: 0.5, y: 0.95 }, camera: target, target, view: null, floors: FLOOR_NAMES.map((name, f) => ({ name, short: FLOOR_SHORT[f], y: mapOf(0, f * FLOOR_H + FLOOR_H / 2).y })),
       yaw: v.yaw, yawOffset: v.yaw - OVERVIEW.yaw, zoom: getZoomPercent(), mode: state.mode, floorView: state.floorView,
     };
   }
@@ -2026,7 +2051,7 @@
     anim.brain.lattice.rotation.y = t * 0.05;
     // the beam fades while the camera is close to a room so it never washes out a close-up
     const near = clamp((currentView().dist / state.fit - 80) / 60, 0, 1);
-    anim.brain.beam.material.opacity = 0.85 * near; anim.brain.beam.visible = anim.brain.halo.visible = near > 0.02; anim.brain.halo.material.opacity = 0.07 * near; anim.brain.glow.material.opacity *= 0.5 + 0.5 * near;
+    anim.brain.beam.material.opacity = 0.3 * near;   // a soft beam: it stands in front of the tower anim.brain.beam.visible = anim.brain.halo.visible = near > 0.02; anim.brain.halo.material.opacity = 0.07 * near; anim.brain.glow.material.opacity *= 0.5 + 0.5 * near;
     const neon = 0.88 + Math.sin(t * 1.1) * 0.12; anim.brain.neon.forEach((m, k) => m.material.color.setRGB(0.78 * neon, 0.96 * neon, 1 * neon));
     if (LIFE.pulse > 0 || LIFE.pulsed) lifePulse(dt);                          // a note just landed in the Brain
     for (const r of anim.rings) r.holder.rotation.y = r.phase + t * r.speed;
@@ -2058,11 +2083,9 @@
       seat.running = on;
     }
     for (const name in state.seats) { const g = state.seats[name].ch.group; g.visible = floorShown(floorOfY(g.position.y)); }
-    if (state.lift) {                                                          // the car follows whoever rides it, else rests where it stopped
-      let ry = null;
-      for (const L of LIFE.actors) if (L.mode !== 'seated' && Math.abs(L.base.x - LIFT.x) < 0.3 && Math.abs(L.base.z - LIFT.z) < 0.3) { ry = L.base.y; break; }
-      if (ry != null) state.lift.y = ry;
-      state.lift.car.position.y += (state.lift.y - state.lift.car.position.y) * Math.min(1, dt * 8);
+    if (state.lift) {                                                          // the lift glides up and down, pausing at the ends
+      const c = (t * 0.035) % 1, u = c < 0.4 ? ease(c / 0.4) : c < 0.5 ? 1 : c < 0.9 ? 1 - ease((c - 0.5) / 0.4) : 0;
+      state.lift.car.position.y = WALK_Y + u * (state.lift.top - WALK_Y);
     }
     animateWalkers(t, dt); animateSubs(t); updateLabels();
     if (state.selectRing && state.selectRing.visible) {
@@ -2102,19 +2125,18 @@
     state.teams = teams; state.agents = agents;
     for (let f = 0; f < FLOORS; f++) { const g = new THREE.Group(); g.name = 'floor' + f; scene.add(g); state.floors.push(g); }
     state.people = new THREE.Group(); scene.add(state.people);
-    // the plan first, then any other team in a free corner of floor 1 or 2
+    // the plan first, then any other team in a free slot of floors 1-4
     const used = {}, place = {};
     for (const t of teams) { const pl = FLOOR_PLAN[t.key]; if (pl && !used[pl.join()]) { used[pl.join()] = true; place[t.key] = pl; } }
-    const free = []; for (const f of [1, 2]) for (const c of [0, 2, 4, 6]) if (!used[f + ',' + c]) free.push([f, c]);
-    for (const t of teams) if (!place[t.key]) { if (free.length) place[t.key] = free.shift(); else console.warn('office3d: no corner left for', t.key); }
-    state.plates = Array.from({ length: FLOORS }, () => PLATE_MIN);
-    for (const t of teams) { const pl = place[t.key]; if (!pl) continue; const big = t.key === 'creative', size = big ? S * 1.4 : S; state.plates[pl[0]] = Math.max(state.plates[pl[0]], ROOM_D + (size - S) / 2 + size / 2 + 3); }
-    state.ext = Math.max(...state.plates); resize();
+    const free = []; for (let f = 1; f < ROOF; f++) for (const c of [0, 1]) if (!used[f + ',' + c]) free.push([f, c]);
+    for (const t of teams) if (!place[t.key]) { if (free.length) place[t.key] = free.shift(); else console.warn('office3d: no room left for', t.key); }
+    resize();
     buildBrain();
     teams.forEach((team) => { const pl = place[team.key]; if (pl) buildRoom(team, pl[1], agents.filter((a) => a.teamKey === team.key || a.team === team.name), pl[0]); });
-    for (const name in state.seats) state.people.add(state.seats[name].ch.group);   // characters keep their own floor rule (they ride the lift)
+    for (const name in state.seats) state.people.add(state.seats[name].ch.group);   // characters keep their own floor rule (they take the stairs)
     buildCommons();
     buildPaths();
+    buildCity();
     try { buildLife(); } catch (e) { console.warn('office3d: office life is off', e); LIFE.ready = false; }
     state.built = true;
     placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
