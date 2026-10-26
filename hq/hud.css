@@ -1003,3 +1003,15 @@ body.review-open { overflow: hidden; }
 .pub-sched svg { width: 14px; height: 14px; }
 .pub-when { color-scheme: dark; margin-top: 6px; }
 .rv-chip svg { width: 14px; height: 14px; }
+
+.pub-final { margin-bottom: 12px; padding: 12px; border-radius: 14px; border: 1px solid rgba(255,138,138,.35); background: rgba(255,138,138,.06); }
+.pub-final.ready { border-color: rgba(110,231,168,.45); background: rgba(110,231,168,.06); }
+.fin-h { margin-bottom: 8px; color: #ffb4b4; font: 700 13px Inter, sans-serif; }
+.pub-final.ready .fin-h { color: #6ee7a8; }
+.fin-items { display: flex; flex-wrap: wrap; gap: 8px; }
+.fin-item { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: #0d1016; color: #cfd5e3; font: 13px Inter, sans-serif; }
+.fin-item b { color: #fff; font-weight: 600; }
+.fin-item span { color: #8a93a6; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin-item svg { width: 14px; height: 14px; color: #6ee7a8; }
+.fin-item.no { color: #ffb4b4; font-weight: 800; }
+.fin-video { display: block; margin-top: 10px; max-width: 220px; max-height: 390px; width: 100%; aspect-ratio: 9 / 16; border-radius: 12px; background: #000; object-fit: contain; }

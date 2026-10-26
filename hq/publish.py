@@ -259,9 +259,46 @@ def drafts(folder):
     return {"options": options, "youtube": first["youtube"], "instagram": first["instagram"], "facebook": first["facebook"]}
 
 
+LINKED = re.compile(r"((?:approved|out)/[^\s`'\"()<>]+?\.(?:mp4|mov|m4v))", re.I)
+
+
+def office_root(folder):
+    """The office folder above an approved/ or out/ work folder."""
+    p = os.path.abspath(folder)
+    while p and os.path.basename(p) not in ("approved", "out"):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+    return os.path.dirname(p) if p else None
+
+
+def linked_videos(folder):
+    """Videos another folder holds that this one's post copy or notes name (a thumbnail or copy task whose video was
+    edited in the clip's own folder): "approved/<clip>/edit.mp4", or "out/<clip>/…" that has moved to approved/ since."""
+    root, out = office_root(folder), []
+    if not root:
+        return out
+    text = ""
+    for name in ("post.md", "notes.md", "README.md"):
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                text += f.read() + "\n"
+        except OSError:
+            pass
+    for rel in LINKED.findall(text):
+        rel = rel.replace("\\", "/").strip("/")
+        for cand in (rel, "approved/" + rel[4:] if rel.startswith("out/") else None):
+            full = cand and os.path.realpath(os.path.join(root, cand))
+            if full and full.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(full) and cand not in out:
+                out.append(cand); break
+    return out
+
+
 def media_files(folder):
-    """Videos and images that can be posted: in the folder, else one level down (topics); never in work/."""
-    found = {"video": [], "image": []}
+    """Videos and images that can be posted: in the folder, else one level down (topics), else the video the post copy
+    names in another folder; never in work/. `abs` maps a linked video's name to its path."""
+    found = {"video": [], "image": [], "abs": {}}
     for depth in (0, 1):
         for dirpath, dirnames, filenames in os.walk(folder):
             rel = os.path.relpath(dirpath, folder)
@@ -277,6 +314,10 @@ def media_files(folder):
                     found["image"].append(path)
         if found["video"]:
             break
+    if not found["video"]:
+        root = office_root(folder)
+        for rel in linked_videos(folder):
+            found["video"].append(rel); found["abs"][rel] = os.path.join(root, rel)
     rank = lambda n: (0 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I) else 2 if re.search(r"clean|nocap|no-captions", n, re.I)
                       else 3 if os.path.basename(n).lower().startswith("cut") else 1)
     found["video"].sort(key=rank)
@@ -287,7 +328,8 @@ def media_files(folder):
 def media(folder):
     """The default video and cover to post."""
     f = media_files(folder)
-    return (os.path.join(folder, f["video"][0]) if f["video"] else None), (os.path.join(folder, f["image"][0]) if f["image"] else None)
+    v = f["video"][0] if f["video"] else None
+    return (f["abs"].get(v) or os.path.join(folder, v) if v else None), (os.path.join(folder, f["image"][0]) if f["image"] else None)
 
 
 # -------------------------------------------------------------------- posting
@@ -327,7 +369,7 @@ class Publisher:
     def payload(self, folder):
         f = media_files(folder)
         return {"accounts": self.accounts.summary(), "drafts": drafts(folder), "posted": self.record(folder),
-                "videos": f["video"], "covers": f["image"], "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
+                "videos": f["video"], "covers": f["image"], "linked": sorted(f["abs"]), "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
                 "busy": folder in self.busy}
 
     def start(self, folder, chosen, video_name="", cover_name="", when=None):
@@ -338,7 +380,7 @@ class Publisher:
         if video_name:
             if video_name not in files["video"]:
                 raise PostError("that video is not in this folder")
-            video = os.path.join(folder, video_name)
+            video = files["abs"].get(video_name) or os.path.join(folder, video_name)
         if cover_name:
             if cover_name not in files["image"]:
                 raise PostError("that thumbnail is not in this folder")
@@ -365,7 +407,7 @@ class Publisher:
             raise PostError(f"already posted or scheduled to {', '.join(again)}")
         if folder in self.busy:
             raise PostError("still posting this one")
-        rel = lambda path: os.path.relpath(path, folder).replace(os.sep, "/") if path else ""
+        rel = lambda path: (os.path.relpath(path, folder).replace(os.sep, "/") if os.path.dirname(os.path.abspath(path)).startswith(os.path.abspath(folder)) else os.path.relpath(path, office_root(folder) or folder).replace(os.sep, "/")) if path else ""
         self.busy.add(folder)
         for p in todo:
             self.note(folder, p, state="waiting", error="", warning="", when=when or 0, job=None, link=done.get(p, {}).get("link", ""),
@@ -449,6 +491,8 @@ class Publisher:
                 self.note(folder, p, state="posting", job=None)
                 try:
                     video = os.path.join(folder, job["video"])
+                    if not os.path.isfile(video) and office_root(folder):
+                        video = os.path.join(office_root(folder), job["video"])
                     cover = os.path.join(folder, job["cover"]) if job.get("cover") else None
                     link, extra = getattr(self, "post_" + p)(video, cover, job["text"], None)
                     late = now - e["when"] > 15 * 60

@@ -1147,6 +1147,15 @@
     let h = `<div class="rv-sec pub"><div class="rv-h">Posting overview <span>prepared by Social</span><button class="rv-copy" data-rv-accounts type="button">Accounts</button></div>`;
     if (targets.length > 1) h += `<div class="pub-h">Topic <span>each topic is its own post</span></div><div class="rv-chips">${targets.map((t) => `<button class="rv-chip ${t === sub ? "on" : ""}" data-pub-pick="topic" data-pub-val="${esc(t)}" type="button">${esc(prettyName(t || "main"))}</button>`).join("")}</div>`;
     if (plan) h += `<div class="md pub-plan">${mdHtml(plan.body)}</div>`;
+    // the final check: the three parts of the post, each ticked when it is there, and the video itself to play
+    const vf = vSel ? fileOf(vSel) : null, vUrl = vf ? vf.url : vSel && (p.linked || []).includes(vSel) ? "/files/" + vSel.split("/").map(encodeURIComponent).join("/") : "";
+    const cf = cSel ? fileOf(cSel) : null, capText = opts.length ? ((opts[cap] || opts[0]).caption || (opts[cap] || opts[0]).title || "") : "";
+    const ready = { video: !!vUrl, thumb: !!cf, caption: !!String(capText).trim() };
+    rv.ready = ready.video && ready.thumb && ready.caption;
+    const tick = (ok, label, what) => `<span class="fin-item ${ok ? "ok" : "no"}">${ok ? svg("check") : "!"}<b>${label}</b><span>${esc(what)}</span></span>`;
+    h += `<div class="pub-final ${rv.ready ? "ready" : ""}"><div class="fin-h">${rv.ready ? "Final · ready to post" : "Final · not ready yet"}</div>
+      <div class="fin-items">${tick(ready.video, "Video", ready.video ? prettyName(vSel) : "missing")}${tick(ready.thumb, "Thumbnail", ready.thumb ? prettyName(cSel) : "missing")}${tick(ready.caption, "Caption", ready.caption ? "option " + (cap + 1) : "missing")}</div>
+      ${vUrl ? `<video class="fin-video" src="${esc(vUrl)}" ${cf ? `poster="${esc(cf.url)}"` : ""} controls playsinline preload="metadata"></video>` : ""}</div>`;
     // 1. the thumbnail: one for every platform
     const covers = (p.covers || []).map((n) => ({ n, f: fileOf(n) })).filter((x) => x.f);
     if (covers.length) h += `<div class="pub-h">1 · Thumbnail <span>${covers.length > 1 ? "tap the one you want, it goes on every platform" : "used on every platform"}</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<button class="pub-thumb ${n === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(f.url)}" alt="" loading="lazy">${n === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
@@ -1347,7 +1356,7 @@
     if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence" required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
     else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
     else {
-      const n = chosenPub().length, busyPub = rv.pub && rv.pub.busy;
+      const n = rv.ready === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
       const verb = rv.whenOn ? "schedule" : "post";
       const postBtn = n ? `<button class="btn primary" data-rv-approve="post" type="button">${area === "approved" ? (rv.whenOn ? "Schedule" : "Post now") : `Approve &amp; ${verb}`} (${n})</button>` : "";
       html += `<div class="rv-actions">${canApprove ? `<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button><button class="btn ${n ? "" : "primary"}" data-rv-approve type="button">Approve${n ? " only" : ""}</button>${postBtn}`
