@@ -76,10 +76,11 @@ class SermonDesignBridge:
     def _request(self, method, route, data=None, headers=None):
         if self.request_impl:
             return self.request_impl(method, route, data, headers or {})
-        probe = route.split("?", 1)[0] in ("/api/runtime", BASE + "/capabilities")
+        endpoint = route.split("?", 1)[0]
         watch = route.startswith(BASE + "/jobs/") and method == "GET"
         metadata = method == "GET" and bool(re.fullmatch(BASE + r"/projects/" + ID + r"(?:\?revision=\d+)?", route))
-        conn = http.client.HTTPConnection(ENGINE_HOST, ENGINE_PORT, timeout=3 if probe else 5 if watch or metadata else 300)
+        timeout = 20 if endpoint == BASE + "/capabilities" else 3 if endpoint == "/api/runtime" else 5 if watch or metadata else 300
+        conn = http.client.HTTPConnection(ENGINE_HOST, ENGINE_PORT, timeout=timeout)
         try:
             conn.request(method, route, body=data, headers=headers or {})
             response = conn.getresponse()
@@ -111,7 +112,9 @@ class SermonDesignBridge:
                 raise ValueError()
         except ValueError:
             capabilities = {}
-        if code != 200 or capabilities.get("dimensions", {}).get("title") != [3840, 2160]:
+        providers = capabilities.get("providers", [])
+        has_codex = isinstance(providers, list) and any(isinstance(item, dict) and item.get("id") == "codex" for item in providers)
+        if code != 200 or capabilities.get("dimensions", {}).get("title") != [3840, 2160] or capabilities.get("defaultProvider") != "codex" or not has_codex:
             raise DesignError("The design engine needs its prepared update activated. The existing service was left unchanged.")
 
     def ensure_engine(self):

@@ -703,7 +703,7 @@
       const today = tasks.filter((x) => isToday(x.created) || isToday(x.updated) || isToday(x.done_at) || x.status === "doing" || x.status === "review").length;
       const tools = t.tools || [], live = tools.filter((x) => x.status === "connected").length;
       const skills = (t.skills || []).map((s) => ({ ...s, ...skillState(t, s, run) })), par = skills.filter((s) => s.on).length;
-      const designTools = t.key === "creative" ? `<div class="sec"><span>Design Studio</span><span class="cnt">Editable artwork</span></div><div class="hint">Sermon titles and matching RedNote recaps. Separate full-resolution files arrive here for your review.</div><div class="row" style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px"><button class="btn blue" type="button" data-sermon-studio="title">✦ Sermon Title 16:9</button><button class="btn" type="button" data-sermon-studio="xhs">XHS Sermon Recap Pro</button></div>` : "";
+      const designTools = t.key === "creative" ? `<div class="sec"><span>Design Studio / 设计</span><span class="cnt">4 separate options</span></div><div class="hint">中文 + English titles, add a reference, then generate four designs. Finished files return here for your OK.</div><div class="row" style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px"><button class="btn blue" type="button" data-sermon-studio="title">✦ Create sermon poster / 讲道海报</button><button class="btn" type="button" data-sermon-studio="xhs">XHS Sermon Recap Pro</button></div>` : "";
       body = designTools + `<div class="tiles">
           <div class="tile"><div class="k">Tasks today</div><div class="v">${today}</div>${sparkline(series(t.key, "up", today), "#7d7dbd")}</div>
           <div class="tile"><div class="k">Running</div><div class="v">${runningN}</div>${sparkline(series(t.key, "flat", runningN), "#349282")}</div>
@@ -972,7 +972,7 @@
     // agent's normal Ask prefix is routing metadata, not part of the brief.
     const text = String(prompt || "").trim().replace(/^Ask [a-z0-9_-]+:\s*/i, "");
     const lines = text.split(/\r?\n/), trigger = (lines.shift() || "").trim();
-    const title = /^Sermon Title 16\s*:\s*9$/i.test(trigger);
+    const title = /^Sermon Title 16\s*:\s*9$/i.test(trigger) || /^(?:Sermon\s+Poster|Create\s+sermon\s+poster|制作讲道海报)$/i.test(trigger);
     if (!title && !/^XHS Sermon Recap Pro$/i.test(trigger)) return null;
     const query = new URLSearchParams({ mode: title ? "title" : "recap" });
     const other = [];
@@ -1397,6 +1397,25 @@
     const parts = String(text || "").replace(/\r/g, "").split(/\n(?=##\s)/);
     return parts.map((p) => { const m = /^##\s+(.*)\n?([\s\S]*)$/.exec(p.trim()); return m ? { title: m[1].trim(), body: m[2].trim() } : { title: "", body: p.replace(/^#\s+.*\n?/, "").trim() }; }).filter((s) => s.body);
   }
+  function reviewArtworkFiles(files, folder) {
+    const native = /^(?:out|approved)\/sermon-studio-[A-Za-z0-9][A-Za-z0-9_-]{0,99}-r\d+-a\d+$/.test(folder || "");
+    const images = files.filter(file => file.kind === "image");
+    if (!native) return { native: false, images: images.sort((a, b) => (/cover/i.test(b.name) - /cover/i.test(a.name)) || a.path.localeCompare(b.path)), alternatives: {} };
+    const groups = new Map();
+    for (const file of images) {
+      const match = /^(Sermon_Title_Design_0[1-4]|XHS_Sermon_Main|XHS_Sermon_Recap_Cover)\.(png|jpe?g)$/i.exec(String(file.path || ""));
+      if (!match) continue; // assets/, background images and other sources stay collapsed.
+      const key = match[1].toLowerCase();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(file);
+    }
+    const primary = [], alternatives = {};
+    for (const [, options] of Array.from(groups).sort(([a], [b]) => a.localeCompare(b))) {
+      const image = options.find(file => /\.png$/i.test(file.path)) || options[0];
+      primary.push(image); alternatives[image.path] = options.filter(file => file !== image);
+    }
+    return { native: true, images: primary, alternatives };
+  }
   function renderReview() {
     const host = $("#review"); if (!host || !rv.open) return;
     if (rv.accounts) { host.innerHTML = accountsCard(); return; }
@@ -1406,7 +1425,7 @@
     const files = (rv.data && rv.data.files) || [], loading = rv.folder && !rv.data;
     const rank = (f) => (/^(edit|final|reel)\b/i.test(f.name) ? 0 : /clean|nocap|no-captions/i.test(f.name) ? 2 : /^cut/i.test(f.name) ? 3 : 1);
     const vids = files.filter((f) => f.kind === "video").sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
-    const imgs = files.filter((f) => f.kind === "image").sort((a, b) => (/cover/i.test(b.name) - /cover/i.test(a.name)) || a.path.localeCompare(b.path));
+    const artwork = reviewArtworkFiles(files, rv.folder), imgs = artwork.images;
     const byName = (re) => files.find((f) => f.kind === "text" && re.test(f.name) && f.text != null);
     const post = byName(/^post\.md$/i), notes = byName(/^notes\.md$/i), plan = byName(/^plan\.md$/i), srt = byName(/\.srt$/i);
     const shown = new Set([post, notes, plan, srt].filter(Boolean).map((f) => f.path));
@@ -1426,7 +1445,13 @@
       if (vids.length > 1) html += `<div class="rv-chips">${vids.map((x, i) => `<button class="rv-chip ${x === v ? "on" : ""}" data-rv-vid="${i}" type="button">${svg("play")}${esc(prettyName(x.path))}</button>`).join("")}</div>`;
       html += "</div>";
     }
-    if (imgs.length) html += `<div class="rv-sec"><div class="rv-h">Covers and images <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`).join("")}</div></div>`;
+    if (imgs.length) html += `<div class="rv-sec"><div class="rv-h">${artwork.native ? "Finished artwork" : "Covers and images"} <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => {
+      if (!artwork.native) return `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`;
+      const options = [i, ...(artwork.alternatives[i.path] || [])];
+      const ratio = /^XHS_/i.test(i.path) ? "3 / 4" : "16 / 9";
+      return `<div><button class="rv-img" style="width:100%" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="${esc(prettyName(i.path))}" style="aspect-ratio:${ratio};object-fit:contain" loading="lazy"><span>${esc(prettyName(i.path))}</span></button><div style="display:flex;flex-wrap:wrap;gap:12px;padding:2px 4px">${options.map(file => `<a class="rv-dl" href="${esc(file.url)}" download="${esc(file.name)}">↓ ${/\.png$/i.test(file.path) ? "PNG" : "JPG"}</a>`).join("")}</div></div>`;
+    }).join("")}</div></div>`;
+    else if (artwork.native && !loading && files.length) html += '<div class="rv-sec"><div class="rv-empty">No finished artwork was found in this delivery. Supporting files are available below.</div></div>';
     html += pubSection();
     if (post) {
       // with the posting overview above, only what you post by hand is left here (TikTok, the pinned comment)

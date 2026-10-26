@@ -59,7 +59,7 @@ class BridgeTests(unittest.TestCase):
         if route == "/api/runtime":
             payload = {"app": "sermon-design-engine", "workspaceRoot": str(self.bridge.runtime_root), "sourceRoot": str(self.engine)}
         elif route == BASE + "/capabilities":
-            payload = {"dimensions": {"title": [3840, 2160]}}
+            payload = {"dimensions": {"title": [3840, 2160]}, "providers": [{"id": "codex", "configured": False}, {"id": "openai-api", "configured": False}], "defaultProvider": "codex"}
         else:
             payload = copy.deepcopy(self.reply)
         return 200, {"Content-Type": "application/json"}, json.dumps(payload).encode()
@@ -315,6 +315,33 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(DesignError, "different or unrecognized"):
                 self.bridge.ensure_engine()
             launch.assert_not_called()
+    def test_probe_requires_codex_default_and_keeps_service_unchanged(self):
+        original = self.upstream
+        for capabilities in [
+            {"dimensions": {"title": [3840, 2160]}},
+            {"dimensions": {"title": [3840, 2160]}, "defaultProvider": "openai-api", "providers": [{"id": "codex"}]},
+            {"dimensions": {"title": [3840, 2160]}, "defaultProvider": "codex", "providers": [{"id": "openai-api"}]},
+        ]:
+            def stale(method, route, data, headers):
+                if route == BASE + "/capabilities":
+                    return 200, {}, json.dumps(capabilities).encode()
+                return original(method, route, data, headers)
+            self.bridge.request_impl = stale
+            with self.subTest(capabilities=capabilities), mock.patch("sermon_design.subprocess.Popen") as launch:
+                with self.assertRaisesRegex(DesignError, "prepared update"):
+                    self.bridge._probe()
+                launch.assert_not_called()
+    def test_capability_probe_allows_codex_signin_time_without_slowing_runtime_probe(self):
+        self.bridge.request_impl = None
+        with mock.patch("sermon_design.http.client.HTTPConnection") as connection:
+            response = connection.return_value.getresponse.return_value
+            response.status = 200; response.read.return_value = b"{}"
+            response.getheader.return_value = "application/json"
+            response.getheaders.return_value = [("Content-Type", "application/json")]
+            self.bridge._request("GET", "/api/runtime")
+            self.assertEqual(connection.call_args.kwargs["timeout"], 3)
+            self.bridge._request("GET", BASE + "/capabilities")
+            self.assertEqual(connection.call_args.kwargs["timeout"], 20)
     def test_down_engine_starts_only_fixed_installed_node_script(self):
         (self.engine / "studio").mkdir(); (self.engine / "studio" / "sermon-design-server.mjs").write_text("// fixture")
         original = self.bridge.request_impl
