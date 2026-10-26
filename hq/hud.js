@@ -897,12 +897,13 @@
     } else log(ev.type || "system", ev.text || "");
     subsCache.t = 0; renderTopbar(); renderTeamCards(); renderAgentPills(); renderSubCards(); syncSubagents();
   }
-  function attach(id, quiet) { state.run.id = id; state.run.offset = 0; state.run.quiet = !!quiet; state.run.seen.add(id); $("#lead-log").classList.add("busy"); poll(); }
+  function attach(id, quiet) { state.run.id = id; state.run.offset = 0; state.run.said = false; state.run.quiet = !!quiet; state.run.seen.add(id); $("#lead-log").classList.add("busy"); poll(); }
   async function poll() {
     if (!state.run.id) return;
     try {
       const r = await getJSON(`/api/runs/${state.run.id}?after=${state.run.offset}`);
-      if (state.run.offset === 0 && r.prompt) { log("you", "you: " + r.prompt); $("#lead-text").textContent = "Lead · working: " + shortTask(r.prompt, 60); }
+      // print "you: …" once per run: Claude can take a minute to start, and this poll repeats meanwhile
+      if (!state.run.said && r.prompt) { state.run.said = true; log("you", "you: " + r.prompt); $("#lead-text").textContent = "Lead · working: " + shortTask(r.prompt, 60); }
       (r.events || []).forEach(handle); state.run.offset = (r.offset || 0) + (r.events || []).length;
       if (!r.done) return setTimeout(poll, 800);
       state.run.id = null; refresh();
