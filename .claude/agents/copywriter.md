@@ -4,7 +4,7 @@ description: Writes product listings, landing-page and bio copy, and the post co
 team: Shop
 role: worker
 tools: Read, Write, mcp__memory__open_nodes
-model: sonnet
+model: claude-opus-5-5
 color: yellow
 skills:
   - relay

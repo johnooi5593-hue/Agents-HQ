@@ -8,7 +8,7 @@ Built from Bekhruz AI's "Build Your AI Team" videos: [I Built an AI Agent Team F
 
 ## The office
 
-| Team | Head (Opus) | Workers (Sonnet) |
+| Team | Head | Workers |
 |---|---|---|
 | The Brain | the chief of staff (your Claude Code session) | the shared memory everyone reads |
 | Research | research-director | market-analyst, competitor-analyst, trend-scout |

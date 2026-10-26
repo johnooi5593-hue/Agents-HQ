@@ -4,7 +4,7 @@ description: Head of Scripts. Writes short-video and YouTube scripts in the owne
 team: Scripts
 role: head
 tools: Read, Write, mcp__memory__open_nodes
-model: opus
+model: claude-opus-5-5
 color: cyan
 skills:
   - quill

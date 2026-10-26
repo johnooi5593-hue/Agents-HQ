@@ -4,7 +4,7 @@ description: Cleans exported data, computes the metrics and trends, shows the wo
 team: Analytics
 role: worker
 tools: Bash, Read, Write, mcp__memory__open_nodes, mcp__memory__create_entities, mcp__memory__add_observations
-model: sonnet
+model: claude-opus-5-5
 color: red
 skills:
   - pulse

@@ -4,7 +4,7 @@ description: Finds what changed in the last 30 to 90 days in a niche, and turns 
 team: Research
 role: worker
 tools: Bash, Read, Write, WebSearch, WebFetch, mcp__memory__open_nodes, mcp__memory__create_entities, mcp__memory__add_observations
-model: sonnet
+model: claude-opus-5-5
 color: blue
 skills:
   - radar

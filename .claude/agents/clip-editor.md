@@ -4,7 +4,7 @@ description: Edits ONE raw clip from inbox/ into a short vertical video with bur
 team: Creative
 role: worker
 tools: Bash, Read, Write, mcp__memory__open_nodes, mcp__memory__search_nodes
-model: sonnet
+model: claude-opus-5-5
 color: yellow
 skills:
   - reel

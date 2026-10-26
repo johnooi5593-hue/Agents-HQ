@@ -6,7 +6,7 @@ Modelled on Bekhruz AI's "Build Your AI Team" series: the agent team, the 31-age
 
 ## Teams (every agent is a file in `.claude/agents/`)
 
-| Team | Head (plans, merges, reviews; Opus) | Workers (one job each; Sonnet) |
+| Team | Head (plans, merges, reviews) | Workers (one job each) |
 |---|---|---|
 | The Brain (lobby) | you, the chief of staff | the shared memory everyone reads |
 | Research | `research-director` | `market-analyst`, `competitor-analyst`, `trend-scout` |
@@ -19,6 +19,9 @@ Modelled on Bekhruz AI's "Build Your AI Team" series: the agent team, the 31-age
 | Analytics | `analytics-lead` | `data-analyst`, `strategist` |
 
 The full org chart with every agent's job is `docs/office.md`. The skills in `.claude/skills/` (reel, pixel, quill, radar, relay, pulse, yellow-serif) hold the creative know-how; the agents that need one preload it. The owner's default caption style is **Yellow Serif Kinetic** (skill `yellow-serif`, guide in `.claude/skills/yellow-serif/GUIDE.md`); the older word-by-word captions (reel) only when the owner asks for them.
+
+## Models
+Everyone runs on **Opus 5.5** (`claude-opus-5-5`): you, the heads and the workers. Use **Fable** (`claude-fable-5-1`) only when the owner asks for it ("use Fable", "fable: …"); then pass `model: "fable"` to every sub-agent you start for that request, and go back to Opus 5.5 afterwards.
 
 ## How work flows
 1. **Route.** Read the request and the brain, decide which team owns it. A small single-skill task goes straight to the worker. Anything with several steps goes through the team head.

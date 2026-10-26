@@ -656,6 +656,17 @@ def translate(obj):
     return []
 
 
+DEFAULT_MODEL = os.environ.get("HQ_MODEL", "claude-opus-5-5")
+FABLE_MODEL = os.environ.get("HQ_FABLE_MODEL", "claude-fable-5-1")
+FABLE_ASK = re.compile(r"\b(use|with|on|switch to)\s+fable\b|^\s*fable\s*[:,]|^\s*/fable\b|用\s*fable", re.I)
+
+
+def model_for(prompt):
+    """The office runs on Opus 5.5. Fable only when the owner asks for it in the message ("use Fable…", "fable: …",
+    "/fable …"); that one run, and the sub-agents it starts, use Fable."""
+    return FABLE_MODEL if FABLE_ASK.search(prompt or "") else DEFAULT_MODEL
+
+
 class Run:
     def __init__(self, prompt):
         self.id, self.prompt, self.events, self.done, self.ok = uuid.uuid4().hex[:8], prompt, [], False, None
@@ -686,7 +697,7 @@ class Desk:
 
     def _work(self, run):
         for attempt in (1, 2):
-            cmd = [CLAUDE, "-p", run.prompt, "--output-format", "stream-json", "--verbose"]
+            cmd = [CLAUDE, "-p", run.prompt, "--output-format", "stream-json", "--verbose", "--model", model_for(run.prompt)]
             allowed = allow_list()
             if allowed:
                 cmd += ["--allowedTools", *allowed]

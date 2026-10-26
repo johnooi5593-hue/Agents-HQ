@@ -4,7 +4,7 @@ description: Picks the frame, the words and the placement for a cover image and 
 team: Creative
 role: worker
 tools: Bash, Read, Write, mcp__memory__open_nodes
-model: sonnet
+model: claude-opus-5-5
 color: purple
 skills:
   - pixel

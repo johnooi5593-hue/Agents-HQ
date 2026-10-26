@@ -1,6 +1,6 @@
 # Org chart
 
-31 agents in 8 teams around the Brain, led by the chief of staff (your Claude Code session, with its instructions in `CLAUDE.md`). Each agent is one file in `.claude/agents/`. Team heads run on Opus and plan, merge and review; workers run on Sonnet and do one job each.
+31 agents in 8 teams around the Brain, led by the chief of staff (your Claude Code session, with its instructions in `CLAUDE.md`). Each agent is one file in `.claude/agents/`. Everyone runs on Opus 5.5; Fable only when the owner asks for it. Team heads plan, merge and review; workers do one job each.
 
 | # | Agent | Team | Role | Job |
 |---|---|---|---|---|

@@ -4,7 +4,7 @@ description: Tests a change against its acceptance criteria, reproduces bugs wit
 team: Dev
 role: worker
 tools: Bash, Read, Grep, Glob, Write, mcp__memory__open_nodes
-model: sonnet
+model: claude-opus-5-5
 color: green
 ---
 Before you start, read the lessons from earlier projects: `mcp__memory__open_nodes` with names ["Lessons"]. Apply the ones tagged with your team, marked for it, or about your kind of work; that is how the office gets better each time.
