@@ -32,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from status import CLIP_EXT, brain_entities, brain_notes, collect  # noqa: E402
+import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
 
@@ -353,6 +354,60 @@ def post_finished(folder, task_id, states):
 
 
 publisher = publish.Publisher(ROOT, accounts, on_schedule=post_scheduled, on_finish=post_finished)
+BRAIN_LOCK = threading.Lock()
+
+
+def brain_add(name, kind, observations):
+    """A new entity in the brain (a new channel's Company and Brand rules); an existing one is left as it is."""
+    path = os.path.join(ROOT, "brain", "memory.jsonl")
+    with BRAIN_LOCK:
+        if name in brain_entities():
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a+", encoding="utf-8") as f:
+            f.seek(0)
+            text = f.read()
+            if text and not text.endswith("\n"):
+                f.write("\n")
+            f.write(json.dumps({"type": "entity", "name": name, "entityType": kind, "observations": observations}, ensure_ascii=False) + "\n")
+
+
+channels = channels_mod.Channels(ROOT, add_task=lambda **t: task_action({"action": "add", **t}), add_brain=brain_add)
+
+
+def channels_action(body):
+    """POST /api/channels: add a channel, or set a channel's Drive folder (and the main channel's name)."""
+    try:
+        if body.get("action") == "add":
+            key = channels.add(body.get("name"), body.get("about"), body.get("drive"))
+            return 201, {"added": key, **channels.payload()}
+        if body.get("action") == "update":
+            channels.update(str(body.get("key") or ""), body.get("name"), body.get("drive"))
+            return 200, channels.payload()
+        if body.get("action") == "scan":
+            return 200, {"imported": channels.scan(), **channels.payload()}
+    except ValueError as e:
+        return 400, {"error": str(e)}
+    return 400, {"error": "action: add (name, about?, drive?), update (key, drive?, name?) or scan"}
+
+
+FOOTAGE = re.compile(r"inbox:(inbox/.+?)\s*$", re.M)                 # the path is the rest of the line: it may hold spaces
+
+
+def task_footage(task):
+    """New footage waiting in the inbox: (its path, its channel key), or None once it was edited (moved to done/)."""
+    m = FOOTAGE.search(task.get("note") or "")
+    if not m:
+        return None
+    path = safe_join(ROOT, m[1])
+    ch = re.search(r"channel:([a-z0-9-]+)", task.get("note") or "")
+    return (m[1], ch[1] if ch else "") if path and os.path.isfile(path) else None
+
+
+def edit_prompt(rel, ch, task_id):
+    """The lead's instruction for the Edit button: edit-clips for that one video, for its channel."""
+    who = f" Channel: {channels.name(ch)} (key {ch}); its brain entities are " + " and ".join(f'"{n}"' for n in channels.brain_names(ch)) + "." if ch else ""
+    return f'/edit-clips "{rel}"{who} Board task {task_id} is this video\'s New footage task.'
 
 
 def approved_dir(folder, areas=("approved",)):
@@ -364,17 +419,19 @@ def approved_dir(folder, areas=("approved",)):
 
 
 def accounts_action(body, redirect):
-    """POST /api/accounts: connect Meta, start the YouTube sign-in, or disconnect. Returns (http code, payload)."""
-    act = body.get("action")
+    """POST /api/accounts: connect Meta, start the YouTube sign-in, or disconnect, for one channel. Returns (http code, payload)."""
+    act, ch = body.get("action"), str(body.get("channel") or "")
+    if ch and not channels.get(ch):
+        return 404, {"error": "no such channel"}
     try:
         if act == "meta":
-            r = accounts.connect_meta(body.get("app_id"), body.get("app_secret"), body.get("token"), body.get("page"))
-            return 200, {**r, "accounts": accounts.summary()}
+            r = accounts.connect_meta(body.get("app_id"), body.get("app_secret"), body.get("token"), body.get("page"), ch)
+            return 200, {**r, "accounts": accounts.summary(ch)}
         if act == "youtube":
-            return 200, {"url": accounts.youtube_begin(body.get("client_json"), redirect)}
+            return 200, {"url": accounts.youtube_begin(body.get("client_json"), redirect, ch)}
         if act == "disconnect" and body.get("which") in ("meta", "youtube"):
-            accounts.disconnect(body["which"])
-            return 200, {"accounts": accounts.summary()}
+            accounts.disconnect(body["which"], ch)
+            return 200, {"accounts": accounts.summary(ch)}
     except publish.PostError as e:
         return 400, {"error": str(e)}
     return 400, {"error": "unknown action"}
@@ -418,6 +475,15 @@ def task_action(body):
             if warning:
                 out["warning"] = warning
             return 200, out
+        if action == "edit":                        # the owner's Edit button on a "New footage" task
+            got = task_footage(task) if task else None
+            if not got:
+                return 404, {"error": "that video is no longer waiting in the inbox"}
+            run = desk.start(edit_prompt(*got, task["id"]))
+            if not run:
+                return 409, {"error": "the lead is still working on the previous message; try again when it is done"}
+            set_status(task, "doing"); save_tasks(db)
+            return 202, {"editing": task, "run": run.summary()}
         if action == "progress":
             if not task:
                 return 404, {"error": "no such task"}
@@ -571,6 +637,7 @@ def status_payload():
     ag, running, tasks = agents()["agents"], events()["running"], load_tasks()["tasks"]
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
         t["final"] = task_final(t)
+        t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
     s["update"] = dict(UPDATE)
     s["brain_notes"] = sum(s.get("brain", {}).values())
@@ -1232,10 +1299,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/chatter":
             return self.send_json(chatter_payload())
         if path == "/api/accounts":
-            return self.send_json(accounts.summary())
+            return self.send_json(accounts.summary(qs.get("channel", [""])[0]))
+        if path == "/api/channels":
+            return self.send_json(channels.payload())
         if path == "/api/publish":                         # the posting overview: also for work still waiting for the OK
             d = approved_dir(qs.get("folder", [""])[0], ("approved", "out"))
-            return self.send_json(publisher.payload(d)) if d else self.send_json({"error": "no such work folder"}, 404)
+            if not d:
+                return self.send_json({"error": "no such work folder"}, 404)
+            pl = publisher.payload(d)
+            return self.send_json({**pl, "channel_name": channels.name(pl["channel"])})
         if path == "/api/brain/notes":
             return self.send_json({"notes": brain_notes()})
         if path == "/api/runs":
@@ -1307,6 +1379,9 @@ class Handler(BaseHTTPRequestHandler):
             except publish.PostError as e:
                 return self.send_json({"error": str(e)}, 400)
             return self.send_json({"started": started, **publisher.payload(d)}, 202)
+        if path == "/api/channels":
+            code, payload = channels_action(self.read_json())
+            return self.send_json(payload, code)
         if path == "/api/approve":
             name = self.read_json().get("name") or ""
             code, payload = approve_folder(name if isinstance(name, str) else "")
@@ -1363,6 +1438,7 @@ def main():
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     followups.start()                    # also resends a follow-up queued before a restart
     publisher.run_scheduler()            # scheduled Instagram posts go out on time (or as soon as HQ runs again)
+    channels.run_watcher()               # new videos in each channel's Google Drive folder become "New footage" tasks
     url = f"http://localhost:{PORT}"
     print(f"Agents HQ is open at {url}   (Ctrl+C to close)" + ("   login required" if PASSWORD else ""))
     if "--no-browser" not in sys.argv:

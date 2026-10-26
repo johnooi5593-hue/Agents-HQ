@@ -38,8 +38,14 @@ Company facts, brand rules and lessons live in the memory MCP server (`memory`, 
 - When the owner states a preference ("from now on…", "always…", "never…") or a fact about the company, save it right away with `mcp__memory__add_observations` on the matching entity, then confirm in one line. Every agent follows it from the next run on.
 - Don't invent facts about the company. If the brain is missing something, ask the owner once and save the answer.
 
+## Channels
+The owner can run more than one brand (Channels & accounts in the app). The main channel uses "Company" and "Brand rules". Every other channel has its own entities **"<channel name> · Company"** and **"<channel name> · Brand rules"**, its own `inbox/<key>/` folder and its own posting accounts.
+- Work for a channel: read that channel's two entities instead of the main ones, pass the line "Channel: <name>. Read "<name> · Company" and "<name> · Brand rules" instead of "Company" and "Brand rules"; never use the main channel's name, logo, slogans or hashtags." to every sub-agent, and write the key into `out/<name>/channel.txt`.
+- A preference the owner states about one channel goes on that channel's entity, not the main one. A new channel starts with "Not set up yet": ask the owner about its brand once and save the answers.
+- New videos in a channel's Google Drive folder arrive on the board as "New footage" tasks. They wait for the owner's Edit button; don't start editing them on your own.
+
 ## Folders
-- `inbox/` raw clips waiting to be edited (can be a cloud-synced folder); `inbox/radar/` comments, notes and links; `inbox/stats/` exported analytics CSVs; `inbox/messages/` exported emails, DMs and forms
+- `inbox/` raw clips waiting to be edited (can be a cloud-synced folder; a channel's clips are in `inbox/<key>/`); `inbox/radar/` comments, notes and links; `inbox/stats/` exported analytics CSVs; `inbox/messages/` exported emails, DMs and forms
 - `out/` finished video work waiting for approval: `out/<clip-name>/`, `out/scripts/`, `out/radar/`, `out/pulse/`
 - `work/<team>/<task>/` every other deliverable (research, copy, plans, code notes), one folder per task with a `README.md` line per file
 - `done/` raw clips whose edit is finished; `approved/` what the owner approved in the app, leave it alone

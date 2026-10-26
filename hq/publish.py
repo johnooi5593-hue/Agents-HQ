@@ -15,6 +15,8 @@ Stdlib only. Every post writes approved/<name>/posted.json as it goes, so the ap
 """
 import json, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
+from channels import folder_channel
+
 GRAPH = "https://graph.facebook.com/v23.0"
 YT_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
 PLATFORMS = ("facebook", "instagram", "youtube")
@@ -106,9 +108,21 @@ class Accounts:
             json.dump(data, f, indent=1)
         os.replace(tmp, self.path)
 
-    def summary(self):
+    @staticmethod
+    def section(a, channel=""):
+        """The accounts of one channel inside the file: the main channel at the top level, the others under "channels"."""
+        return a if not channel else (a.get("channels") or {}).get(channel) or {}
+
+    @staticmethod
+    def slot(a, channel=""):
+        return a if not channel else a.setdefault("channels", {}).setdefault(channel, {})
+
+    def get(self, kind, channel=""):
+        return self.section(self.load(), channel).get(kind) or {}
+
+    def summary(self, channel=""):
         """What the app may show: names only, never a token."""
-        a = self.load()
+        a = self.section(self.load(), channel)
         m, y = a.get("meta") or {}, a.get("youtube") or {}
         return {
             "facebook": {"connected": bool(m.get("page_token")), "name": m.get("page_name", "")},
@@ -118,8 +132,11 @@ class Accounts:
         }
 
     # ---------------------------------------------------------------- Meta
-    def connect_meta(self, app_id, app_secret, user_token, page=""):
+    def connect_meta(self, app_id, app_secret, user_token, page="", channel=""):
         app_id, app_secret, user_token = (str(x or "").strip() for x in (app_id, app_secret, user_token))
+        if not (app_id and app_secret):                     # another channel may use the same Meta app: only a new token needed
+            known = self.get("meta", channel) or self.get("meta")
+            app_id, app_secret = app_id or known.get("app_id", ""), app_secret or known.get("app_secret", "")
         if not (app_id and app_secret and user_token):
             raise PostError("App ID, App secret and the token are all needed")
         _, _, j = http("GET", f"{GRAPH}/oauth/access_token?" + urllib.parse.urlencode(
@@ -144,17 +161,17 @@ class Accounts:
             pass
         with self.lock:
             a = self.load()
-            a["meta"] = {"app_id": app_id, "app_secret": app_secret, "user_token": long_user, "page_id": chosen["id"],
+            self.slot(a, channel)["meta"] = {"app_id": app_id, "app_secret": app_secret, "user_token": long_user, "page_id": chosen["id"],
                          "page_name": chosen.get("name", ""), "page_token": chosen["access_token"],
                          "ig_id": ig.get("id", ""), "ig_username": ig.get("username", ""), "at": int(time.time())}
             self.save(a)
         return {"page": chosen.get("name"), "pages": [p.get("name") for p in pages], "instagram": ig.get("username", ""), "missing": missing}
 
     # ---------------------------------------------------------------- YouTube
-    def youtube_begin(self, client_json, redirect):
-        """Start the Google sign-in. client_json: the downloaded client_secret.json (or its text). Returns the URL to open."""
-        a = self.load()
-        y = a.get("youtube") or {}
+    def youtube_begin(self, client_json, redirect, channel=""):
+        """Start the Google sign-in. client_json: the downloaded client_secret.json (or its text); without it the channel's
+        (or the main channel's) Google client is used again. Returns the URL to open."""
+        y = self.get("youtube", channel) or self.get("youtube")
         cid, csec = y.get("client_id"), y.get("client_secret")
         if client_json:
             try:
@@ -166,7 +183,7 @@ class Accounts:
         if not (cid and csec):
             raise PostError("paste the client_secret.json of a Desktop app OAuth client first")
         state = secrets.token_urlsafe(16)
-        self.pending = {state: (cid, csec, redirect, time.time())}
+        self.pending = {state: (cid, csec, redirect, time.time(), channel)}
         return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
             "client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": YT_SCOPES,
             "access_type": "offline", "prompt": "consent", "state": state})
@@ -175,7 +192,7 @@ class Accounts:
         got = self.pending.pop(state, None) if state else None
         if not got or time.time() - got[3] > 900:
             raise PostError("this sign-in link expired; press Connect YouTube again")
-        cid, csec, redirect, _ = got
+        cid, csec, redirect, _, channel = got
         _, _, j = http("POST", "https://oauth2.googleapis.com/token", data={
             "code": code, "client_id": cid, "client_secret": csec, "redirect_uri": redirect, "grant_type": "authorization_code"})
         if not j.get("refresh_token"):
@@ -189,22 +206,22 @@ class Accounts:
             pass
         with self.lock:
             a = self.load()
-            a["youtube"] = {"client_id": cid, "client_secret": csec, "refresh_token": j["refresh_token"], "channel": channel, "at": int(time.time())}
+            self.slot(a, channel)["youtube"] = {"client_id": cid, "client_secret": csec, "refresh_token": j["refresh_token"], "channel": channel, "at": int(time.time())}
             self.save(a)
         return channel
 
-    def youtube_token(self):
-        y = self.load().get("youtube") or {}
+    def youtube_token(self, channel=""):
+        y = self.get("youtube", channel)
         if not y.get("refresh_token"):
             raise PostError("YouTube is not connected")
         _, _, j = http("POST", "https://oauth2.googleapis.com/token", data={
             "client_id": y["client_id"], "client_secret": y["client_secret"], "refresh_token": y["refresh_token"], "grant_type": "refresh_token"})
         return j["access_token"]
 
-    def disconnect(self, which):
+    def disconnect(self, which, channel=""):
         with self.lock:
             a = self.load()
-            a.pop("meta" if which in ("meta", "facebook", "instagram") else which, None)
+            self.slot(a, channel).pop("meta" if which in ("meta", "facebook", "instagram") else which, None)
             self.save(a)
 
 
@@ -413,7 +430,7 @@ class Publisher:
 
     def payload(self, folder):
         f = media_files(folder)
-        return {"accounts": self.accounts.summary(), "drafts": drafts(folder), "posted": self.record(folder),
+        return {"accounts": self.accounts.summary(folder_channel(folder)), "channel": folder_channel(folder), "drafts": drafts(folder), "posted": self.record(folder),
                 "videos": f["video"], "covers": f["image"], "linked": sorted(f["abs"]), "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
                 "busy": folder in self.busy}
 
@@ -442,7 +459,8 @@ class Publisher:
                 raise PostError("pick a time at least 10 minutes from now")
             if ahead > SCHEDULE_MAX:
                 raise PostError("pick a time within the next 4 weeks")
-        summary = self.accounts.summary()
+        channel = folder_channel(folder)
+        summary = self.accounts.summary(channel)
         todo = [p for p in PLATFORMS if p in chosen and summary[p]["connected"]]
         if not todo:
             raise PostError("pick at least one connected account")
@@ -469,7 +487,7 @@ class Publisher:
                 return
             self.note(folder, p, state="posting" if not when else "uploading", error="")
             try:
-                link, extra = getattr(self, "post_" + p)(video, cover, chosen[p], when)
+                link, extra = getattr(self, "post_" + p)(video, cover, chosen[p], when, channel)
                 self.note(folder, p, state="scheduled" if when else "posted", link=link, error="", **extra)
             except Exception as e:                              # one platform failing never stops the others
                 self.note(folder, p, state="failed", error=str(e)[:400])
@@ -539,7 +557,7 @@ class Publisher:
                     if not os.path.isfile(video) and office_root(folder):
                         video = os.path.join(office_root(folder), job["video"])
                     cover = os.path.join(folder, job["cover"]) if job.get("cover") else None
-                    link, extra = getattr(self, "post_" + p)(video, cover, job["text"], None)
+                    link, extra = getattr(self, "post_" + p)(video, cover, job["text"], None, folder_channel(folder))
                     late = now - e["when"] > 15 * 60
                     self.note(folder, p, state="posted", link=link, error="",
                               warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late else ""), **extra)
@@ -558,8 +576,8 @@ class Publisher:
         threading.Thread(target=loop, daemon=True).start()
 
     # Facebook Page Reel: start → upload the file to rupload → finish (published)
-    def post_facebook(self, video, cover, text, when=None):
-        m = self.accounts.load().get("meta") or {}
+    def post_facebook(self, video, cover, text, when=None, channel=""):
+        m = self.accounts.get("meta", channel)
         tok, page = m["page_token"], m["page_id"]
         try:
             _, _, j = http("POST", f"{GRAPH}/{page}/video_reels", data={"upload_phase": "start", "access_token": tok})
@@ -633,10 +651,10 @@ class Publisher:
 
     # Instagram Reel: container (direct upload, or from a web address for apps without Facebook Login for Business)
     # → wait until processed → publish
-    def post_instagram(self, video, cover, text, when=None):
+    def post_instagram(self, video, cover, text, when=None, channel=""):
         ready = ig_ready(video)
         try:
-            return self.post_instagram_file(ready or video, cover, text)
+            return self.post_instagram_file(ready or video, cover, text, self.accounts.get("meta", channel))
         finally:
             if ready:
                 try:
@@ -705,8 +723,7 @@ class Publisher:
                 pass
         return out
 
-    def post_instagram_file(self, video, cover, text):
-        m = self.accounts.load().get("meta") or {}
+    def post_instagram_file(self, video, cover, text, m):
         tok, ig = m["page_token"], m["ig_id"]
         base = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
         parked, tried, extra = [], [], {}                      # the hidden Page copies; what was tried, for the error
@@ -743,8 +760,8 @@ class Publisher:
         return link, extra
 
     # YouTube Short: resumable upload (vertical and short is what makes it a Short), then the cover as thumbnail
-    def post_youtube(self, video, cover, text, when=None):
-        tok = self.accounts.youtube_token()
+    def post_youtube(self, video, cover, text, when=None, channel=""):
+        tok = self.accounts.youtube_token(channel)
         meta = {"snippet": {"title": text.get("title") or "Short", "description": text.get("description", ""), "categoryId": "22"},
                 "status": {"privacyStatus": text.get("privacy") if text.get("privacy") in ("public", "unlisted", "private") else "public",
                            "selfDeclaredMadeForKids": False}}

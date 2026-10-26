@@ -656,12 +656,13 @@
     if (t.status === "doing") { glyph = t.progress != null ? ring(t.progress) : '<span class="spin"></span>'; meta = t.subtitle || t.agent || "running"; act = t.progress != null ? "" : '<span class="chev">›</span>'; if (t.progress != null) { act = glyph; glyph = '<span class="spin"></span>'; } }
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : ""; }
     else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = t.subtitle || timeAgo(t.done_at || t.updated); act = '<span class="chev">›</span>'; }
-    else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
+    else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now">Edit</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
     const title = t.date && t.status !== "done" && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
     return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${tagPill(t.team)}${t.final ? '<span class="final-pill" title="Video, thumbnail and caption are all ready">✓ Final</span>' : ""}<span>${esc(meta)}</span></div></div><div class="act">${act}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
   }
   function taskDetail(t) {
     const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {}, top = m ? m[1].split("/")[0] : "";
+    if (t.footage && t.status === "todo") files.push(`<button class="btn sm blue" data-edit-footage="${esc(t.id)}" type="button">${svg("play")} Edit this video</button>`);
     if (m && st.out && st.out[top]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[top].files || []).length} files</button>`);
     else if (m && st.approved && st.approved[top]) files.push(`<button class="btn sm blue" data-rv-folder="approved/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open to post</button>`);
     const moves = ["todo", "doing", "review", "done"].filter((s) => s !== t.status).map((s) => `<button class="btn sm" data-move="${esc(t.id)}:${s}">${({ todo: "To do", doing: "Running", review: "Waiting", done: "Done" })[s]}</button>`).join("");
@@ -1054,12 +1055,12 @@
     }
     return host;
   }
-  async function openReview({ folder, taskId, accounts }) {
+  async function openReview({ folder, taskId, accounts, channel }) {
     const host = ensureReviewHost(), st = state.status || {};
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {} });
+      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {} });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1149,7 +1150,7 @@
     const plan = post ? postSections(post.text).find((x) => /^plan\b/i.test(x.title)) : null;
     const vSel = rv.pick.video || p.video, cSel = rv.pick.cover || p.cover, cap = rv.pick.caption || 0;
     const opts = (p.drafts && p.drafts.options) || [], targets = pubTargets(), on = chosenPub();
-    let h = `<div class="rv-sec pub"><div class="rv-h">Posting overview <span>prepared by Social</span><button class="rv-copy" data-rv-accounts type="button">Accounts</button></div>`;
+    let h = `<div class="rv-sec pub"><div class="rv-h">Posting overview <span>${p.channel ? "for " + esc(p.channel_name || p.channel) + " · " : ""}prepared by Social</span><button class="rv-copy" data-rv-accounts="${esc(p.channel || "")}" type="button">Accounts</button></div>`;
     if (targets.length > 1) h += `<div class="pub-h">Topic <span>each topic is its own post</span></div><div class="rv-chips">${targets.map((t) => `<button class="rv-chip ${t === sub ? "on" : ""}" data-pub-pick="topic" data-pub-val="${esc(t)}" type="button">${esc(prettyName(t || "main"))}</button>`).join("")}</div>`;
     if (plan) h += `<div class="md pub-plan">${mdHtml(plan.body)}</div>`;
     // the final check: the three parts of the post, each ticked when it is there, and the video itself to play
@@ -1180,7 +1181,7 @@
         : ["posting", "waiting", "uploading"].includes(done.state) ? `<span class="pub-run"><span class="spin"></span> ${({ posting: "Posting…", waiting: "Waiting…", uploading: "Uploading for the scheduled time…" })[done.state]}</span>` : "";
       h += `<div class="pub-row ${ticked ? "on" : ""}"><label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${ticked ? "checked" : ""} ${acc.connected ? "" : "disabled"}><b>${label}</b>
         <span class="pub-acc">${acc.connected ? esc(acc.name || "connected") : acc.problem ? esc(acc.problem) : "not connected"}</span></label>${st}`;
-      if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts type="button">Connect</button>`;
+      if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts="${esc(p.channel || "")}" type="button">Connect</button>`;
       if (done.warning) h += `<div class="pub-warn">${esc(done.warning)}</div>`;
       if (ticked && rv.pubEdit) h += k === "youtube"
         ? `<input class="pub-in" data-pub-field="youtube.title" maxlength="100" value="${esc(pubValue(k, "title"))}" placeholder="Title"><textarea class="pub-in" rows="3" data-pub-field="youtube.description" placeholder="Description">${esc(pubValue(k, "description"))}</textarea>`
@@ -1197,8 +1198,52 @@
   }
   // ---- accounts: connect Facebook + Instagram (one Meta app) and YouTube (one Google OAuth client), once
   async function loadAccounts() {
-    try { rv.acc = await getJSON("/api/accounts"); } catch (e) { rv.acc = { error: e.message }; }
+    try { rv.chans = (await getJSON("/api/channels")).channels; } catch (e) { rv.chans = rv.chans || []; }
+    if (rv.ch !== "+" && !(rv.chans || []).some((c) => c.key === rv.ch)) rv.ch = "";
+    if (rv.ch === "+") rv.acc = {};
+    else { try { rv.acc = await getJSON("/api/accounts?channel=" + encodeURIComponent(rv.ch)); } catch (e) { rv.acc = { error: e.message }; } }
     if (rv.open && rv.accounts) renderReview();
+  }
+  function pickChannel(key) { rv.ch = key; rv.acc = null; renderReview(); loadAccounts(); }
+  // ---- channels: each brand with its own brain, its own accounts and its own Google Drive folder for raw footage
+  async function channelAction(what) {
+    const v = (id) => { const x = $("#" + id); return x ? x.value.trim() : ""; };
+    const body = what === "add" ? { action: "add", name: v("ch-name"), about: v("ch-about"), drive: v("ch-drive") }
+      : what === "scan" ? { action: "scan" } : { action: "update", key: rv.ch, drive: v("ch-drive"), ...(rv.ch ? {} : { name: v("ch-main-name") }) };
+    rv.accBusy = "ch-" + what; renderReview();
+    try {
+      const r = await postJSON("/api/channels", body);
+      rv.chans = r.channels;
+      if (what === "add") { rv.ch = r.added; toast("social", "Channel added", `${body.name}: connect its accounts below, and tell the chief of staff about its brand so the agents know its style.`); loadAccounts(); }
+      else if (what === "scan") toast("creative", "Google Drive", r.imported && r.imported.length ? `${r.imported.length} new video(s) on the board as New footage.` : "No new videos yet. A video shows up about a minute after Drive has finished syncing it.");
+      else toast("social", "Saved", body.drive ? "New videos in that folder will show up on the board as New footage." : "Saved.");
+    } catch (e) { toast("social", "Channels", e.message || "could not save", { bad: true }); }
+    rv.accBusy = ""; if (rv.open) renderReview();
+  }
+  function channelsSec() {
+    const list = rv.chans || [], cur = list.find((c) => c.key === rv.ch), busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
+    const name = (c) => c.name || (c.main ? "Main channel" : c.key);
+    let h = `<div class="rv-sec acc"><div class="rv-h">Channel <span>each one has its own brand, accounts and Drive folder</span></div><div class="rv-chips">`
+      + list.map((c) => `<button class="rv-chip ${c.key === rv.ch ? "on" : ""}" data-chan="${esc(c.key)}" type="button">${c.key === rv.ch ? svg("check") : ""}${esc(name(c))}</button>`).join("")
+      + `<button class="rv-chip ${rv.ch === "+" ? "on" : ""}" data-chan="+" type="button">+ Add a channel</button></div>`;
+    if (rv.ch === "+") {
+      h += `<input class="pub-in" id="ch-name" placeholder="Channel name" maxlength="60" autocomplete="off">
+        <textarea class="pub-in" id="ch-about" rows="2" placeholder="What is it about, who is it for, how should it sound? (the agents follow this)"></textarea>
+        <input class="pub-in" id="ch-drive" placeholder="Google Drive folder for raw footage, e.g. G:\\My Drive\\New channel raw" autocomplete="off">
+        <div class="acc-row"><button class="btn primary" data-chan-save="add" type="button">${busy("ch-add")}Add channel</button></div>`;
+    } else if (cur) {
+      h += `${cur.main ? `<input class="pub-in" id="ch-main-name" placeholder="Name of your main channel" maxlength="60" value="${esc(cur.name || "")}" autocomplete="off">` : ""}
+        <div class="pub-h">Raw footage folder <span>${cur.drive ? (cur.drive_ok ? "watching: new videos show up as New footage" : "this computer can't find that folder right now") : "not set"}</span></div>
+        <input class="pub-in" id="ch-drive" placeholder="G:\\My Drive\\${esc(name(cur))} raw" value="${esc(cur.drive || "")}" autocomplete="off">
+        <div class="acc-row"><button class="btn primary" data-chan-save="update" type="button">${busy("ch-update")}Save</button>${cur.drive ? `<button class="btn" data-chan-save="scan" type="button">${busy("ch-scan")}Check now</button>` : ""}</div>
+        <details class="acc-help"><summary>How to use Google Drive for raw footage</summary><ol>
+          <li>On this computer install <b>Google Drive for desktop</b> (google.com/drive/download) and sign in with the Google account that has the footage.</li>
+          <li>In Google Drive make a folder for this channel's raw videos, for example <b>${esc(name(cur))} raw</b>.</li>
+          <li>Open File Explorer → <b>Google Drive (G:)</b> → My Drive → that folder. Click the address bar, copy the path, paste it above and press Save.</li>
+          <li>Drop videos into that folder from your phone or any computer. About a minute after Drive has synced one, it shows up on the board as <b>New footage</b>. Press <b>Edit</b> on it when you want it edited.</li>
+          <li>Agents HQ copies the video. It never moves or deletes anything in your Drive. Keep this computer on with Agents HQ running.</li></ol></details>`;
+    }
+    return h + "</div>";
   }
   async function accountAction(kind) {
     const v = (id) => { const x = $("#" + id); return x ? x.value.trim() : ""; };
@@ -1206,6 +1251,7 @@
     if (kind === "meta") body = { action: "meta", app_id: v("acc-app-id"), app_secret: v("acc-app-secret"), token: v("acc-token"), page: v("acc-page") };
     else if (kind === "youtube") body = { action: "youtube", client_json: v("acc-yt-json") };
     else body = { action: "disconnect", which: kind.replace(/^off-/, "") };
+    body.channel = rv.ch;
     rv.accBusy = kind; renderReview();
     try {
       const r = await postJSON("/api/accounts", body);
@@ -1226,13 +1272,14 @@
     const line = (ok, name, label) => `<div class="acc-line ${ok ? "ok" : ""}">${ok ? svg("check") : "○"} <b>${label}</b> ${ok ? esc(name || "connected") : "not connected"}</div>`;
     return `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
-        <div class="rv-title"><div class="t">Accounts for posting</div><div class="s"><span>Connect once. Agents never post: only your Approve &amp; post button does.</span></div></div></div>
+        <div class="rv-title"><div class="t">Channels &amp; accounts</div><div class="s"><span>Connect once. Agents never post: only your Approve &amp; post button does.</span></div></div></div>
       <div class="rv-body">
-      ${a.error ? `<div class="rv-empty">${esc(a.error)}</div>` : !rv.acc ? '<div class="rv-empty"><span class="spin"></span> Loading…</div>' : ""}
+      ${channelsSec()}
+      ${rv.ch === "+" ? "" : `${a.error ? `<div class="rv-empty">${esc(a.error)}</div>` : !rv.acc ? '<div class="rv-empty"><span class="spin"></span> Loading…</div>' : ""}
       <div class="rv-sec acc"><div class="rv-h">Facebook + Instagram</div>
         ${line(fb.connected, fb.name, "Facebook Page")}${line(ig.connected, ig.name, "Instagram")}${ig.problem ? `<div class="pub-warn">${esc(ig.problem)}: in the Instagram app switch to a Professional account and link it to your Facebook Page, then connect again.</div>` : ""}
-        <input class="pub-in" id="acc-app-id" placeholder="App ID" autocomplete="off">
-        <input class="pub-in" id="acc-app-secret" type="password" placeholder="App secret" autocomplete="off">
+        <input class="pub-in" id="acc-app-id" placeholder="App ID${rv.ch ? " (leave empty to use the same Meta app)" : ""}" autocomplete="off">
+        <input class="pub-in" id="acc-app-secret" type="password" placeholder="App secret${rv.ch ? " (leave empty to use the same Meta app)" : ""}" autocomplete="off">
         <textarea class="pub-in" id="acc-token" rows="2" placeholder="User access token from the Graph API Explorer"></textarea>
         <input class="pub-in" id="acc-page" placeholder="Page name (only if you manage several Pages)" autocomplete="off">
         <div class="acc-row"><button class="btn primary" data-acc="meta" type="button">${busy("meta")}Connect Facebook + Instagram</button>${fb.connected ? '<button class="btn" data-acc="off-meta" type="button">Disconnect</button>' : ""}</div>
@@ -1245,7 +1292,7 @@
       </div>
       <div class="rv-sec acc"><div class="rv-h">YouTube Shorts</div>
         ${line(yt.connected, yt.name, "YouTube channel")}
-        <textarea class="pub-in" id="acc-yt-json" rows="3" placeholder="${yt.client ? "Client saved. Paste a new client_secret.json only to replace it" : "Paste everything from your client_secret_….json file"}"></textarea>
+        <textarea class="pub-in" id="acc-yt-json" rows="3" placeholder="${yt.client || rv.ch ? "Leave empty to use the Google client you already set up" : "Paste everything from your client_secret_….json file"}"></textarea>
         <div class="acc-row"><button class="btn primary" data-acc="youtube" type="button">${busy("youtube")}Connect YouTube</button>${yt.connected ? '<button class="btn" data-acc="off-youtube" type="button">Disconnect</button>' : ""}</div>
         <div class="pub-note">Do this on the computer, not the phone: Google sends you back to this computer after you sign in.</div>
         <details class="acc-help"><summary>How to get the file (about 10 minutes, once)</summary><ol>
@@ -1256,7 +1303,7 @@
           <li>Press Connect YouTube, sign in and allow. Google says it hasn't verified the app: press Advanced → Go to Agents HQ (it is your own app).</li>
           <li><b>Good to know:</b> Google keeps videos uploaded by a new project <b>private</b> until the project passes its free YouTube API audit (a form in the Google Cloud console). Until then, Shorts arrive private and Agents HQ tells you so.</li></ol></details>
       </div>
-      <div class="rv-sec acc"><div class="rv-h">TikTok</div><div class="pub-note">Not yet: TikTok only allows private posts from an app until TikTok reviews it. Post TikTok by hand with the TikTok text the Social team writes.</div></div>
+      <div class="rv-sec acc"><div class="rv-h">TikTok</div><div class="pub-note">Not yet: TikTok only allows private posts from an app until TikTok reviews it. Post TikTok by hand with the TikTok text the Social team writes.</div></div>`}
       </div><div class="rv-actions"><button class="btn" data-rv-close type="button">Done</button></div></div>`;
   }
   function closeReview(fromHistory) {
@@ -1400,10 +1447,12 @@
     closeReview();
   }
   function reviewClick(e) {                                 // returns true when the click belonged to the review screen
-    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
+    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
     if (!b) return false;
     const d = b.dataset;
-    if (d.rvAccounts != null) { openReview({ accounts: true }); return true; }
+    if (d.rvAccounts != null) { openReview({ accounts: true, channel: d.rvAccounts }); return true; }
+    if (d.chan != null) { pickChannel(d.chan); return true; }
+    if (d.chanSave != null) { channelAction(d.chanSave); return true; }
     if (d.acc) { if (!rv.accBusy) accountAction(d.acc); return true; }
     if (d.pubPick) { pickPub(d.pubPick, d.pubVal); return true; }
     if (d.pubCancel) { cancelScheduled(d.pubCancel); return true; }
@@ -1471,6 +1520,7 @@
       if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.remove) { taskAction({ action: "remove", id: d.remove }, "Task removed from the board."); return; }
+      if (d.editFootage) { taskAction({ action: "edit", id: d.editFootage }, "Editing started: the Creative team is on it. Nothing posts until you approve.").then((r) => { if (r) setLead(true); }); return; }
       if (d.run) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.run); if (t) { send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); setLead(true); } return; }
       if (d.board != null) { openPanel("tasks"); return; }
       if (d.cal != null) { openPanel("calendar"); return; }

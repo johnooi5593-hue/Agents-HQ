@@ -28,3 +28,5 @@ inbox/messages/*
 !.claude/skills/yellow-serif/assets/overlays/README.md
 .hq-backup/
 .hq-accounts.json*
+.hq-channels.json*
+.hq-imported.json*
