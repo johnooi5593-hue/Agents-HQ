@@ -1,13 +1,17 @@
 // Agents HQ: the 3D office (hq/office3d.js). Built on Three.js r128 (hq/vendor/three.min.js) and the vendored UMD
 // examples (EffectComposer, UnrealBloomPass, RoundedBoxGeometry, CSS2DRenderer, OrbitControls).
 //
-// The look follows docs/video-spec.md: the Brain in the middle (round platform, neon rings, light beam, orbit rings,
-// particles), eight square team rooms around it (floor, carpet, two back walls, trims, desks, monitors, dashboards,
-// lamps, shelves, plants, sofas), dark walkways with dashed centre lines, data wires with travelling sparks, chibi
-// characters at their desks, walkers on the walkways, ghost sub-agents, and bloom on everything that glows.
+// The Stack: three glass floors around an open atrium. The Brain glows on the ground floor at the bottom of the atrium
+// (round platform, neon rings, a light beam rising through every floor, orbit rings, particles) with the commons around
+// it (canteen + kitchen, lounge, town hall steps, reception); the eight team rooms (floor, carpet, two back walls, trims,
+// desks, monitors, dashboards, lamps, shelves, plants, sofas) stand in the corners of floors 1 and 2; a glass lift joins
+// the floors; data wires with travelling sparks run from every room into the beam; chibi characters work, walk, ride the
+// lift and take breaks; ghost sub-agents; bloom on everything that glows. A floor view (showFloor) hides the floors above
+// one floor so you can look into it; flying to a room does that by itself.
 // The interface follows docs/build-contract.md: window.HQ_OFFICE (flyTo, overview, select, focusAgent, project,
 // setLabel, spawnSubagents, clearSubagents, zoom, setZoomPercent, getZoomPercent, fullscreen, resize, minimapState,
-// onRoomClick / onAgentClick / onBrainClick), plus focusBrain(), bloom(strength, threshold, radius) and an optional
+// onRoomClick / onAgentClick / onBrainClick), plus focusBrain(), showFloor(n|null) / floorView() / floors(),
+// bloom(strength, threshold, radius) and an optional
 // options object on flyTo / overview / focusAgent / focusBrain: { shiftX: 0.17 } moves the framed point right by that
 // fraction of the viewport (room beside an open left panel), { duration, zoom } tune the move. No text is drawn in the
 // scene for names: the HUD fills the CSS2D label elements through setLabel(kind, key, html) or positions its own
@@ -25,7 +29,6 @@
   // ------------------------------------------------------------------ constants
   const S = 20;                                  // room side in world units
   const WALL_H = 9.4, WALL_T = 0.45, SLAB_H = 0.7;
-  const RING_R = 44;                             // distance from the Brain to a room centre
   const PLATFORM_R = 17;                         // the Brain platform
   const GROUND_Y = -6.5;                         // the void floor under the floating slabs
   const WALK_W = 4.2, WALK_Y = 0.45;             // walkway width and top height
@@ -35,6 +38,17 @@
   const OVERVIEW = { yaw: 45 * DEG, pitch: 40 * DEG, dist: 170, target: new THREE.Vector3(0, 1.5, 0) };
   const ROOM_VIEW = { pitch: 37 * DEG, dist: 68 };
   const CHAR_SCALE = 1.22;                       // characters are ~1.6 desk-heights tall in the video
+  // The Stack. Corner c is a clock position (0 = top of the screen, 2 right, 4 bottom, 6 left); a corner room's centre
+  // is (±ROOM_D, ±ROOM_D) on its floor. Floor f stands at y = f * FLOOR_H.
+  const FLOOR_H = 22, FLOORS = 3;
+  const ROOM_D = 24;                             // a corner room's centre offset on each axis
+  const HOLE = 9.5;                              // half the atrium opening in floors 1 and 2
+  const PLATE_MIN = 38;                          // half a floor plate (grown to fit a big room)
+  const CORR = 12;                               // the corridor loop around the atrium
+  const LIFT = { x: 0, z: -20, r: 2.3 };         // the glass lift in the band behind the atrium
+  const FLOOR_PLAN = { creative: [2, 0], social: [2, 2], shop: [2, 4], scripts: [2, 6], research: [1, 0], analytics: [1, 2], inbox: [1, 4], dev: [1, 6] };
+  const FLOOR_NAMES = ['Ground · Commons', '1F · Think & meet', '2F · Studios'];
+  const cornerSign = (c) => ({ 0: [-1, -1], 2: [1, -1], 4: [1, 1], 6: [-1, 1] })[c];
   // Phones (the same query as hud.css): a lower pixel ratio, half-resolution bloom (dropped if the frame rate sags),
   // fewer particles, portrait framing that fits the ring of rooms by width, double-tap on a room. Desktop is untouched.
   // ?fx=low forces the light path, ?fx=full keeps the full one on a phone.
@@ -42,7 +56,7 @@
   const isPhone = () => !!(window.matchMedia && window.matchMedia(PHONE_Q).matches);
   const FX = (/[?&]fx=(low|full)\b/.exec(location.search) || [])[1] || '';
   const PHONE_AT_BOOT = isPhone();
-  const DESKTOP_PITCH = 40 * DEG, PORTRAIT_PITCH = 56 * DEG;
+  const DESKTOP_PITCH = 33 * DEG, PORTRAIT_PITCH = 50 * DEG;   // low enough to see the floors stacked
 
   // Fallback metadata (the contract's table) used only if /api/teams cannot be read.
   const FALLBACK_TEAMS = [
@@ -247,7 +261,23 @@
     mode: 'overview', userActiveUntil: 0, tween: null, selected: null, selectRing: null, fallbackRunning: {},
     size: { w: 0, h: 0 }, labelRules: { agentMaxDist: 110 },
     phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
+    floors: [], floorView: null, ext: PLATE_MIN, plates: [], commons: [], lift: null, people: null, wires: [],
   };
+  const floorOfY = (y) => clamp(Math.floor((y + 3) / FLOOR_H), 0, FLOORS - 1);
+  const floorShown = (f) => state.floorView == null || f <= state.floorView;
+  // The floor the camera is about (a room, a floor view, the Brain, an agent), or null in the overview. Labels (room
+  // cards, names, bubbles) show only for that floor, so cards from the floor below never sit on top of a close-up.
+  function focusFloor() {
+    const m = state.mode || '';
+    if (m.startsWith('room:')) { const r = state.rooms[m.slice(5)]; return r ? r.floor : null; }
+    if (m.startsWith('floor:')) return +m.slice(6);
+    if (m === 'brain') return 0;
+    if (m.startsWith('agent:')) { const st = state.seats[m.slice(6)]; return st ? floorOfY(st.ch.group.position.y) : null; }
+    return null;
+  }
+  // On a phone the overview has room for one floor's cards: the top one (the floor buttons open the others).
+  const labelShown = (f) => { const ff = focusFloor(); return ff == null ? (state.phone ? f === (state.floorView == null ? FLOORS - 1 : state.floorView) : floorShown(f)) : f === ff; };
+  const TOP_Y = (FLOORS - 1) * FLOOR_H + SLAB_H + WALL_H;
   const maxPixelRatio = () => Math.min(state.phone ? (state.lowFx ? 1 : 1.25) : 1.5, window.devicePixelRatio || 1);
   const labels = { team: {}, agent: {}, brain: {}, sub: {}, bubble: {} };
   const pickables = [];
@@ -319,18 +349,19 @@
     if (state.phone) bloomPass.setSize(Math.round(w * pr * 0.5), Math.round(h * pr * 0.5));   // half-resolution bloom on a phone
     bloomPass.enabled = !state.lowFx;
     camera.aspect = w / h; camera.updateProjectionMatrix();
-    // The overview distance fits the ring of rooms into the frame the way the video frames it: the far room's wall top
-    // (plus room for its floating card) sits just under the top bar and the bottom room is slightly cut.
+    // The overview fits the whole building: the floor plates' diagonal across the frame (they are diamonds on screen)
+    // and the height of the three floors plus the plates' depth up and down the frame.
     const portrait = camera.aspect < 0.95;
     OVERVIEW.pitch = portrait ? PORTRAIT_PITCH : DESKTOP_PITCH;
     const hfov = 2 * Math.atan(Math.tan(camera.fov * DEG / 2) * camera.aspect);
-    const dh = (RING_R + S * 0.85) / Math.tan(hfov / 2);
-    const dv = ((RING_R + S * 0.72) * Math.sin(OVERVIEW.pitch) + WALL_H * Math.cos(OVERVIEW.pitch) + 6) / Math.tan(camera.fov * DEG / 2);
-    OVERVIEW.dist = Math.max(dh * 0.9, dv) * 0.92;
-    // A portrait screen (a phone held upright): a steeper look-down so the ring fills more of the tall frame, fitted by
-    // width so all eight rooms and the Brain are in view; close-ups move back by the same rule. Landscape keeps 1.
-    const tanH = Math.tan(hfov / 2);
-    if (portrait) OVERVIEW.dist = Math.max((RING_R + S * 0.78) / tanH * 1.02, dv * 0.92);
+    const tanH = Math.tan(hfov / 2), tanV = Math.tan(camera.fov * DEG / 2), half = state.ext * SQ * 2;   // the plate's half-diagonal
+    const dh = half / tanH;
+    const dv = (half * Math.sin(OVERVIEW.pitch) + TOP_Y * Math.cos(OVERVIEW.pitch) * 0.5 + 4) / tanV;
+    OVERVIEW.dist = Math.max(dh * 0.86, dv * 0.94);
+    OVERVIEW.target.set(0, TOP_Y * 0.36, 0);
+    // A portrait screen (a phone held upright): a steeper look-down, fitted by width so the whole building is in view;
+    // close-ups move back by the same rule. Landscape keeps 1.
+    if (portrait) OVERVIEW.dist = Math.max(half / tanH * 1.02, dv * 0.9);
     state.fit = portrait ? Math.max(1, (S * 0.8) / tanH / ROOM_VIEW.dist) : 1;
     state.fitBrain = portrait ? Math.max(1, (PLATFORM_R + 3) / tanH / 62) : 1;
     controls.maxDistance = Math.max(360, OVERVIEW.dist * 1.5);
@@ -401,24 +432,24 @@
     creative: { A: [0, -7.5, 0], B: [-3.6, -1.5, 0], C: [3.6, -1.5, 0], D: [-10.4, -6.0, Math.PI / 2], E: [9.6, -8.5, 0] },
   };
 
-  function buildRoom(team, i, members) {
+  function buildRoom(team, i, members, floor) {
     const big = team.key === 'creative';
     const size = big ? S * 1.4 : S, h = size / 2;
-    const dir = roomDir(i);
-    const R = RING_R + (big ? (size - S) / 2 : 0);
-    const cx = dir.x * R, cz = dir.z * R;
+    const dir = roomDir(i), sg = cornerSign(i), D = ROOM_D + (big ? (size - S) / 2 : 0);
+    const cx = sg[0] * D, cz = sg[1] * D, Y = floor * FLOOR_H;
+    const realScene = scene; scene = state.floors[floor];                     // everything this room adds hides with its floor
     const floorC = col(team.color), carpetC = col(team.color_light), wallC = col(team.color_wall).multiplyScalar(1.3), accentC = col(team.accent || team.color);
     const trimC = mix(accentC, 0xffffff, 0.35), topTrimC = mix(wallC, 0xffffff, 0.25);
     const hasSofa = ['inbox', 'social', 'analytics'].includes(team.key);
-    const room = { key: team.key, team, index: i, center: new THREE.Vector3(cx, 0, cz), size, half: h, dir, color: team.color, members, seats: [], subs: [], lit: false, big };
+    const room = { key: team.key, team, index: i, floor, y: Y, center: new THREE.Vector3(cx, Y, cz), size, half: h, dir, color: team.color, members, seats: [], subs: [], lit: false, big };
     room.near = h / Math.max(Math.abs(dir.x), Math.abs(dir.z));            // distance from the centre to the slab edge toward the Brain
-    const F = SLAB_H;                                                          // floor top
+    const F = Y + SLAB_H;                                                      // floor top
     const shell = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 14, specular: 0x202024 }));
     const props = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }));
     const glow = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
 
     // slab, two back walls (inner faces catch the key light), top trims, edge trims, the corner post, the carpet
-    shell.box(size, SLAB_H, size, cx, SLAB_H / 2, cz, floorC);
+    shell.box(size, SLAB_H, size, cx, Y + SLAB_H / 2, cz, floorC);
     shell.box(WALL_T, WALL_H, size, cx - h + WALL_T / 2, F + WALL_H / 2, cz, wallC);
     shell.box(size, WALL_H, WALL_T, cx, F + WALL_H / 2, cz - h + WALL_T / 2, wallC);
     shell.box(WALL_T + 0.16, 0.16, size, cx - h + WALL_T / 2, F + WALL_H + 0.08, cz, topTrimC);
@@ -516,8 +547,12 @@
     const shellMesh = shell.mesh(); shellMesh.userData.room = team.key; scene.add(shellMesh); pickables.push(shellMesh);
     scene.add(props.mesh()); scene.add(glow.mesh());
     // the team label above the back corner
-    makeAnchor('team', team.key, scene, new THREE.Vector3(cx - h + 0.3, F + WALL_H + 4.0, cz - h + 0.3));
+    // the team card: above the back corner on the top floor; lower floors use the room's left corner, so in the
+    // overview a card never sits right under the card of the room above it
+    const top = floor === FLOORS - 1;
+    makeAnchor('team', team.key, scene, new THREE.Vector3(cx - h + 0.3, F + WALL_H + (top ? 4.0 : 1.5), top ? cz - h + 0.3 : cz + h - 0.3));
     state.rooms[team.key] = room; state.roomList.push(room);
+    scene = realScene;
     return room;
   }
 
@@ -532,7 +567,7 @@
 
   // One desk unit: desk, chair, monitor(s), the seated character, a floor pool and ring, and the agent's label anchor.
   function addSeat(room, agent, slot, props, cx, cz, isHead, slotKey) {
-    const F = SLAB_H, rot = slot[2];
+    const F = room.y + SLAB_H, rot = slot[2];
     const unit = new THREE.Matrix4().makeRotationY(rot).setPosition(cx + slot[0], F, cz + slot[1]);
     const o = { parent: unit };
     const deskC = isHead ? 0xd2b07a : 0xe2d8c6, deskW = isHead ? 5.0 : 4.4;
@@ -682,59 +717,77 @@
     p.hipL.rotation.x = p.hipR.rotation.x = 0; p.kneeL.rotation.x = p.kneeR.rotation.x = 0; p.armL.rotation.x = p.armR.rotation.x = 0;
   }
 
-  // ------------------------------------------------------------------ walkways, wires, walkers, particles
-  const particleSets = { walk: [], wire: [], rider: [], orbit: [], rise: [] };
+  // ------------------------------------------------------------------ the building: plates, atrium, lift, bands, wires
+  const particleSets = { wire: [], rider: [], orbit: [], rise: [] };
+  const glassMat = new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.09, depthWrite: false, side: THREE.DoubleSide });
+  const glassEdgeMat = new THREE.MeshBasicMaterial({ color: 0xbff1ff, transparent: true, opacity: 0.55 });
+  function glassBox(parent, w, h, d, x, y, z) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), glassMat); m.position.set(x, y, z); m.renderOrder = 3; parent.add(m);
+    const e = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.35 })); e.position.copy(m.position); parent.add(e);
+    return m;
+  }
   function buildPaths() {
-    const paths = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }));
-    const strip = (a, b, w, color, y) => {
-      const d = new THREE.Vector3().subVectors(b, a), len = d.length(), mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
-      paths.box(w, 0.35, len, mid.x, (y || WALK_Y) - 0.175, mid.z, color, { ry: Math.atan2(d.x, d.z) });
-      return { a, b, len, dir: d.normalize() };
-    };
-    for (const room of state.roomList) {
-      const a = room.dir.clone().multiplyScalar(PLATFORM_R - 1.5), b = room.dir.clone().multiplyScalar(room.center.length() - room.near + 1.2);
-      a.y = b.y = 0;
-      const p = strip(a, b, WALK_W, 0x343844); room.path = p;
-      // dashed centre line
-      const holder = new THREE.Group(); holder.position.copy(a).add(b).multiplyScalar(0.5); holder.position.y = WALK_Y + 0.01; holder.rotation.y = Math.atan2(p.dir.x, p.dir.z); scene.add(holder);
-      const tex = dashTex.clone(); tex.needsUpdate = true; tex.repeat.set(1, p.len / 2.6);
-      const line = new THREE.Mesh(new THREE.PlaneGeometry(0.32, p.len), new THREE.MeshBasicMaterial({ map: tex, color: 0xd8d2b4, transparent: true, opacity: 0.8, depthWrite: false })); line.rotation.x = -Math.PI / 2; holder.add(line);
-      for (let k = 0; k < 3; k++) particleSets.walk.push({ path: p, k, side: k % 2 ? 1 : -1 });
-      // data wire from the back corner of the room up to the Brain sphere
-      const corner = new THREE.Vector3(room.center.x - room.half + 0.3, SLAB_H + WALL_H + 1.4, room.center.z - room.half + 0.3);
-      const curve = new THREE.QuadraticBezierCurve3(corner, new THREE.Vector3(corner.x * 0.45, CORE_Y + 16, corner.z * 0.45), new THREE.Vector3(0, CORE_Y, 0));
-      const wire = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)), new THREE.LineBasicMaterial({ color: mix(room.team.accent || room.color, 0xffffff, 0.25), transparent: true, opacity: 0.55 }));
-      scene.add(wire); room.wire = curve;
-      for (let k = 0; k < 5; k++) particleSets.wire.push({ curve, k });
-      // a thin straight floor line from the room's near corner to the platform (the red "laser" of the Shop and friends)
-      if (room.key === 'shop' || room.key === 'social') {
-        const lg = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(room.center.x + room.half * 0.6, 0.2, room.center.z + room.half * 0.6), new THREE.Vector3(room.dir.x * PLATFORM_R, 0.6, room.dir.z * PLATFORM_R)]);
-        scene.add(new THREE.Line(lg, new THREE.LineBasicMaterial({ color: room.key === 'shop' ? 0xff4d5e : 0xff5fff, transparent: true, opacity: 0.35 })));
+    for (let f = 0; f < FLOORS; f++) {
+      const g = state.floors[f], Y = f * FLOOR_H, P = state.plates[f], top = Y + WALK_Y, th = 0.9, cy = top - th / 2;
+      const M = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 18, specular: 0x23262e }));
+      const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+      // floors 1 and 2 are tinted glass: the floor below shows through (the rooms keep their own solid slabs)
+      const PM = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 60, specular: 0x5a6a80, transparent: true, opacity: 0.62, depthWrite: false }));
+      const plateC = f ? 0x2c3446 : 0x242936, corrC = f ? 0x323a4c : 0x2b303d;
+      if (!f) M.box(2 * P, th, 2 * P, 0, cy, 0, plateC);
+      else {                                                                   // a square ring around the atrium
+        const w = P - HOLE;
+        PM.box(2 * P, th, w, 0, cy, -(HOLE + w / 2), plateC); PM.box(2 * P, th, w, 0, cy, HOLE + w / 2, plateC);
+        PM.box(w, th, 2 * HOLE, -(HOLE + w / 2), cy, 0, plateC); PM.box(w, th, 2 * HOLE, HOLE + w / 2, cy, 0, plateC);
+        // the corridor loop around the atrium, a shade lighter, with a dashed guide line
+        for (const sgn of [-1, 1]) { M.box(2 * (CORR + 2), 0.04, 4.4, 0, top + 0.02, sgn * CORR, corrC); M.box(4.4, 0.04, 2 * (CORR + 2), sgn * CORR, top + 0.02, 0, corrC); }
+        // the atrium's edge: a glowing lip, glass railing panes and a lit handrail
+        for (const [x, z, w2, d2] of [[0, -HOLE, 2 * HOLE, 0.12], [0, HOLE, 2 * HOLE, 0.12], [-HOLE, 0, 0.12, 2 * HOLE], [HOLE, 0, 0.12, 2 * HOLE]]) {
+          GL.box(w2 + 0.12, 0.1, d2 + 0.12, x, top + 0.05, z, 0x9fe8ff);
+          GL.box(w2 + 0.1, 0.09, d2 + 0.1, x, top + 1.3, z, 0xd9f6ff);
+          glassBox(g, Math.max(w2, 0.06), 1.25, Math.max(d2, 0.06), x, top + 0.65, z);
+        }
       }
+      // the plate's outer edge: a thin light strip
+      for (const sgn of [-1, 1]) { GL.box(2 * P, 0.08, 0.14, 0, top + 0.04, sgn * (P - 0.07), 0x8fc6e6); GL.box(0.14, 0.08, 2 * P, sgn * (P - 0.07), top + 0.04, 0, 0x8fc6e6); }
+      // slim pillars carry this floor from the one below (they hide with it)
+      if (f) {
+        const d = Math.min(state.plates[f], state.plates[f - 1]) - 1.4;
+        for (const [px, pz] of [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [0, 1], [-1, 0], [1, 0]]) M.cyl(0.38, FLOOR_H - th, px * d, Y - FLOOR_H + WALK_Y + (FLOOR_H - th) / 2, pz * d, 0x3a4152);
+      }
+      bandProps(f, M, GL, g, top);
+      g.add(M.mesh()); g.add(GL.mesh());
+      if (f) { const pm = PM.mesh(); pm.renderOrder = 2; g.add(pm); }
     }
-    // short links between neighbouring rooms behind Creative
-    const link = (k1, k2) => { const r1 = state.rooms[k1], r2 = state.rooms[k2]; if (!r1 || !r2) return; const a = r1.center.clone().lerp(r2.center, 0.32), b = r1.center.clone().lerp(r2.center, 0.68); a.y = b.y = 0; strip(a, b, 2.6, 0x2c303a, WALK_Y - 0.05); };
-    link('creative', 'social'); link('creative', 'analytics');
-    scene.add(paths.mesh());
-    // walkers: one per walkway, two on every third
-    state.roomList.forEach((room, i) => {
-      const n = i % 3 === 0 ? 2 : 1;
-      for (let k = 0; k < n; k++) {
-        const r = rng(hash('walker' + i + k));
-        const look = { skin: SKINS[Math.floor(r() * SKINS.length)], hair: HAIRS[Math.floor(r() * HAIRS.length)], style: STYLES[Math.floor(r() * STYLES.length)], hat: [0x3fbf6a, 0xd63a3a, 0xf2f2f2][Math.floor(r() * 3)], shirt: [0x3fbf6a, 0xea8a38, 0x75bdd8, 0x54c9a6, 0x465364, 0xef3155, 0x8569db][Math.floor(r() * 7)], trousers: 0x2b3350 };
-        const ch = makeCharacter(look, { tablet: r() < 0.6 });
-        ch.group.scale.setScalar(CHAR_SCALE); scene.add(ch.group);
-        const glow = flatGlow(1.6, 0xffffff, 0.28); scene.add(glow);
-        const side = new THREE.Vector3(-room.path.dir.z, 0, room.path.dir.x).multiplyScalar(n === 2 ? (k ? 1 : -1) * 1.0 : 0);
-        state.walkers.push({ ch, glow, path: room.path, side, u: r(), sign: r() < 0.5 ? 1 : -1, speed: 1.3 + r() * 0.6, pause: 0, yaw: 0, phase: r() * 6.28 });
-      }
-    });
-    // particles: walkway LEDs, wire sparks, ring riders, the orbit cloud, beam risers (one Points object)
+    // the glass lift: a shaft through every floor, light rails and a car that follows whoever rides it
+    {
+      const h = TOP_Y + 2, gL = new THREE.Group(); scene.add(gL);
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(LIFT.r, LIFT.r, h, 32, 1, true), glassMat); shaft.position.set(LIFT.x, h / 2, LIFT.z); shaft.renderOrder = 3; gL.add(shaft);
+      const rails = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+      for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + k * Math.PI / 2; rails.box(0.09, h, 0.09, LIFT.x + Math.cos(a) * LIFT.r, h / 2, LIFT.z + Math.sin(a) * LIFT.r, 0xbff1ff); }
+      for (let f = 0; f < FLOORS; f++) rails.add(G.cyl, 0x9fe8ff, LIFT.x, f * FLOOR_H + WALK_Y + 0.06, LIFT.z, { sx: LIFT.r + 0.25, sy: 0.12, sz: LIFT.r + 0.25 });
+      gL.add(rails.mesh());
+      const car = new THREE.Group(); car.position.set(LIFT.x, WALK_Y, LIFT.z); gL.add(car);
+      const deck = new THREE.Mesh(new THREE.CylinderGeometry(LIFT.r - 0.2, LIFT.r - 0.2, 0.25, 32), new THREE.MeshLambertMaterial({ color: 0x4a5368 })); deck.position.y = 0.05; car.add(deck);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(LIFT.r - 0.25, 0.06, 6, 40), basic(0xc6f4ff)); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.2; car.add(ring);
+      const roof = ring.clone(); roof.position.y = 4.6; car.add(roof);
+      state.lift = { car, y: WALK_Y };
+    }
+    // data wires: from the back corner of every room into the Brain's beam at that floor's height
+    for (const room of state.roomList) {
+      const F = room.y + SLAB_H, corner = new THREE.Vector3(room.center.x - room.half + 0.3, F + WALL_H + 1.4, room.center.z - room.half + 0.3);
+      const end = new THREE.Vector3(0, F + 6.5, 0), ctrl = new THREE.Vector3(corner.x * 0.42, F + WALL_H + 5, corner.z * 0.42);
+      const curve = new THREE.QuadraticBezierCurve3(corner, ctrl, end);
+      const wire = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)), new THREE.LineBasicMaterial({ color: mix(room.team.accent || room.color, 0xffffff, 0.25), transparent: true, opacity: 0.55 }));
+      state.floors[room.floor].add(wire); room.wire = curve;
+      for (let k = 0; k < 5; k++) particleSets.wire.push({ curve, k, floor: room.floor });
+    }
+    // particles: wire sparks, ring riders, the orbit cloud, beam risers (one Points object)
     const r = rng(17);
     for (const ring of anim.rings) for (let k = 0; k < 2; k++) particleSets.rider.push({ ring, a: r() * 6.28, speed: 0.6 + r() * 0.5 });
     for (let k = 0; k < (PHONE_AT_BOOT ? 26 : 48); k++) { const n = new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize(), u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = new THREE.Vector3().crossVectors(n, u); particleSets.orbit.push({ u, v, radius: 3.6 + r() * 4.5, phase: r() * 6.28, speed: (0.2 + r() * 0.5) * (r() < 0.5 ? 1 : -1) }); }
-    for (let k = 0; k < (PHONE_AT_BOOT ? 10 : 18); k++) particleSets.rise.push({ x: (r() - 0.5) * 2.2, z: (r() - 0.5) * 2.2, phase: r(), speed: 0.05 + r() * 0.08 });
-    const count = particleSets.walk.length + particleSets.wire.length + particleSets.rider.length + particleSets.orbit.length + particleSets.rise.length;
+    for (let k = 0; k < (PHONE_AT_BOOT ? 12 : 24); k++) particleSets.rise.push({ x: (r() - 0.5) * 2.2, z: (r() - 0.5) * 2.2, phase: r(), speed: 0.04 + r() * 0.06 });
+    const count = particleSets.wire.length + particleSets.rider.length + particleSets.orbit.length + particleSets.rise.length;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(count * 3).fill(1), 3));
@@ -742,16 +795,149 @@
     anim.particles.frustumCulled = false; scene.add(anim.particles);
   }
 
+  // The bands between the corner rooms: a glass meeting room and phone booths on 1F, a terrace garden and a sofa nook
+  // on 2F, benches and plants elsewhere. Kept clear of the walking lines (the corridor loop, the porches at x = ±12.3,
+  // the lift in the back band).
+  function bandProps(f, M, GL, g, top) {
+    const tree = (x, z, k) => { M.cyl(0.7 * k, 1.1 * k, x, top + 0.55 * k, z, 0xd3d7ce); M.ball(1.5 * k, x, top + 2.4 * k, z, 0x3f9e64); M.ball(1.1 * k, x + 0.7 * k, top + 3.1 * k, z + 0.3 * k, 0x52a775); M.ball(1.0 * k, x - 0.6 * k, top + 3.2 * k, z - 0.4 * k, 0x5db87c); };
+    const bench = (x, z, rot) => { M.box(3.6, 0.22, 1.0, x, top + 1.0, z, 0xc8925a, { ry: rot }); M.box(0.25, 0.9, 0.9, x + Math.cos(rot) * 1.5, top + 0.45, z - Math.sin(rot) * 1.5, 0x3a3d42, { ry: rot }); M.box(0.25, 0.9, 0.9, x - Math.cos(rot) * 1.5, top + 0.45, z + Math.sin(rot) * 1.5, 0x3a3d42, { ry: rot }); };
+    if (f === 0) {
+      tree(-25, 0, 1); tree(25, 0, 0.9); tree(0, 26, 1); bench(-25, 6, 0); bench(25, -6, 0); bench(6, 26, Math.PI / 2);
+      tree(-7, -27, 0.8); bench(7, -27, Math.PI / 2);
+      return;
+    }
+    if (f === 1) {
+      // the glass meeting room (left band): a long table, eight chairs and a screen
+      const mx = -25.5, mz = 0;
+      M.box(19, 0.05, 15, mx, top + 0.03, mz, 0x323a4e);
+      glassBox(g, 19, 7.2, 15, mx, top + 3.6, mz);
+      M.box(10, 0.16, 3.0, mx, top + 1.95, mz, 0xd2b07a); M.box(0.3, 1.9, 1.6, mx - 4, top + 0.95, mz, 0x2a2d35); M.box(0.3, 1.9, 1.6, mx + 4, top + 0.95, mz, 0x2a2d35);
+      for (let k = 0; k < 4; k++) for (const side of [-1, 1]) { const x = mx - 3.6 + k * 2.4, z = mz + side * 2.3; M.box(1.2, 0.16, 1.2, x, top + 1.18, z, 0x2a2d31); M.box(1.2, 1.2, 0.14, x, top + 1.9, z + side * 0.6, 0x2a2d31); M.cyl(0.07, 0.9, x, top + 0.6, z, 0x3a3d42); }
+      M.box(0.18, 3.2, 6.6, mx - 9.2, top + 4.0, mz, 0x0d0d12); GL.box(0.04, 2.9, 6.3, mx - 9.08, top + 4.0, mz, 0x4f7fd8);
+      // phone booths (right band)
+      for (const z of [-6, 0, 6]) { glassBox(g, 3.0, 6.0, 3.6, 25, top + 3.0, z); M.box(3.0, 0.3, 3.6, 25, top + 6.15, z, 0x2a2f3c); M.box(1.4, 0.12, 0.9, 25.6, top + 2.0, z, 0xe2d8c6); M.box(0.9, 0.12, 0.9, 24.2, top + 1.2, z, 0x6d5bd0); GL.box(1.6, 0.06, 0.3, 25, top + 5.9, z, 0xfff1d6); }
+      tree(-7, 27, 0.8); tree(7, 27, 0.8); bench(0, 30, 0); tree(-7, -28, 0.75); tree(7, -28, 0.75);
+      return;
+    }
+    // 2F: the terrace (left band): a green deck, trees and benches; a sofa nook (right band); standing tables (bottom)
+    M.box(19, 0.08, 20, -25.5, top + 0.04, 0, 0x2f6b4a);
+    tree(-30, -6, 1.1); tree(-30, 6, 1.0); tree(-21, 0, 0.8); bench(-24, -6, 0); bench(-24, 6, 0);
+    M.box(1.6, 0.06, 18, -16.4, top + 0.07, 0, 0x8a6a4a);
+    const sx = 26; M.box(2.0, 0.7, 7, sx + 4, top + 0.45, 0, 0xd9cdd7); M.box(0.5, 1.1, 7, sx + 5, top + 1.2, 0, 0xd9cdd7); M.box(2.2, 0.12, 2.2, sx, top + 0.95, 0, 0xc8925a); M.box(1.8, 0.85, 1.8, sx, top + 0.45, 0, 0x8a6a4a);
+    tree(sx + 4.5, -6.5, 0.7); tree(sx + 4.5, 6.5, 0.7);
+    for (const x of [-5, 0, 5]) { M.cyl(0.9, 0.12, x, top + 2.4, 27, 0xe8e2d6); M.cyl(0.12, 2.4, x, top + 1.2, 27, 0x3a3d42); }
+    tree(-7, -28, 0.8); tree(7, -28, 0.8);
+  }
+
+  // ------------------------------------------------------------------ the commons (ground floor corners)
+  // Corner rooms without desks: canteen + kitchen (0), lounge (2), town hall steps (6) and the reception (4, no walls:
+  // it faces the camera). Spots for office life (stools, sofas, steps, the kitchen counter) are room-local (x, z from
+  // the centre; back walls at -x and -z) and become graph nodes in buildLife.
+  const COMMONS = [
+    { key: 'canteen', name: 'CANTEEN', corner: 0, floorC: 0x8b6b4e, wallC: 0x5d4b3e, walls: true, sign: '#f5c84b' },
+    { key: 'lounge', name: 'LOUNGE', corner: 2, floorC: 0x35545c, wallC: 0x2a3f4a, walls: true, sign: '#7fe0d4' },
+    { key: 'townhall', name: 'TOWN HALL', corner: 6, floorC: 0x383d58, wallC: 0x2a2e45, walls: true, sign: '#9fb4ff' },
+    { key: 'reception', name: 'RECEPTION', corner: 4, floorC: 0x474d5c, wallC: 0x2e3340, walls: false, sign: '#f5c84b' },
+  ];
+  function signTex(text, color) {
+    return canvasTex(512, 128, (c, w, h) => { c.clearRect(0, 0, w, h); c.font = '800 64px Inter, system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.shadowColor = color; c.shadowBlur = 18; c.fillStyle = color; c.fillText(text, w / 2, h / 2 + 4); });
+  }
+  function buildCommons() {
+    const realScene = scene; scene = state.floors[0];
+    const shell = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 14, specular: 0x202024 }));
+    const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
+    const h = S / 2, F = SLAB_H;
+    for (const def of COMMONS) {
+      const sg = cornerSign(def.corner), cx = sg[0] * ROOM_D, cz = sg[1] * ROOM_D;
+      const box = (m, w, hh, d, lx, y, lz, c, o) => m.box(w, hh, d, cx + lx, y, cz + lz, c, o);
+      const C = { key: def.key, corner: def.corner, center: new THREE.Vector3(cx, 0, cz), half: h, dir: roomDir(def.corner), lanes: {}, edges: '', spots: [], entry: null };
+      const spot = (list, lx, lz, o) => { o = o || {}; C.spots.push({ list, x: lx, z: lz, y: o.y || 0, face: o.face || null, lane: o.lane, sit: !!o.sit }); };
+      shell.box(S, SLAB_H, S, cx, SLAB_H / 2, cz, def.floorC);
+      shell.box(S, 0.1, 0.22, cx, F + 0.05, cz + h - 0.11, mix(def.floorC, 0xffffff, 0.45));
+      shell.box(0.22, 0.1, S, cx + h - 0.11, F + 0.05, cz, mix(def.floorC, 0xffffff, 0.45));
+      if (def.walls) {
+        shell.box(WALL_T, WALL_H, S, cx - h + WALL_T / 2, F + WALL_H / 2, cz, def.wallC);
+        shell.box(S, WALL_H, WALL_T, cx, F + WALL_H / 2, cz - h + WALL_T / 2, def.wallC);
+        shell.box(0.55, WALL_H + 1.6, 0.55, cx - h + 0.27, F + (WALL_H + 1.6) / 2, cz - h + 0.27, 0x1d2029);
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.8), new THREE.MeshBasicMaterial({ map: signTex(def.name, def.sign), transparent: true, depthWrite: false }));
+        sign.position.set(cx + 1.2, F + 7.6, cz - h + WALL_T + 0.03); scene.add(sign);
+      }
+      C.lanes = Object.assign({}, LIFE_LAYOUT.normal.lanes); C.edges = LIFE_LAYOUT.normal.edges;
+      if (def.key === 'canteen') {
+        // the kitchen: a counter along the back wall (sink, hob, coffee machine), upper cabinets and a tall fridge
+        box(M, 12, 1.5, 1.6, -1, F + 0.75, -8.75, 0xefe9df); box(M, 12.2, 0.1, 1.75, -1, F + 1.55, -8.75, 0x8a6a4a);
+        box(M, 1.4, 0.05, 0.9, -3, F + 1.62, -8.75, 0x9aa3ad); box(M, 1.2, 0.08, 0.9, 1.5, F + 1.63, -8.75, 0x22252c);
+        box(M, 0.8, 1.0, 0.7, 4, F + 2.1, -8.9, 0x2b2e36); GL.box(0.07, 0.07, 0.07, 4.25, F + 2.45, -8.5, 0x7dffb0);
+        box(M, 10, 1.4, 0.9, -1, F + 5.4, -9.1, 0xd8cfc0);
+        box(M, 1.8, 4.4, 1.6, -8.6, F + 2.2, -8.75, 0xd9dde3); box(M, 0.08, 1.2, 0.1, -7.75, F + 2.6, -7.95, 0x9aa3ad);
+        // two round tables with stools under pendant lights
+        for (const tx of [-3.5, 3.0]) {
+          M.cyl(1.25, 0.12, cx + tx, F + 1.6, cz + 3.6, 0xc8925a); M.cyl(0.12, 1.5, cx + tx, F + 0.8, cz + 3.6, 0x3a3d42); M.cyl(0.6, 0.06, cx + tx, F + 0.03, cz + 3.6, 0x3a3d42);
+          M.cyl(0.04, 3.4, cx + tx, F + 6.7, cz + 3.6, 0x15151a); GL.cyl(0.55, 0.3, cx + tx, F + 4.9, cz + 3.6, 0xfff1d6); addGlowSprite(cx + tx, F + 4.7, cz + 3.6, 0xffe2b8, 3.2, 0.4);
+        }
+        for (const [sx, tx] of [[-5.5, -3.5], [-1.5, -3.5], [1.0, 3.0], [5.0, 3.0]]) {
+          M.cyl(0.45, 0.12, cx + sx, F + 1.0, cz + 3.6, 0x2a2d35); M.cyl(0.08, 1.0, cx + sx, F + 0.5, cz + 3.6, 0x55596a);
+          spot('sits', sx, 3.6, { sit: true, face: [tx, 3.6], lane: sx < -2 ? 'ML' : sx < 2 ? 'MM' : 'MR' });
+        }
+        spot('food', -4.5, -6.7, { face: [-4.5, -8.75], lane: 'ML' }); spot('food', 1.5, -6.7, { face: [1.5, -8.75], lane: 'MM' });
+        plant(M, cx + h - 1.6, F, cz - h + 1.9, 1); plant(M, cx - h + 1.8, F, cz + h - 1.8, 0.9);
+      } else if (def.key === 'lounge') {
+        box(M, 12, 0.06, 9, 0.5, F + 0.03, -3.5, 0x4f7f86);                                                   // the rug
+        box(M, 8.4, 0.7, 1.8, -1, F + 0.45, -8.5, 0xd9cdd7); box(M, 8.4, 1.1, 0.45, -1, F + 1.2, -9.3, 0xd9cdd7);   // the sofa
+        box(M, 0.45, 1.0, 1.8, -5.0, F + 0.9, -8.5, 0xd9cdd7); box(M, 0.45, 1.0, 1.8, 3.0, F + 0.9, -8.5, 0xd9cdd7);
+        for (const k of [-3.5, -1, 1.5]) box(M, 2.2, 0.18, 1.5, k, F + 0.88, -8.4, 0xefe6ee);
+        box(M, 1.8, 0.12, 1.2, 1.2, F + 0.95, -5.0, 0xc8925a); box(M, 1.5, 0.85, 0.9, 1.2, F + 0.45, -5.0, 0x8a6a4a);
+        box(M, 0.16, 2.6, 4.6, -9.5, F + 4.4, -1, 0x0d0d12); GL.box(0.04, 2.3, 4.3, -9.38, F + 4.4, -1, 0x3f6fd8);  // the TV wall
+        M.add(G.sphere, 0xf59e0b, cx + 3, F + 0.55, cz + 4.2, { sx: 1.1, sy: 0.6, sz: 1.1 }); M.add(G.sphere, 0x8b5cf6, cx + 6, F + 0.55, cz + 3.0, { sx: 1.1, sy: 0.6, sz: 1.1 });
+        props_lamp(M, GL, cx + h - 1.8, F, cz - h + 1.8);
+        plant(M, cx - h + 1.8, F, cz + h - 1.8, 1);
+        C.lanes = Object.assign(C.lanes, { S3: [4.6, -6.6], S2: [1.5, -6.6], S1: [-1, -6.6], S0: [-3.5, -6.6] });
+        C.edges += ' MR-S3 S3-S2 S2-S1 S1-S0';
+        [[-3.5, 'S0'], [-1, 'S1'], [1.5, 'S2']].forEach(([x, ln]) => spot('sits', x, -8.2, { sit: true, face: [x, 0], lane: ln }));
+        spot('sits', 3, 4.2, { sit: true, face: [-9.5, -1], lane: 'MM' }); spot('sits', 6, 3.0, { sit: true, face: [-9.5, -1], lane: 'MR' });
+      } else if (def.key === 'townhall') {
+        box(M, 0.16, 3.8, 8.6, -9.5, F + 4.6, -1, 0x0d0d12); GL.box(0.04, 3.5, 8.3, -9.38, F + 4.6, -1, 0x5a8fe0);     // the big screen
+        for (const [tx, th, tc] of [[-1.5, 0.55, 0xc8925a], [0.5, 1.1, 0xa9773f], [2.5, 1.65, 0x8a5f31]]) box(M, 2.0, th, 12, tx, F + th / 2, -1, tc);
+        C.lanes = { RB: [7.8, -6.0], RM: [7.8, 0.4], RF: [7.8, 6.6], FM: [2, 7.4], FL: [-5.5, 7.4], T0: [5, -4.5], T1: [5, -1], T2: [5, 2.5] };
+        C.edges = 'RB-RM RM-RF RF-FM FM-FL RB-T0 RM-T1 RM-T2 T0-T1 T1-T2';
+        [[-4.5, 'T0'], [-1, 'T1'], [2.5, 'T2']].forEach(([z, ln]) => spot('sits', 2.5, z, { y: 1.65, sit: true, face: [-10, z], lane: ln }));
+        for (const [x, z] of [[-3.6, 2.5], [-4.6, -2.0]]) { M.cyl(0.6, 1.0, cx + x, F + 0.5, cz + z, 0x6d5bd0); spot('sits', x, z, { sit: true, face: [-10, z], lane: 'FL' }); }
+        plant(M, cx + h - 1.6, F, cz - h + 1.9, 1);
+      } else {
+        // the reception: the front desk with a gold strip, the chief of staff's receptionist, a waiting sofa
+        box(M, 6.4, 1.8, 1.4, 3, F + 0.9, -7.6, 0x3b4560); box(M, 6.6, 0.12, 1.6, 3, F + 1.86, -7.6, 0xe8e2d6); GL.box(6.0, 0.08, 0.04, 3, F + 1.2, -6.88, 0xf5c84b);
+        box(M, 1.35, 0.16, 1.35, 3, F + 1.18, -9.0, 0x2a2d31); M.cyl(0.07, 0.9, cx + 3, F + 0.64, cz - 9.0, 0x3a3d42);
+        const rc = makeCharacter({ skin: 0xf1c9a5, hair: 0x2a2a2e, style: 'short', hat: 0xf5c542, shirt: 0xf5c542, trousers: 0x2b3350 }, { seated: true, head: true });
+        rc.group.position.set(cx + 3, F, cz - 9.0); rc.group.scale.setScalar(CHAR_SCALE); scene.add(rc.group);
+        box(M, 4.4, 0.7, 1.5, 3.8, F + 0.45, 4.5, 0xc3d1d1); box(M, 4.4, 1.0, 0.4, 3.8, F + 1.05, 5.3, 0xc3d1d1);
+        box(M, 3.4, 0.05, 2.2, -6.6, F + 0.03, -6.6, 0xf5c84b);
+        plant(M, cx + h - 1.6, F, cz + h - 1.6, 1); plant(M, cx - h + 1.6, F, cz + h - 1.6, 0.9); plant(M, cx + h - 1.6, F, cz - h + 1.6, 0.8);
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(6.2, 1.55), new THREE.MeshBasicMaterial({ map: signTex(def.name, def.sign), transparent: true, depthWrite: false }));
+        sign.position.set(cx + 3, F + 3.0, cz - 8.4); scene.add(sign);
+        C.lanes = { C: [0, 0], D: [-7.5, -7.5] }; C.edges = 'C-D';
+        C.entry = { out: [[-h - 1.7, -h - 1.7, 'w']], door: [-8.7, -8.7], lanes: 'D' };
+        spot('sits', 2.8, 4.3, { sit: true, face: [2.8, -10], lane: 'C' }); spot('sits', 4.8, 4.3, { sit: true, face: [4.8, -10], lane: 'C' });
+      }
+      state.commons.push(C);
+    }
+    scene.add(shell.mesh()); scene.add(M.mesh()); scene.add(GL.mesh());
+    scene = realScene;
+  }
+  function props_lamp(M, GL, x, F, z) {
+    M.cyl(0.42, 0.12, x, F + 0.06, z, 0x15151a); M.cyl(0.07, 5.2, x, F + 2.6, z, 0x15151a); GL.ball(0.42, x, F + 5.45, z, 0xfff6e6);
+    addGlowSprite(x, F + 5.45, z, 0xffecc8, 2.0, 0.45);
+  }
+
   const _a = new THREE.Vector3(), _b = new THREE.Vector3();
   function animateParticles(t) {
     const pos = anim.particles.geometry.attributes.position, colr = anim.particles.geometry.attributes.color;
     let i = 0;
     const put = (x, y, z, bright) => { pos.setXYZ(i, x, y, z); if (bright !== undefined) colr.setXYZ(i, bright, bright, bright); i++; };
-    for (const p of particleSets.walk) { const u = 1 - ((t * 0.06 + p.k / 3) % 1); _a.lerpVectors(p.path.a, p.path.b, u); put(_a.x - p.path.dir.z * p.side * 1.7, WALK_Y + 0.25, _a.z + p.path.dir.x * p.side * 1.7, 0.9); }
-    for (const p of particleSets.wire) { const u = 1 - ((t * 0.09 + p.k / 5) % 1); p.curve.getPoint(u, _a); put(_a.x, _a.y, _a.z, 1); }
+    for (const p of particleSets.wire) { if (!floorShown(p.floor)) { put(0, -999, 0, 0); continue; } const u = (t * 0.09 + p.k / 5) % 1; p.curve.getPoint(u, _a); put(_a.x, _a.y, _a.z, 1); }
     for (const p of particleSets.rider) { const a = p.a + t * p.speed; _a.set(Math.cos(a) * p.ring.radius, 0, Math.sin(a) * p.ring.radius).applyMatrix4(p.ring.holder.matrixWorld); put(_a.x, _a.y, _a.z, 1); }
     for (const p of particleSets.orbit) { const a = p.phase + t * p.speed; _a.copy(p.u).multiplyScalar(Math.cos(a) * p.radius).addScaledVector(p.v, Math.sin(a) * p.radius); put(_a.x, CORE_Y + _a.y, _a.z, 0.7); }
-    for (const p of particleSets.rise) { const u = (p.phase + t * p.speed) % 1; put(p.x, 2.4 + u * 46, p.z, Math.sin(u * Math.PI) * 0.9); }
+    for (const p of particleSets.rise) { const u = (p.phase + t * p.speed) % 1; put(p.x, 2.4 + u * (TOP_Y + 20), p.z, Math.sin(u * Math.PI) * 0.9); }
     pos.needsUpdate = true; colr.needsUpdate = true;
   }
 
@@ -787,7 +973,7 @@
       const pos = subPosition(room, idx, items.length);
       if (!sub) { sub = createSub(room, id, pos, now, idx); room.subs.push(sub); }
       sub.item = it; sub.target = pos;
-      sub.group.position.set(room.center.x + pos.x, SLAB_H, room.center.z + pos.z);
+      sub.group.position.set(room.center.x + pos.x, room.y + SLAB_H, room.center.z + pos.z);
     });
     if (room.decal) room.decal.material.map = room.subs.length ? room.bayTex.plain : room.bayTex.text;
   }
@@ -797,7 +983,7 @@
     return { x: -4.5 + (idx % 4) * 3, z: room.half - 2.2 - Math.floor(idx / 4) * 3, desk: false };
   }
   function createSub(room, id, pos, now, idx) {
-    const g = new THREE.Group(); g.position.set(room.center.x + pos.x, SLAB_H, room.center.z + pos.z); scene.add(g);
+    const g = new THREE.Group(); g.position.set(room.center.x + pos.x, room.y + SLAB_H, room.center.z + pos.z); state.floors[room.floor].add(g);
     const r = rng(hash(room.key + id));
     const look = { skin: SKINS[Math.floor(r() * 3)], hair: [0xeed787, 0xb33a2a, 0xd9c59a][idx % 3], style: ['short', 'bob', 'short'][idx % 3], hat: 0x3fbf6a, shirt: col(room.team.accent || room.color).getHex(), phones: [0x54c9a6, null, 0xe6e6e6][idx % 3], trousers: 0x2b3350 };
     const ch = makeCharacter(look, { seated: pos.desk, ghost: true, tablet: !pos.desk });
@@ -822,7 +1008,7 @@
   }
   function removeSub(room, sub) {
     room.subs.splice(room.subs.indexOf(sub), 1);
-    scene.remove(sub.group);
+    if (sub.group.parent) sub.group.parent.remove(sub.group);
     const i = pickables.findIndex((o) => o.userData.agent === 'sub:' + sub.id); if (i >= 0) pickables.splice(i, 1);
     delete labels.sub[sub.id];
     if (sub.anchor.element.parentNode) sub.anchor.element.parentNode.removeChild(sub.anchor.element);   // the CSS2D element does not leave the DOM on its own
@@ -860,7 +1046,7 @@
   // help, ideas, brand rules, today's done tasks) and a pool of warm generic lines; nothing invents numbers or claims.
   const LIFE_RING_R = 14.6, LIFE_PLAT_Y = 1.2, LIFE_BAR_A = 22.5 * DEG;
   const LIFE = {
-    on: true, ready: false, auto: true, speed: 1, time: 0, max: 7, nodes: [], actors: [], by: {}, talks: [], topics: [], taken: {}, rooms: {}, ring: [], bar: [],
+    on: true, ready: false, auto: true, speed: 1, time: 0, max: 7, nodes: [], actors: [], by: {}, talks: [], topics: [], taken: {}, rooms: {}, commons: {}, ring: [], bar: [],
     pulse: 0, pulsed: false, notes: [], wave: null, debug: null, recent: {}, chatterTimer: 0, talkers: {},   // talkers: who is mid-conversation (the HUD hides their name pills)
   };
   // Room-local lanes (x, z from the room centre) for a normal room and for the big Creative room, the lanes each desk
@@ -933,6 +1119,8 @@
       'We should do that more 🌱', 'Agreed, 100% 💯', 'Ha! Fair 😄', 'Mood ☕'],
     solo: ['Ahh, much better ☕', "Coffee o'clock ☕", 'Mmm, fresh brew ☕', 'Recharging… 🔋', 'One sip, then back to it', 'Little break, big help 🌿', '辛苦啦 to me ☕', 'Smells amazing ☕',
       'Warm mug, happy me 😊', 'Brain fuel ☕🧠'],
+    lunch: ['Lunch time 🥪', 'Smells so good in here 🍜', 'Refuelling 🍱', 'Best part of the day 😋', '吃饭啦！🍚', 'A quick bite, then back up ⬆️'],
+    rest: ['Comfy 🛋️', 'Five minutes on the sofa 😌', 'Nice to sit down for a bit 🌿', 'Watching the big screen 📺', 'Little break, big help ☕', 'Recharging… 🔋'],
     busy: ["Oh, you're busy! Later 👋", "Looks like you're on it. Next time! 🙂", "Ah, deep in work. I'll come back ✌️", 'No worries, catch you later 😊'],
     stretch: ['Stretch time 🙆', 'Ahh, that feels good 🧘', 'Shoulders, meet the ceiling 🙌', 'Quick stretch, back to it 💪'],
     note: ['Saving this for everyone 🧠', 'Into the Brain it goes 📝', 'Noting that down for the team ✍️', 'One more note for the Brain ✨'],
@@ -1016,34 +1204,48 @@
   const routeDist = (a, b) => { const r = route(a, b); return r ? r.dist : Infinity; };
 
   function buildLife() {
-    const N = LIFE.nodes, F = SLAB_H;
-    const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
-    const strip = (a, b, w) => { const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz); M.box(w, 0.32, len + w, (a.x + b.x) / 2, WALK_Y - 0.03 - 0.16, (a.z + b.z) / 2, 0x30343f, { ry: Math.atan2(dx, dz) }); };
-    // the ring lane on the Brain platform: 16 points between the inner disc and the rim (the bar's point sits inward)
+    const N = LIFE.nodes;
+    const Ms = state.floors.map(() => new Merger(new THREE.MeshLambertMaterial({ vertexColors: true }))), GLs = state.floors.map(() => new Merger(new THREE.MeshBasicMaterial({ vertexColors: true })));
+    // ground: the ring lane on the Brain platform, 16 points between the inner disc and the rim (the bar's point sits inward)
     for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8, r = k === 1 ? 14.3 : LIFE_RING_R; LIFE.ring.push(lnode(Math.cos(a) * r, LIFE_PLAT_Y, Math.sin(a) * r, { w: 0.5 })); }
     for (let k = 0; k < 16; k++) ledge(LIFE.ring[k], LIFE.ring[(k + 1) % 16]);
+    const ringAt = (ang) => LIFE.ring[((Math.round(ang / (Math.PI / 8)) % 16) + 16) % 16];
+    // floors 1 and 2: a corridor loop around the atrium (corners and mid-points), joined by the lift
+    const corr = [null];
+    for (let f = 1; f < FLOORS; f++) {
+      const y = f * FLOOR_H + WALK_Y, ids = {};
+      for (const [k, x, z] of [['00', -CORR, -CORR], ['m0', 0, -CORR], ['20', CORR, -CORR], ['2m', CORR, 0], ['44', CORR, CORR], ['m4', 0, CORR], ['64', -CORR, CORR], ['6m', -CORR, 0]]) ids[k] = lnode(x, y, z, { w: 0.6 });
+      'm0 20 2m 44 m4 64 6m 00 m0'.split(' ').reduce((a, b) => { ledge(ids[a], ids[b]); return b; });
+      corr.push({ 0: ids['00'], 2: ids['20'], 4: ids['44'], 6: ids['64'], back: ids.m0 });
+    }
+    let below = null;
+    for (let f = 0; f < FLOORS; f++) {
+      const y = f * FLOOR_H + WALK_Y;
+      const inside = lnode(LIFT.x, y, LIFT.z), door = lnode(LIFT.x, y, LIFT.z + LIFT.r + 0.9, { w: 0.3 });
+      ledge(inside, door);
+      if (f) ledge(door, corr[f].back); else { const rim = lnode(0, LIFE_PLAT_Y, -16.4, { w: 0.3 }); ledge(ringAt(-Math.PI / 2), rim); ledge(rim, door); }
+      if (below != null) ledge(below, inside);                                 // the ride between floors
+      below = inside;
+    }
+    // From the junction on a floor to a corner place's door (h = half its side): on the ground a short step off the
+    // Brain platform first, then the points outside the slab ('w' walk, 'p' porch around the back walls), then the door.
+    const enter = (place, j, R, spec) => {
+      let prev = j;
+      const Y = place.y || 0, d = place.dir;
+      if (!Y) { const wp = lnode(d.x * 16.6, LIFE_PLAT_Y, d.z * 16.6, { w: 0.5 }), w0 = lnode(d.x * 17.4, WALK_Y, d.z * 17.4, { w: 1.1 }); ledge(j, wp); ledge(wp, w0); prev = w0; }
+      for (const o of spec.out) { const id = lnode(place.center.x + o[0], Y + WALK_Y, place.center.z + o[1], { w: o[2] === 'p' ? 0.35 : 1.1 }); ledge(prev, id); prev = id; }
+      const door = R(spec.door[0], spec.door[1]); ledge(prev, door); return door;
+    };
     for (const room of state.roomList) {
-      const lay = room.big ? LIFE_LAYOUT.creative : LIFE_LAYOUT.normal, h = room.half, cx = room.center.x, cz = room.center.z, key = room.key;
+      const lay = room.big ? LIFE_LAYOUT.creative : LIFE_LAYOUT.normal, h = room.half, cx = room.center.x, cz = room.center.z, key = room.key, F = room.y + SLAB_H;
+      const M = Ms[room.floor], GL = GLs[room.floor];
       const R = (lx, lz, o) => lnode(cx + lx, F, cz + lz, Object.assign({ room: key }, o || {}));
       const lanes = {};
       for (const k of Object.keys(lay.lanes)) lanes[k] = R(lay.lanes[k][0], lay.lanes[k][1]);
       lay.edges.split(' ').forEach((e) => { const ab = e.split('-'); ledge(lanes[ab[0]], lanes[ab[1]]); });
       const joinLanes = (id, names) => names.split(' ').forEach((nm) => { if (lanes[nm] != null) ledge(id, lanes[nm]); });
-      // walkway: ring junction → platform rim → walkway → (porch) → the door on the open edge
-      const d = room.dir, ang = Math.atan2(d.z, d.x), j = LIFE.ring[((Math.round(ang / (Math.PI / 8)) % 16) + 16) % 16];
-      const wp = lnode(d.x * 16.6, LIFE_PLAT_Y, d.z * 16.6, { w: 0.5 }), w0 = lnode(d.x * 17.4, WALK_Y, d.z * 17.4, { w: 1.1 });
-      ledge(j, wp); ledge(wp, w0);
-      const spec = LIFE_ENTRY[room.index % 8](h);
-      let prev = w0, prevKind = 'w';
-      for (const o of spec.out) {
-        const id = lnode(cx + o[0], WALK_Y, cz + o[1], { w: o[2] === 'p' ? 0.35 : 1.1 });
-        ledge(prev, id);
-        if (o[2] === 'p') strip(N[prev].p, N[id].p, 2.6);
-        prev = id; prevKind = o[2];
-      }
-      const door = R(spec.door[0], spec.door[1]);
-      ledge(prev, door); joinLanes(door, spec.lanes);
-      if (prevKind === 'p') strip(N[prev].p, N[door].p, 2.6);                  // the porch meets the slab edge (the part inside the slab stays hidden)
+      const j = corr[room.floor][room.index], spec = LIFE_ENTRY[room.index % 8](h);
+      const door = enter(room, j, R, spec); joinLanes(door, spec.lanes);
       // desks: a stand spot beside the chair and a guest spot for a visitor, facing each other. The guest stands
       // across the screen from the host (world (-1,+1) for a desk facing the back wall, (+1,-1) for a side desk),
       // so the pair reads side by side from the usual camera angle and neither hides the other.
@@ -1067,15 +1269,35 @@
       const counterAt = new THREE.Vector3(wx, F, wz);
       const coffee = lay.coffee.map((c) => R(c[0], c[1], { spot: true, faceTo: counterAt }));
       coffee.forEach((id) => joinLanes(id, lay.coffeeLanes));
-      // two phone spots near the open front edge (pace between them) and a note spot at the Brain's edge
+      // two phone spots near the open front edge (pace between them) and a note spot at the atrium railing
       const phone = lay.phone.map((c) => { const id = R(c[0], c[1], { spot: true }); joinLanes(id, c[2]); return id; });
       ledge(phone[0], phone[1]);
-      const na = ang + 7 * DEG, note = lnode(Math.cos(na) * 13.9, LIFE_PLAT_Y, Math.sin(na) * 13.9, { spot: true, faceTo: new THREE.Vector3(0, 0, 0) });
+      const sg = cornerSign(room.index), ny = room.y + WALK_Y;
+      const note = lnode(sg[0] * (HOLE + 0.9), ny, sg[1] * (HOLE + 0.9), { spot: true, faceTo: new THREE.Vector3(0, ny, 0) });
       ledge(note, j);
       LIFE.rooms[key] = { room, lanes, door, coffee, phone, note, junction: j };
     }
-    // the lobby coffee bar on the Brain platform, between the Creative and Analytics walkways
+    // the commons on the ground floor: their lanes, spots (sit / food) and the way in from the Brain platform
+    for (const C of state.commons) {
+      const cx = C.center.x, cz = C.center.z, F = SLAB_H;
+      const R = (lx, lz, o) => lnode(cx + lx, F + ((o && o.dy) || 0), cz + lz, Object.assign({ room: C.key }, o || {}));
+      const lanes = {};
+      for (const k of Object.keys(C.lanes)) lanes[k] = R(C.lanes[k][0], C.lanes[k][1]);
+      C.edges.split(' ').forEach((e) => { const ab = e.split('-'); ledge(lanes[ab[0]], lanes[ab[1]]); });
+      const spec = C.entry || LIFE_ENTRY[C.corner % 8](C.half);
+      const door = enter(C, ringAt(Math.atan2(C.dir.z, C.dir.x)), R, spec);
+      spec.lanes.split(' ').forEach((nm) => { if (lanes[nm] != null) ledge(door, lanes[nm]); });
+      const out = { key: C.key, sits: [], food: [] };
+      for (const sp of C.spots) {
+        const id = R(sp.x, sp.z, { spot: true, dy: sp.y, faceTo: sp.face ? new THREE.Vector3(cx + sp.face[0], F, cz + sp.face[1]) : null });
+        N[id].sit = sp.sit; if (lanes[sp.lane] != null) ledge(id, lanes[sp.lane]);
+        out[sp.list].push(id);
+      }
+      LIFE.commons[C.key] = out;
+    }
+    // the lobby coffee bar on the Brain platform, between the canteen and the lounge
     {
+      const M = Ms[0], GL = GLs[0];
       const a = LIFE_BAR_A, cs = Math.cos(a), sn = Math.sin(a), ry = -a, at = (r, t, y) => [cs * r - sn * t, y, sn * r + cs * t];
       const put = (fn, r, t, y, ...rest) => { const q = at(r, t, y); fn(q[0], q[1], q[2], ...rest); };
       put((x, y, z) => M.box(0.8, 1.25, 4.4, x, y, z, 0xe6ebf1, { ry }), 16.6, 0, LIFE_PLAT_Y + 0.625);
@@ -1089,7 +1311,7 @@
       put((x, y, z) => plant(M, x, y, z, 0.42), 16.7, 1.85, LIFE_PLAT_Y + 1.35);
       for (const deg of [15.5, 22.5, 29.5]) { const b = deg * DEG, id = lnode(Math.cos(b) * 15.7, LIFE_PLAT_Y, Math.sin(b) * 15.7, { spot: true, faceTo: new THREE.Vector3(Math.cos(b) * 18, 0, Math.sin(b) * 18) }); ledge(id, LIFE.ring[1]); LIFE.bar.push(id); }
     }
-    scene.add(M.mesh()); scene.add(GL.mesh());
+    Ms.forEach((m, f) => state.floors[f].add(m.mesh())); GLs.forEach((m, f) => state.floors[f].add(m.mesh()));
     // the note particles that fly into the Brain, and the ring wave of its pulse
     for (let k = 0; k < 3; k++) {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xa8ecff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
@@ -1143,6 +1365,7 @@
   const S_FACE = (fn) => ({ t: 'face', fn });
   const S_WAIT = (dur, anim, until, max) => ({ t: 'wait', dur, anim, until, max });
   const S_CALL = (fn) => ({ t: 'call', fn });
+  const S_PERCH = (to) => ({ t: 'perch', to });                                // sit down (0) or stand up (1) right where the agent is
   const faceNode = (L) => { const n = LIFE.nodes[L.node]; return n && n.faceTo ? Math.atan2(n.faceTo.x - L.base.x, n.faceTo.z - L.base.z) : null; };
   const faceActor = (P) => (L) => (P ? Math.atan2(P.base.x - L.base.x, P.base.z - L.base.z) : null);
   function runSteps(L, steps, action) { L.steps = steps; L.si = -1; L.mode = 'active'; L.action = action; L.t0 = LIFE.time; nextStep(L); }
@@ -1153,7 +1376,7 @@
       const s = L.steps && L.steps[L.si];
       if (!s) { L.inNext = false; finishAction(L); return; }
       if (s.t === 'call') { s.fn(L); if (L.mode === 'seated') { L.inNext = false; return; } continue; }
-      if (s.t === 'rise' || s.t === 'sit') { L.p0.copy(L.base); L.pose0 = L.pose; L.yaw0 = L.yaw; }
+      if (s.t === 'rise' || s.t === 'sit' || s.t === 'perch') { L.p0.copy(L.base); L.pose0 = L.pose; L.yaw0 = L.yaw; }
       if (s.t === 'walk' && !walkInit(L, s)) continue;
       if (s.t === 'wait' && s.anim !== undefined) L.anim = s.anim;
       break;
@@ -1179,11 +1402,12 @@
       if (s.k >= s.pts.length - 1) { L.base.copy(s.pts[s.k]); L.moving = false; nextStep(L); return; }
       a = s.pts[s.k]; b = s.pts[s.k + 1]; len = a.distanceTo(b);
     }
-    const u = len > 1e-6 ? s.d / len : 1, dx = b.x - a.x, dz = b.z - a.z, inv = 1 / Math.max(1e-6, Math.hypot(dx, dz)), w = Math.min(s.ws[s.k], s.ws[s.k + 1]);
-    L.base.set(a.x + dx * u, a.y + (b.y - a.y) * smooth(0.3, 0.7, u), a.z + dz * u);
+    const u = len > 1e-6 ? s.d / len : 1, dx = b.x - a.x, dz = b.z - a.z, flat = Math.hypot(dx, dz), inv = 1 / Math.max(1e-6, flat), w = Math.min(s.ws[s.k], s.ws[s.k + 1]);
+    const ride = flat < 0.05;                                                  // the lift: straight up or down
+    L.base.set(a.x + dx * u, a.y + (b.y - a.y) * (ride ? ease(u) : smooth(0.3, 0.7, u)), a.z + dz * u);
     _lo.set(-dz * inv * w, 0, dx * inv * w);                                   // keep to one side of a walkway or the ring, so walkers pass each other
     L.off.lerp(_lo, Math.min(1, dt * 3.5));
-    turnTo(L, Math.atan2(dx, dz), dt, 7);
+    if (ride) L.moving = false; else turnTo(L, Math.atan2(dx, dz), dt, 7);
   }
   function stepActor(L, dt) {
     const s = L.steps && L.steps[L.si];
@@ -1200,6 +1424,10 @@
       L.base.lerpVectors(L.p0, L.cp, ease(Math.min(1, u / 0.7)));
       L.pose = L.pose0 * (1 - easeOut(clamp((u - 0.3) / 0.7, 0, 1)));
       L.yaw = L.yaw0 + wrapA(L.chairYaw - L.yaw0) * ease(u);
+      if (u >= 1) nextStep(L);
+    } else if (s.t === 'perch') {
+      const u = Math.min(1, L.st / 0.7);
+      L.pose = L.pose0 + (s.to - L.pose0) * ease(u);
       if (u >= 1) nextStep(L);
     } else if (s.t === 'walk') walkStep(L, s, dt);
     else if (s.t === 'face') { const y = s.fn(L); if (y != null) turnTo(L, y, dt, 7); if (L.st > 0.6) nextStep(L); }
@@ -1243,7 +1471,7 @@
         L.node = c;
       }
       const w = S_WALK(L.stand, hurry ? HURRY_SPEED : WALK_SPEED); w.from = from;
-      steps = [w, S_SIT()];
+      steps = (L.pose < 0.95 && !(s && s.t === 'walk') ? [S_PERCH(1)] : []).concat([w, S_SIT()]);
     }
     L.steps = steps; L.si = -1;
     if (!L.inNext) nextStep(L);
@@ -1324,7 +1552,7 @@
     runSteps(L, steps, 'stretch'); return true;
   }
   function actCoffee(L, opts) {
-    const R = LIFE.rooms[L.room], bar = opts && opts.where ? opts.where === 'bar' : Math.random() < 0.4;
+    const R = LIFE.rooms[L.room], bar = opts && opts.where ? opts.where === 'bar' : Math.random() < 0.22;
     let spot = bar ? freeSpot(LIFE.bar) : freeSpot(R.coffee);
     if (spot == null) spot = bar ? freeSpot(R.coffee) : freeSpot(LIFE.bar);
     if (spot == null || !reserve(L, spot)) return false;
@@ -1361,6 +1589,36 @@
       S_WAIT(0.45, 'note'), S_CALL(launchNote), S_WAIT(1.9, 'note'), S_CALL((A) => { A.icon = null; A.anim = null; }), S_WALK(L.stand), S_SIT()], 'note');
     return true;
   }
+  // A break downstairs: lunch in the canteen (a plate from the kitchen counter first), the lounge sofas and bean bags,
+  // or the town hall steps. Whoever is already there on a break gets a chat; the lift takes them down and back up.
+  function actBreak(L, opts) {
+    const want = opts && opts.where, weights = { canteen: 0.45, lounge: 0.35, townhall: 0.2, reception: 0.06 };
+    const pool = Object.values(LIFE.commons).filter((c) => (!want || c.key === want) && freeSpot(c.sits) != null);
+    if (!pool.length) return false;
+    let x = Math.random() * pool.reduce((t, c) => t + (weights[c.key] || 0.1), 0), C = pool[0];
+    for (const c of pool) { if ((x -= weights[c.key] || 0.1) <= 0) { C = c; break; } }
+    const seatId = freeSpot(C.sits);
+    if (seatId == null || !reserve(L, seatId)) return false;
+    const steps = [S_RISE()];
+    const food = C.food.length ? freeSpot(C.food) : null;
+    if (food != null && reserve(L, food)) steps.push(S_WALK(food), S_FACE(faceNode), S_WAIT(1.3, 'pour'), S_CALL((A) => { A.hasMug = true; mugOf(A); }), S_WAIT(0.4, 'pour'));
+    const sit = LIFE.nodes[seatId].sit;
+    steps.push(S_WALK(seatId), S_FACE(faceNode));
+    if (sit) steps.push(S_PERCH(0));
+    steps.push(S_CALL((A) => arriveBreak(A, C.key)), S_WAIT(11 + Math.random() * 9, undefined, (A) => !A.talk || A.talk.done, 40), S_CALL((A) => { A.anim = null; }));
+    if (sit) steps.push(S_PERCH(1));
+    steps.push(S_CALL((A) => { A.hasMug = false; }), S_WALK(L.stand), S_SIT());
+    runSteps(L, steps, 'break'); return true;
+  }
+  function arriveBreak(L, key) {
+    L.cgroup = 'break:' + key; L.anim = L.hasMug ? 'sip' : 'listen'; L.sip = Math.random() * 2;
+    const other = LIFE.actors.find((M) => M !== L && M.cgroup === L.cgroup && M.mode === 'active' && !M.homing && (!M.talk || M.talk.done) && M.steps && M.steps[M.si] && M.steps[M.si].t === 'wait');
+    if (other && Math.random() < 0.85) {
+      const tl = topicLine(L), lines = [{ who: 0, text: tl.text }, { who: 1, text: pickFresh('reply') }];
+      if (Math.random() < 0.6) { lines.push({ who: 1, text: topicLine(other).text }); lines.push({ who: 0, text: pickFresh('reply') }); }
+      startTalk(L, other, lines, tl.topic || 'a break downstairs', 'break');
+    } else if (Math.random() < 0.5) say(L, pickFresh(key === 'canteen' ? 'lunch' : 'rest'), 3.2);
+  }
   const isFree = (A) => A.mode === 'seated' && !A.running && !A.reservedBy && LIFE.on;
   function freeHost(roomKey, not) {
     const list = LIFE.actors.filter((A) => A.room === roomKey && A !== not && isFree(A) && !LIFE.taken[A.guest]);
@@ -1390,7 +1648,7 @@
     else for (const ls of lessons) { for (const k of ls.forKeys || []) { if (k !== V.room) host = freeHost(k); if (host) break; } if (host) { lesson = ls; break; } }
     if (!host) {                                                               // no lesson for anyone: a hello, neighbours more likely
       const me = state.rooms[V.room], others = state.roomList.filter((r) => r.key !== V.room);
-      const weights = others.map((r) => { const steps = Math.abs(wrapA((r.index - me.index) * Math.PI / 4)) / (Math.PI / 4); return 1 / (0.6 + steps); });
+      const weights = others.map((r) => { const steps = Math.abs(wrapA((r.index - me.index) * Math.PI / 4)) / (Math.PI / 4) + 3 * Math.abs(r.floor - me.floor); return 1 / (0.6 + steps); });
       for (let tries = 0; tries < 4 && !host; tries++) { let x = Math.random() * weights.reduce((s, w) => s + w, 0), pick = others[0]; for (let i = 0; i < others.length; i++) { if ((x -= weights[i]) <= 0) { pick = others[i]; break; } } host = freeHost(pick.key); }
       if (host) { const fit = lessons.find((x) => !(x.forKeys || []).length); if (fit && Math.random() < 0.5) lesson = fit; }
     }
@@ -1414,11 +1672,11 @@
   }
   function startAction(L, kind, opts) {
     if (!kind) {
-      const w = [['coffee', 0.27], ['stretch', 0.2], ['visit', 0.21], ['phone', 0.11], ['chat', 0.12], ['note', 0.09]];
+      const w = [['coffee', 0.2], ['stretch', 0.16], ['visit', 0.2], ['break', 0.16], ['phone', 0.1], ['chat', 0.1], ['note', 0.08]];
       let x = Math.random(); kind = 'stretch';
       for (const [k, v] of w) { if ((x -= v) <= 0) { kind = k; break; } }
     }
-    const fn = { coffee: actCoffee, stretch: actStretch, visit: actVisit, phone: actPhone, chat: actChat, note: actNote }[kind];
+    const fn = { coffee: actCoffee, stretch: actStretch, visit: actVisit, phone: actPhone, chat: actChat, note: actNote, break: actBreak }[kind];
     return fn ? !!fn(L, opts) : false;
   }
 
@@ -1599,7 +1857,11 @@
     const maxD = state.labelRules.agentMaxDist * state.fit;
     for (const kind of ['agent', 'sub']) for (const key in labels[kind]) {
       const L = labels[kind][key]; if (!L.has) { L.obj.visible = false; continue; }
-      L.obj.getWorldPosition(_w); L.obj.visible = _w.distanceTo(camera.position) < maxD;
+      L.obj.getWorldPosition(_w); L.obj.visible = _w.distanceTo(camera.position) < maxD && labelShown(floorOfY(_w.y - 4));
+    }
+    for (const kind of ['team', 'bubble', 'brain']) for (const key in labels[kind]) {  // a hidden or unfocused floor takes its labels along
+      const L = labels[kind][key]; if (!L.has) continue;
+      L.obj.getWorldPosition(_w); L.obj.visible = labelShown(floorOfY(_w.y - 6));
     }
   }
   function project(kind, key) {
@@ -1609,7 +1871,7 @@
     const dist = _w.distanceTo(camera.position);
     _w.project(camera);
     const x = (_w.x + 1) / 2 * state.size.w, y = (1 - _w.y) / 2 * state.size.h;
-    const onScreen = _w.z > -1 && _w.z < 1 && x > -200 && x < state.size.w + 200 && y > -200 && y < state.size.h + 200;
+    const onScreen = _w.z > -1 && _w.z < 1 && x > -200 && x < state.size.w + 200 && y > -200 && y < state.size.h + 200 && labelShown(floorOfY(L.obj.getWorldPosition(_b).y - 5));
     return { x, y, visible: onScreen, dist, near: dist < state.labelRules.agentMaxDist * state.fit, scale: clamp(OVERVIEW.dist / Math.max(1, dist), 0.6, 2.2) };
   }
 
@@ -1650,19 +1912,38 @@
     opts = opts || {};
     state.mode = 'room:' + teamKey;
     const dist = ROOM_VIEW.dist * (room.big ? 1.26 : 1) * (opts.zoom || 1) * state.fit;
-    tweenTo({ yaw: OVERVIEW.yaw, pitch: ROOM_VIEW.pitch, dist, target: shiftTarget(new THREE.Vector3(room.center.x, 2.2, room.center.z), dist, opts.shiftX) }, opts.duration || 950);
+    showFloor(room.floor);
+    tweenTo({ yaw: OVERVIEW.yaw, pitch: ROOM_VIEW.pitch, dist, target: shiftTarget(new THREE.Vector3(room.center.x, room.y + 2.2, room.center.z), dist, opts.shiftX) }, opts.duration || 950);
     return true;
   }
-  function overview(opts) { opts = opts || {}; state.mode = 'overview'; tweenTo({ yaw: OVERVIEW.yaw, pitch: OVERVIEW.pitch, dist: OVERVIEW.dist, target: shiftTarget(OVERVIEW.target.clone(), OVERVIEW.dist, opts.shiftX) }, opts.duration || 1100); }
+  function overview(opts) { opts = opts || {}; state.mode = 'overview'; showFloor(null); tweenTo({ yaw: OVERVIEW.yaw, pitch: OVERVIEW.pitch, dist: OVERVIEW.dist, target: shiftTarget(OVERVIEW.target.clone(), OVERVIEW.dist, opts.shiftX) }, opts.duration || 1100); }
+  // The floor view: null shows the whole building; n hides every floor above n so you look straight into it.
+  function showFloor(n) {
+    n = n == null || n === 'all' || n === '' ? null : clamp(Math.round(+n), 0, FLOORS - 1);
+    if (n === FLOORS - 1) n = null;
+    state.floorView = n;
+    state.floors.forEach((g, f) => { g.visible = floorShown(f); });
+    return n;
+  }
+  function viewFloor(n, opts) {                                               // the floor buttons: show a floor and frame it
+    opts = opts || {};
+    const v = showFloor(n);
+    if (v == null) { overview(opts); return null; }
+    state.mode = 'floor:' + v;
+    const P = state.plates[v] || PLATE_MIN, d = Math.max(OVERVIEW.dist * 0.82, (P * SQ * 2) / Math.tan(2 * Math.atan(Math.tan(camera.fov * DEG / 2) * camera.aspect) / 2) * 0.95);
+    tweenTo({ yaw: OVERVIEW.yaw, pitch: Math.max(OVERVIEW.pitch, 48 * DEG), dist: d, target: shiftTarget(new THREE.Vector3(0, v * FLOOR_H + 2, 0), d, opts.shiftX) }, opts.duration || 1000);
+    return v;
+  }
   function focusAgent(name, opts) {
     const seat = state.seats[name]; if (!seat) return false;
     opts = opts || {};
     state.mode = 'agent:' + name; const p = seat.ch.group.position;
     const d = 34 * Math.sqrt(state.fit);
+    showFloor(floorOfY(p.y));
     tweenTo({ yaw: OVERVIEW.yaw, pitch: 38 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(p.x, p.y + 1.8, p.z), d, opts.shiftX) }, opts.duration || 900);
     return true;
   }
-  function focusBrain(opts) { opts = opts || {}; state.mode = 'brain'; const d = 62 * state.fitBrain; tweenTo({ yaw: OVERVIEW.yaw, pitch: 46 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(0, 4, 0), d, opts.shiftX) }, opts.duration || 1000); }
+  function focusBrain(opts) { opts = opts || {}; state.mode = 'brain'; showFloor(0); const d = 62 * state.fitBrain; tweenTo({ yaw: OVERVIEW.yaw, pitch: 46 * DEG, dist: d, target: shiftTarget(new THREE.Vector3(0, 4, 0), d, opts.shiftX) }, opts.duration || 1000); }
   function getZoomPercent() { return Math.round(OVERVIEW.dist / Math.max(1, currentView().dist) * 100); }
   function setZoomPercent(p) { const v = currentView(); p = clamp(+p || 100, 25, 900); tweenTo({ yaw: v.yaw, pitch: v.pitch, dist: OVERVIEW.dist * 100 / p, target: v.target }, 450); if (state.mode === 'overview') state.mode = 'free'; }
   function zoom(delta) { const v = currentView(); tweenTo({ yaw: v.yaw, pitch: v.pitch, dist: clamp(v.dist * Math.pow(0.82, +delta || 0), controls.minDistance, controls.maxDistance), target: v.target }, 400); if (state.mode === 'overview') state.mode = 'free'; }
@@ -1672,32 +1953,22 @@
     if (!state.selectRing) { state.selectRing = new THREE.Mesh(new THREE.RingGeometry(1.1, 1.45, 48), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })); state.selectRing.rotation.x = -Math.PI / 2; scene.add(state.selectRing); }
     const seat = name && state.seats[name];
     state.selectRing.visible = !!seat;
-    if (seat) { const p = seat.ch.group.position; state.selectRing.position.set(p.x, SLAB_H + 0.07, p.z); }
+    if (seat) { const p = seat.ch.group.position; state.selectRing.position.set(p.x, seat.room.y + SLAB_H + 0.07, p.z); }
   }
 
-  // Minimap state in 0..1 map coordinates (screen-aligned: Research at the top, the Brain in the middle).
-  // `view` is the floor area the camera sees (the white viewport rectangle); `camera` is clamped to the map's edge.
-  const _ray = new THREE.Raycaster(), _floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), -SLAB_H), _ndc = new THREE.Vector2();
+  // Minimap state in 0..1 map coordinates: the floors side by side (ground on the left with the Brain, then 1F, 2F),
+  // each a small diamond with its rooms at their corners (top, right, bottom, left as on screen). The camera's target
+  // shows in the column of the floor it looks at.
+  const MAP_COL = (f) => 0.18 + f * 0.32;
   function minimapState() {
-    const E = RING_R + S * 1.15;
-    const mapOf = (x, z) => ({ x: 0.5 + ((x - z) * SQ) / (2 * E), y: 0.5 + ((x + z) * SQ) / (2 * E) });
     const v = currentView();
-    let view = null;
-    const pts = [];
-    for (const [nx, ny] of [[-1, 1], [1, 1], [1, -1], [-1, -1]]) {
-      _ray.setFromCamera(_ndc.set(nx, ny), camera);
-      if (_ray.ray.intersectPlane(_floor, _a)) pts.push(mapOf(_a.x, _a.z));
-    }
-    if (pts.length === 4) {
-      const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-      const x0 = clamp(Math.min(...xs), -1, 2), x1 = clamp(Math.max(...xs), -1, 2), y0 = clamp(Math.min(...ys), -1, 2), y1 = clamp(Math.max(...ys), -1, 2);
-      view = { x: x0, y: y0, w: x1 - x0, h: y1 - y0, corners: pts };
-    }
-    const cam = mapOf(camera.position.x, camera.position.z);
+    const onFloor = (x, z, f) => { const P = state.plates[f] || PLATE_MIN, u = ((x - z) * SQ) / (2 * P * SQ * 2), w = ((x + z) * SQ) / (2 * P * SQ * 2); return { x: MAP_COL(f) + u * 0.3, y: 0.5 + w * 0.92 }; };
+    const rooms = state.roomList.map((r) => Object.assign(onFloor(r.center.x, r.center.z, r.floor), { key: r.key, w: 0.075, h: 0.2, color: r.color, lit: r.lit, floor: r.floor }));
+    const tf = floorOfY(v.target.y);
+    const target = onFloor(v.target.x, v.target.z, tf);
     return {
-      rooms: state.roomList.map((r) => Object.assign(mapOf(r.center.x, r.center.z), { key: r.key, w: r.size / (2 * E), h: r.size / (2 * E), color: r.color, lit: r.lit })),
-      brain: mapOf(0, 0), camera: { x: clamp(cam.x, 0.02, 0.98), y: clamp(cam.y, 0.02, 0.98) }, target: mapOf(v.target.x, v.target.z), view,
-      yaw: v.yaw, yawOffset: v.yaw - OVERVIEW.yaw, zoom: getZoomPercent(), mode: state.mode,
+      rooms, brain: onFloor(0, 0, 0), camera: target, target, view: null, floors: FLOOR_NAMES.map((name, f) => ({ name, x: MAP_COL(f), shown: floorShown(f) })),
+      yaw: v.yaw, yawOffset: v.yaw - OVERVIEW.yaw, zoom: getZoomPercent(), mode: state.mode, floorView: state.floorView,
     };
   }
 
@@ -1710,7 +1981,8 @@
       down = null;
       const r = el.getBoundingClientRect();
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
-      const hit = ray.intersectObjects(pickables, false)[0]; if (!hit) return;
+      const shown = (o) => { for (let x = o; x; x = x.parent) if (!x.visible) return false; return true; };
+      const hit = ray.intersectObjects(pickables, false).find((h) => shown(h.object)); if (!hit) return;
       const u = hit.object.userData, api = window.HQ_OFFICE;
       if (e.pointerType === 'touch' && (u.room || u.brain)) {            // touch: a room or the Brain needs a double-tap (one-finger drags orbit)
         const id = u.room || 'brain', now = performance.now();
@@ -1785,11 +2057,19 @@
       if (!away && !on && seat.life && seat.life.micro) lifeMicro(seat.life, dt);   // a seated stretch or a look around
       seat.running = on;
     }
+    for (const name in state.seats) { const g = state.seats[name].ch.group; g.visible = floorShown(floorOfY(g.position.y)); }
+    if (state.lift) {                                                          // the car follows whoever rides it, else rests where it stopped
+      let ry = null;
+      for (const L of LIFE.actors) if (L.mode !== 'seated' && Math.abs(L.base.x - LIFT.x) < 0.3 && Math.abs(L.base.z - LIFT.z) < 0.3) { ry = L.base.y; break; }
+      if (ry != null) state.lift.y = ry;
+      state.lift.car.position.y += (state.lift.y - state.lift.car.position.y) * Math.min(1, dt * 8);
+    }
     animateWalkers(t, dt); animateSubs(t); updateLabels();
     if (state.selectRing && state.selectRing.visible) {
       state.selectRing.material.opacity = 0.6 + Math.sin(t * 4) * 0.3;
       const sel = state.seats[state.selected];                                  // the ring follows an agent who walked away from the desk
-      if (sel && sel.life) { const q = sel.ch.group.position; state.selectRing.position.set(q.x, (sel.life.mode === 'seated' ? SLAB_H : sel.life.base.y) + 0.07, q.z); }
+      if (sel && sel.life) { const q = sel.ch.group.position; state.selectRing.position.set(q.x, (sel.life.mode === 'seated' ? sel.room.y + SLAB_H : sel.life.base.y) + 0.07, q.z); }
+      if (!sel || !sel.ch.group.visible) state.selectRing.material.opacity = 0;   // on a hidden floor
     }
     if (bloomPass.enabled) composer.render(); else renderer.render(scene, camera);
     css.render(scene, camera);
@@ -1820,8 +2100,20 @@
 
   function build(teams, agents) {
     state.teams = teams; state.agents = agents;
+    for (let f = 0; f < FLOORS; f++) { const g = new THREE.Group(); g.name = 'floor' + f; scene.add(g); state.floors.push(g); }
+    state.people = new THREE.Group(); scene.add(state.people);
+    // the plan first, then any other team in a free corner of floor 1 or 2
+    const used = {}, place = {};
+    for (const t of teams) { const pl = FLOOR_PLAN[t.key]; if (pl && !used[pl.join()]) { used[pl.join()] = true; place[t.key] = pl; } }
+    const free = []; for (const f of [1, 2]) for (const c of [0, 2, 4, 6]) if (!used[f + ',' + c]) free.push([f, c]);
+    for (const t of teams) if (!place[t.key]) { if (free.length) place[t.key] = free.shift(); else console.warn('office3d: no corner left for', t.key); }
+    state.plates = Array.from({ length: FLOORS }, () => PLATE_MIN);
+    for (const t of teams) { const pl = place[t.key]; if (!pl) continue; const big = t.key === 'creative', size = big ? S * 1.4 : S; state.plates[pl[0]] = Math.max(state.plates[pl[0]], ROOM_D + (size - S) / 2 + size / 2 + 3); }
+    state.ext = Math.max(...state.plates); resize();
     buildBrain();
-    teams.forEach((team, i) => buildRoom(team, i, agents.filter((a) => a.teamKey === team.key || a.team === team.name)));
+    teams.forEach((team) => { const pl = place[team.key]; if (pl) buildRoom(team, pl[1], agents.filter((a) => a.teamKey === team.key || a.team === team.name), pl[0]); });
+    for (const name in state.seats) state.people.add(state.seats[name].ch.group);   // characters keep their own floor rule (they ride the lift)
+    buildCommons();
     buildPaths();
     try { buildLife(); } catch (e) { console.warn('office3d: office life is off', e); LIFE.ready = false; }
     state.built = true;
@@ -1834,14 +2126,15 @@
   // The public API exists from load; calls made before the scene is built are safe no-ops.
   const api = window.HQ_OFFICE = Object.assign(window.HQ_OFFICE || {}, {
     ready: false,
-    flyTo: (k, o) => state.built && flyTo(k, o), overview: (o) => state.built && overview(o), select: (n) => state.built && select(n), focusAgent: (n, o) => state.built && focusAgent(n, o), focusBrain: (o) => state.built && focusBrain(o),
+    flyTo: (k, o) => state.built && flyTo(k, o), overview: (o) => state.built && overview(o),
+    showFloor: (n, o) => (state.built ? viewFloor(n, o) : null), floorView: () => state.floorView, floors: () => FLOOR_NAMES.map((name, f) => ({ floor: f, name, rooms: state.roomList.filter((r) => r.floor === f).map((r) => r.key), shown: floorShown(f) })), select: (n) => state.built && select(n), focusAgent: (n, o) => state.built && focusAgent(n, o), focusBrain: (o) => state.built && focusBrain(o),
     project, setLabel, spawnSubagents: (k, items) => state.built && spawnSubagents(k, items), clearSubagents: (k) => state.built && clearSubagents(k),
     zoom: (d) => state.built && zoom(d), setZoomPercent: (p) => state.built && setZoomPercent(p), getZoomPercent: () => (state.built ? getZoomPercent() : 100),
     fullscreen, resize, minimapState: () => (state.built ? minimapState() : { rooms: [], brain: { x: 0.5, y: 0.5 }, camera: { x: 0.5, y: 0.5 }, target: { x: 0.5, y: 0.5 }, zoom: 100 }),
     bloom: (strength, threshold, radius) => { if (!bloomPass) return; if (strength != null) bloomPass.strength = +strength; if (threshold != null) bloomPass.threshold = +threshold; if (radius != null) bloomPass.radius = +radius; return { strength: bloomPass.strength, threshold: bloomPass.threshold, radius: bloomPass.radius }; },
     labelRules: (rules) => Object.assign(state.labelRules, rules || {}),
     pause: (on) => { state.paused = !!on; }, fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
-    teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size })),
+    teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size, floor: r.floor })),
     life: (on) => lifeSwitch(on), lifeOf: (n) => lifeOf(n), lifeState: () => lifeState(), lifeDebug: (o) => lifeDebug(o), lifeTalkers: () => LIFE.talkers,
     _three: () => ({ scene, camera, renderer, composer, controls, state }),
   });

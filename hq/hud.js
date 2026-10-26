@@ -548,7 +548,20 @@
     if (tg) { const vw = clamp((W * 0.55 * 100) / state.zoom, 10, W), vh = clamp((H * 0.55 * 100) / state.zoom, 7, H); g.strokeStyle = "rgba(255,255,255,0.7)"; g.lineWidth = 1; g.strokeRect(tg.x * W - vw / 2, tg.y * H - vh / 2, vw, vh); }
     if (ms.camera) { g.fillStyle = "rgba(255,255,255,0.9)"; g.beginPath(); g.arc(ms.camera.x * W, ms.camera.y * H, 1.8, 0, 7); g.fill(); }
   }
+  function floorOfMode(ms) {                              // which floor button is lit: the floor view, a room's floor, the Brain's
+    const mode = (ms && ms.mode) || "";
+    if (mode.startsWith("floor:")) return mode.slice(6);
+    if (mode.startsWith("room:")) { const r = (ms.rooms || []).find((x) => x.key === mode.slice(5)); return r && r.floor != null ? String(r.floor) : "all"; }
+    if (mode === "brain") return "0";
+    return ms && ms.floorView != null ? String(ms.floorView) : "all";
+  }
+  function syncFloors(ms) { const on = floorOfMode(ms); for (const b of $$("#floor-ctl button")) b.classList.toggle("on", b.dataset.floor === on); }
   function wireMinimap() {
+    for (const b of $$("#floor-ctl button")) b.addEventListener("click", () => {
+      if (!hasFn("showFloor")) return;
+      state.focused = null; callScene("showFloor", b.dataset.floor === "all" ? null : +b.dataset.floor); renderAll();
+      syncFloors(callScene("minimapState"));
+    });
     $("#minimap-out").addEventListener("click", () => { if (hasFn("zoom")) callScene("zoom", -1); else if (hasFn("setZoomPercent")) callScene("setZoomPercent", state.zoom - 15); });
     $("#minimap-in").addEventListener("click", () => { if (hasFn("zoom")) callScene("zoom", 1); else if (hasFn("setZoomPercent")) callScene("setZoomPercent", state.zoom + 15); });
     $("#minimap-full").addEventListener("click", () => { if (hasFn("fullscreen")) callScene("fullscreen"); else if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {}); });
@@ -1488,7 +1501,7 @@
     setInterval(pollEvents, 2000);
     setInterval(loadBrain, 30000);
     setInterval(tickSkills, 1000);
-    setInterval(() => { const was = state.zoom >= 140, z = Number(callScene("getZoomPercent")); if (z) state.zoom = z; const ms = callScene("minimapState"); syncFocus(ms); drawMinimap(ms); if (isPhone() && was !== state.zoom >= 140) renderTeamCards(); }, 250);   // a phone: dock the focused room's card as soon as the camera arrives
+    setInterval(() => { const was = state.zoom >= 140, z = Number(callScene("getZoomPercent")); if (z) state.zoom = z; const ms = callScene("minimapState"); syncFocus(ms); syncFloors(ms); drawMinimap(ms); if (isPhone() && was !== state.zoom >= 140) renderTeamCards(); }, 250);   // a phone: dock the focused room's card as soon as the camera arrives
     requestAnimationFrame(tick);
     if (window.HQ_OFFICE) onSceneReady();                  // the scene may already be there
     else setTimeout(() => { if (window.HQ_OFFICE) onSceneReady(); }, 3000);

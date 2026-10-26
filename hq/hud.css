@@ -236,6 +236,10 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 #minimap .ft { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 7px; }
 #minimap .ft button { height: 22px; border-radius: 5px; background: #30343f; color: #b5bac5; font-size: 13px; line-height: 1; }
 #minimap .ft button:hover { background: #3b404d; color: #fff; }
+#floor-ctl { position: absolute; right: 178px; bottom: 16px; z-index: 12; display: flex; flex-direction: column; gap: 5px; padding: 6px; border-radius: 10px; background: rgba(25, 29, 40, 0.92); border: 1px solid var(--line); box-shadow: var(--shadow); pointer-events: auto; }
+#floor-ctl button { min-width: 40px; height: 30px; border-radius: 7px; background: #30343f; color: #b5bac5; font: 600 12px var(--mono); }
+#floor-ctl button:hover { background: #3b404d; color: #fff; }
+#floor-ctl button.on { background: #f5c84b; color: #141413; }
 
 /* ---------- side panels (left) ---------- */
 .panel {
@@ -513,6 +517,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   #hud.panel-open #panel-dim { display: block; }
   #minimap { width: 130px; }
   #minimap canvas { width: 112px; height: 66px; }
+  #floor-ctl { right: 158px; }
   #lead-log { width: 280px; }
   #voice-orb.mini { left: calc(50% + 140px + 12px); }
   #lead-log.open { width: min(600px, calc(100vw - 32px)); }
@@ -660,6 +665,8 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   .brain-label .t1 { font-size: 10px; letter-spacing: 0.2em; }
   .brain-label .t2 { font-size: 9.5px; }
   #status-chips, #minimap { display: none; }
+  #floor-ctl { right: 10px; bottom: auto; top: 50%; transform: translateY(-50%); padding: 5px; }
+  #floor-ctl button { min-width: 44px; height: 44px; }
   /* a sheet covers the office: its billboards stay hidden (the scene pauses too) */
   #hud.panel-open #team-cards, #hud.panel-open #agent-pills, #hud.panel-open #brain-label, #hud.panel-open #subagent-cards,
   #hud.lead-open #team-cards, #hud.lead-open #agent-pills, #hud.lead-open #brain-label, #hud.lead-open #room-label,
