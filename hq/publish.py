@@ -62,6 +62,32 @@ def meta_error(e):
     return e
 
 
+def duration(video):
+    """The video's length in seconds (from ffmpeg's banner), or None."""
+    ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if not ff:
+        return None
+    try:
+        r = subprocess.run([ff, "-hide_banner", "-i", video], capture_output=True, text=True, timeout=60,
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+        h, m, sec = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr).groups()
+        return int(h) * 3600 + int(m) * 60 + float(sec)
+    except (OSError, subprocess.SubprocessError, AttributeError):
+        return None
+
+
+def ig_refused(video, err):
+    """Instagram's processing errors in plain words: some accounts only take Reels up to about 40-55 s from apps."""
+    d = duration(video)
+    if d and d <= 40:
+        return PostError(f"Instagram could not process the video ({err}). Meta's servers fail like this now and then: try Post again "
+                         "in a few minutes. If it keeps failing, post this one by hand in the Instagram app.")
+    long = f"This video is {int(d // 60)}:{int(d % 60):02d} long. " if d else ""
+    return PostError(f"Instagram refused the video ({err}). {long}Instagram limits some accounts to Reels of about 40-55 seconds "
+                     "when posted from an app, though the Instagram app itself takes longer ones. Post this one by hand in the "
+                     "Instagram app, or ask Creative for a cut under 40 seconds for Instagram.")
+
+
 def ig_ready(video):
     """An Instagram-ready copy of the video (H.264, AAC 128k, at most 25 Mbps, index at the front), or None without ffmpeg."""
     ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
@@ -664,6 +690,9 @@ class Publisher:
             except PostError as e:
                 if "ProcessingFailedError" not in str(e):
                     raise
+                d = duration(video)
+                if d and d > 40:                                 # most likely the length limit: the web address won't help
+                    raise ig_refused(video, "ProcessingFailedError") from None
                 with self.accounts.lock:                          # this app can't upload directly: use the web address from now on
                     a = self.accounts.load()
                     a.setdefault("meta", {})["ig_by_url"] = True
@@ -678,7 +707,7 @@ class Publisher:
             if not err:
                 break
             if attempt or not vurl:
-                raise PostError("Instagram could not process the video: " + err)
+                raise ig_refused(video, err)
             cid = None
             time.sleep(60)
         _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
