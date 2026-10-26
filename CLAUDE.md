@@ -49,7 +49,7 @@ The owner can run more than one brand (Channels & accounts in the app). The main
 - `out/` finished video work waiting for approval: `out/<clip-name>/`, `out/scripts/`, `out/radar/`, `out/pulse/`
 - `work/<team>/<task>/` every other deliverable (research, copy, plans, code notes), one folder per task with a `README.md` line per file
 - `done/` raw clips whose edit is finished; `approved/` what the owner approved in the app, leave it alone
-- `D:\` (the owner's D drive) and `G:\` (Google Drive for desktop, such as `G:\My Drive\PONG\x EDIT`), every folder and subfolder, are readable: find and read footage, documents and files there, and list folders with `ls`. They are read-only for the office: never edit, move or rename anything on D: or G:. To edit a video from D: or G:, copy it into `inbox/` first (`cp "G:/My Drive/<path>" inbox/`, or `inbox/<key>/` for a channel); every result still goes to `out/` or `work/`.
+- `D:\` (the owner's D drive) and Google Drive for desktop (`G:\` at home, `W:\` on the office computer, such as `W:\My Drive\PONG\x EDIT`), every folder and subfolder, are readable: find and read footage, documents and files there, and list folders with `ls`. They are read-only for the office: never edit, move or rename anything on D:, G: or W:. If the owner names a Drive path on one letter and it isn't there, try the other. To edit a video from them, copy it into `inbox/` first (`cp "W:/My Drive/<path>" inbox/`, or `inbox/<key>/` for a channel); every result still goes to `out/` or `work/`.
 - `hq/` the Agents HQ app (`server.py`, `app.html`, `office3d.js`), the board (`tasks.js`, `tasks.json`), the live feed the hooks write (`events.js`, `events.jsonl`), `status.py`
 
 ## Commands (`.claude/commands/`)
