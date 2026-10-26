@@ -922,6 +922,17 @@ def allow_list():
         return []
 
 
+def extra_dirs():
+    """Folders outside the office the agents may read (permissions.additionalDirectories in .claude/settings.json, such as
+    D:\\), passed to claude -p as --add-dir: settings alone only count once the folder is trusted. Missing ones are skipped."""
+    try:
+        with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as f:
+            dirs = json.load(f).get("permissions", {}).get("additionalDirectories", [])
+    except (OSError, ValueError):
+        return []
+    return [d for d in dirs if isinstance(d, str) and os.path.isdir(d)]
+
+
 def summarize(block):
     """One line for a tool call, for the console and the staff board."""
     name, inp = block.get("name", ""), block.get("input", {}) or {}
@@ -1045,6 +1056,8 @@ class Desk:
             allowed = allow_list()
             if allowed:
                 cmd += ["--allowedTools", *allowed]
+            for d in extra_dirs():                         # readable folders outside the office, such as the D: drive
+                cmd += ["--add-dir", d]
             cmd += ["--resume", self.session_id] if self.resumable else ["--session-id", self.session_id]
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             try:

@@ -12,6 +12,8 @@
       "Bash(mkdir -p out/:*)",
       "Bash(mkdir -p work/:*)",
       "Bash(mv inbox/*)",
+      "Bash(cp * inbox/)",
+      "Bash(cp * inbox/*)",
       "Bash(git diff:*)",
       "Bash(git status:*)",
       "Bash(git log:*)",
@@ -36,9 +38,14 @@
       "Read(.hq-accounts.json)",
       "Bash(*hq-accounts*)",
       "Bash(*api/publish*)",
-      "Bash(*api/accounts*)"
+      "Bash(*api/accounts*)",
+      "Edit(//d/**)",
+      "Write(//d/**)"
     ],
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "bypassPermissions",
+    "additionalDirectories": [
+      "D:\\"
+    ]
   },
   "enableAllProjectMcpServers": true,
   "hooks": {

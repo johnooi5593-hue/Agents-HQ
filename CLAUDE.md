@@ -49,6 +49,7 @@ The owner can run more than one brand (Channels & accounts in the app). The main
 - `out/` finished video work waiting for approval: `out/<clip-name>/`, `out/scripts/`, `out/radar/`, `out/pulse/`
 - `work/<team>/<task>/` every other deliverable (research, copy, plans, code notes), one folder per task with a `README.md` line per file
 - `done/` raw clips whose edit is finished; `approved/` what the owner approved in the app, leave it alone
+- `D:\` (the owner's D drive, every folder and subfolder) is readable: find and read footage, documents and files there, and list folders with `ls`. It is read-only for the office: never edit, move or rename anything on D:. To edit a video from D:, copy it into `inbox/` first (`cp "D:/<path>" inbox/`); every result still goes to `out/` or `work/`.
 - `hq/` the Agents HQ app (`server.py`, `app.html`, `office3d.js`), the board (`tasks.js`, `tasks.json`), the live feed the hooks write (`events.js`, `events.jsonl`), `status.py`
 
 ## Commands (`.claude/commands/`)
