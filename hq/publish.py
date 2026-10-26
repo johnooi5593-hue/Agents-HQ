@@ -13,7 +13,7 @@ office folder: on this computer only, never committed, never read by the agents 
 
 Stdlib only. Every post writes approved/<name>/posted.json as it goes, so the app shows progress and links.
 """
-import json, os, re, secrets, threading, time, urllib.error, urllib.parse, urllib.request
+import json, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 GRAPH = "https://graph.facebook.com/v23.0"
 YT_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
@@ -60,6 +60,30 @@ def meta_error(e):
             return PostError(f"the Meta token is missing the {perm} permission. In Graph API Explorer, Get User Access Token again "
                              f"with {perm} ticked, then paste the new token in Accounts for posting → Facebook & Instagram → Connect. ({msg})")
     return e
+
+
+def ig_ready(video):
+    """An Instagram-ready copy of the video (H.264, AAC 128k, at most 25 Mbps, index at the front), or None without ffmpeg."""
+    ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if not ff:
+        return None
+    fd, out = tempfile.mkstemp(prefix="hq-ig-", suffix=".mp4")
+    os.close(fd)
+    cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", video, "-map", "0:v:0", "-map", "0:a:0?",
+           "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-maxrate", "20M", "-bufsize", "40M", "-profile:v", "high",
+           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+           "-movflags", "+faststart", out]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=1800, creationflags=0x08000000 if os.name == "nt" else 0)
+        if r.returncode == 0 and os.path.getsize(out) > 0:
+            return out
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        os.remove(out)
+    except OSError:
+        pass
+    return None
 
 
 class Accounts:
@@ -570,6 +594,17 @@ class Publisher:
         except (PostError, KeyError, OSError):
             return ""                                          # Instagram then picks a frame itself
 
+    def ig_wait(self, cid, tok):
+        """Wait until Instagram has processed a container: None when it is ready, else Instagram's error."""
+        for _ in range(120):                                   # up to 10 minutes of processing
+            _, _, s = http("GET", f"{GRAPH}/{cid}?" + urllib.parse.urlencode({"fields": "status_code,status", "access_token": tok}))
+            if s.get("status_code") == "FINISHED":
+                return None
+            if s.get("status_code") in ("ERROR", "EXPIRED"):
+                return str(s.get("status") or s.get("status_code"))
+            time.sleep(5)
+        raise PostError("Instagram is still processing the video after 10 minutes; try Post again later")
+
     def video_url(self, video, m, parked):
         """Instagram fetches the video from a web address: park it on the Page as an unpublished video and use its address."""
         boundary = "hq" + secrets.token_hex(8)
@@ -598,6 +633,17 @@ class Publisher:
     # Instagram Reel: container (direct upload, or from a web address for apps without Facebook Login for Business)
     # → wait until processed → publish
     def post_instagram(self, video, cover, text, when=None):
+        ready = ig_ready(video)
+        try:
+            return self.post_instagram_file(ready or video, cover, text)
+        finally:
+            if ready:
+                try:
+                    os.remove(ready)                           # the app's own temporary copy
+                except OSError:
+                    pass
+
+    def post_instagram_file(self, video, cover, text):
         m = self.accounts.load().get("meta") or {}
         tok, ig = m["page_token"], m["ig_id"]
         params = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
@@ -622,18 +668,19 @@ class Publisher:
                     a = self.accounts.load()
                     a.setdefault("meta", {})["ig_by_url"] = True
                     self.accounts.save(a)
-        if not cid:
-            _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=self.video_url(video, m, parked)))
-            cid = j["id"]
-        for _ in range(120):                                   # up to 10 minutes of processing
-            _, _, s = http("GET", f"{GRAPH}/{cid}?" + urllib.parse.urlencode({"fields": "status_code,status", "access_token": tok}))
-            if s.get("status_code") == "FINISHED":
+        vurl = None
+        for attempt in range(2):                               # Instagram's processing fails now and then: one fresh try a minute later
+            if not cid:
+                vurl = vurl or self.video_url(video, m, parked)
+                _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=vurl))
+                cid = j["id"]
+            err = self.ig_wait(cid, tok)
+            if not err:
                 break
-            if s.get("status_code") in ("ERROR", "EXPIRED"):
-                raise PostError("Instagram could not process the video: " + str(s.get("status") or s.get("status_code")))
-            time.sleep(5)
-        else:
-            raise PostError("Instagram is still processing the video after 10 minutes; try Post again later")
+            if attempt or not vurl:
+                raise PostError("Instagram could not process the video: " + err)
+            cid = None
+            time.sleep(60)
         _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
         for pid in parked:                                     # posted: the hidden copies on the Page aren't needed any more
             try:
