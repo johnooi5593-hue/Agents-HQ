@@ -591,7 +591,54 @@ USER_DATA = ("brain/memory.jsonl",)          # the owner's own data inside track
 
 
 def git(*args, timeout=60):
-    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")     # never sit waiting for a password nobody sees
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+
+
+REPO_URL = os.environ.get("HQ_REPO_URL", "https://github.com/johnooi5593-hue/Agents-HQ")
+REPO_BRANCH = os.environ.get("HQ_REPO_BRANCH", "main")
+
+
+def adopt_folder(now):
+    """An office copied from the app (no Git history) is turned into a normal Git checkout of GitHub, in place, so it
+    can update like any other. Files that differ from GitHub are backed up to .hq-backup/ first; the brain is merged,
+    never replaced; files GitHub doesn't know (inbox, out, approved, work, the board) are left alone. True when done."""
+    if not os.path.isdir(os.path.join(ROOT, ".git")):
+        if git("init", "--quiet").returncode != 0:
+            return False
+    if git("rev-parse", "--verify", "--quiet", "HEAD").returncode == 0:
+        return True                                           # already has history: the normal update handles it
+    if git("remote", "get-url", "origin").returncode != 0:
+        git("remote", "add", "origin", REPO_URL)
+    f = git("fetch", "--quiet", "origin", REPO_BRANCH, timeout=300)
+    if f.returncode != 0:
+        UPDATE.update(ok=False, message="couldn't download from GitHub: " + (f.stderr.strip().splitlines() or ["fetch failed"])[-1], at=now)
+        return False
+    git("symbolic-ref", "HEAD", "refs/heads/" + REPO_BRANCH)
+    git("reset", "--quiet", "origin/" + REPO_BRANCH)          # history and index from GitHub, the files on disk untouched
+    git("branch", "--quiet", "--set-upstream-to=origin/" + REPO_BRANCH)
+    changed = [l for l in git("diff", "--name-only").stdout.splitlines() if l.strip()]
+    backup = os.path.join(ROOT, ".hq-backup", time.strftime("%Y%m%d-%H%M%S") + "-before-git")
+    saved = {}
+    for rel in changed:
+        src = os.path.join(ROOT, rel)
+        if os.path.isfile(src):
+            os.makedirs(os.path.dirname(os.path.join(backup, rel)), exist_ok=True)
+            shutil.copy2(src, os.path.join(backup, rel))
+            if rel in USER_DATA:
+                with open(src, encoding="utf-8", errors="replace") as fh:
+                    saved[rel] = fh.read()
+    git("checkout", "--", ".")                                # every file GitHub has, at its newest version
+    for rel, text in saved.items():
+        path = os.path.join(ROOT, rel)
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            upstream = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(merge_brain(text, upstream))
+    after = git("rev-parse", "--short", "HEAD").stdout.strip()
+    UPDATE.update(ok=True, version=after, **{"from": "copy"}, message=f"connected to GitHub and updated to {after}", at=now)
+    print(f"Agents HQ: this folder is now linked to GitHub ({after}); {len(changed)} older files backed up in .hq-backup")
+    return True
 
 
 def merge_brain(mine, theirs):
@@ -631,9 +678,6 @@ def auto_update():
     and the two brains are merged so no rule or lesson is lost. Local commits are merged, never thrown away. The result
     is kept in UPDATE and shown in the app (user menu, and a warning when an update could not be applied)."""
     now = int(time.time())
-    if not os.path.isdir(os.path.join(ROOT, ".git")):
-        UPDATE.update(ok=None, message="not a git folder, so no updates", at=now)
-        return
     if os.environ.get("HQ_NO_UPDATE"):
         try:
             UPDATE["version"] = git("rev-parse", "--short", "HEAD", timeout=10).stdout.strip()
@@ -642,6 +686,12 @@ def auto_update():
         UPDATE.update(ok=None, message="updates off", at=now)
         return
     try:
+        if not adopt_folder(now):
+            if UPDATE["ok"] is not False:
+                UPDATE.update(ok=False, message="this folder isn't linked to GitHub and Git couldn't link it", at=now)
+            print("update check skipped:", UPDATE["message"]); return
+        if UPDATE.get("from") == "copy":
+            return
         before = git("rev-parse", "--short", "HEAD").stdout.strip()
         UPDATE.update(version=before, **{"from": before})
         f = git("fetch", "--quiet")

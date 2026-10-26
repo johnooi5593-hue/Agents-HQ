@@ -452,23 +452,17 @@ async function restartEngine(opts = {}) {
   }
 }
 
-/** Tray: git pull in the office folder, then restart the engine. */
+/** Tray: restart the engine; on start it updates the office folder from GitHub (and links a copied folder to GitHub). */
 async function checkForUpdates() {
   if (booting) return;
   showWindow();
   showSetup();
-  if (!fs.existsSync(path.join(settings.officeDir, ".git"))) {
-    say("This office folder was copied from the app, not downloaded with Git, so it cannot update itself. Install Git, move the folder somewhere else, and open Agents HQ again to download a fresh copy.");
-    setState({ message: "This office folder cannot update itself (it was not downloaded with Git). See the log." });
-    return;
-  }
   booting = true;
   setState({ busy: true, phase: "updating", message: "Checking GitHub for a newer Agents HQ..." });
   try {
     if (child) await stopEngine();
-    const code = await stream("git", ["pull", "--ff-only"], { cwd: settings.officeDir });
-    say(code === 0 ? "Update check finished." : "The update did not finish; the lines above say why.");
     await startEngine();
+    say("Update check finished: the version and the result are in the app under your name (top right).");
   } finally {
     booting = false;
     setState({ busy: false });
