@@ -129,6 +129,24 @@
       "lead": "social-media-manager",
       "tools": [
         {
+          "name": "Facebook",
+          "via": "posting",
+          "account": "facebook",
+          "status": "not connected"
+        },
+        {
+          "name": "Instagram",
+          "via": "posting",
+          "account": "instagram",
+          "status": "not connected"
+        },
+        {
+          "name": "YouTube",
+          "via": "posting",
+          "account": "youtube",
+          "status": "not connected"
+        },
+        {
           "name": "Calendar",
           "via": "MCP",
           "status": "not connected",
@@ -136,22 +154,6 @@
             "calendar",
             "google-calendar",
             "gcal"
-          ]
-        },
-        {
-          "name": "Instagram",
-          "via": "MCP",
-          "status": "not connected",
-          "mcp": [
-            "instagram"
-          ]
-        },
-        {
-          "name": "YouTube",
-          "via": "MCP",
-          "status": "not connected",
-          "mcp": [
-            "youtube"
           ]
         }
       ],

@@ -643,11 +643,13 @@
   const teamTasks = (t) => ((state.status && state.status.tasks) || []).filter((x) => t && (x.team === t.name || String(x.team).toLowerCase() === t.key));
 
   // ---------- the team panel ----------
-  const TOOL_STYLE = { "google drive": ["#1ca16b", "▲"], capcut: ["#222933", "C"], canva: ["linear-gradient(135deg,#46a5be,#6d5df5)", "C"], slack: ["#612656", "#"], github: ["#24292f", "G"], notion: ["#2b2b2b", "N"], gmail: ["#d93025", "M"], calendar: ["#1a73e8", "C"], instagram: ["linear-gradient(135deg,#f58529,#dd2a7b,#8134af)", "I"], youtube: ["#ff0033", "▶"], "youtube analytics": ["#ff0033", "Y"], sheets: ["#188038", "S"], shopify: ["#5e8e3e", "S"], stripe: ["#635bff", "S"], ci: ["#2088ff", "CI"], "web search": ["#2563eb", "W"], "rough cut": ["#5b5fd6", "✂"], captions: ["#5b5fd6", "cc"], thumbnails: ["#5b5fd6", "▣"] };
+  const TOOL_STYLE = { facebook: ["#1877f2", "f"], "google drive": ["#1ca16b", "▲"], capcut: ["#222933", "C"], canva: ["linear-gradient(135deg,#46a5be,#6d5df5)", "C"], slack: ["#612656", "#"], github: ["#24292f", "G"], notion: ["#2b2b2b", "N"], gmail: ["#d93025", "M"], calendar: ["#1a73e8", "C"], instagram: ["linear-gradient(135deg,#f58529,#dd2a7b,#8134af)", "I"], youtube: ["#ff0033", "▶"], "youtube analytics": ["#ff0033", "Y"], sheets: ["#188038", "S"], shopify: ["#5e8e3e", "S"], stripe: ["#635bff", "S"], ci: ["#2088ff", "CI"], "web search": ["#2563eb", "W"], "rough cut": ["#5b5fd6", "✂"], captions: ["#5b5fd6", "cc"], thumbnails: ["#5b5fd6", "▣"] };
   function toolTile(tool) {
     const [bg, glyph] = TOOL_STYLE[String(tool.name).toLowerCase()] || [hashColor(tool.name), String(tool.name)[0].toUpperCase()];
     const on = tool.status === "connected";
-    return `<div class="tool" title="${esc(tool.name)}"><span class="ic" style="background:${bg}">${esc(glyph)}</span><div style="min-width:0"><div class="nm">${esc(tool.name)}</div><div class="st ${on ? "" : "off"}"><i class="dot"></i>${on ? `Connected · ${esc(tool.via || "MCP")}` : "Not connected"}</div></div></div>`;
+    const posting = tool.via === "posting";                 // Facebook, Instagram, YouTube: connected under Accounts for posting
+    const st = on ? `Connected · ${esc(posting ? tool.detail || "posting" : tool.via || "MCP")}` : posting ? "Not connected · tap to connect" : "Not connected";
+    return `<div class="tool ${posting ? "ia" : ""}" title="${esc(tool.name)}" ${posting ? "data-rv-accounts" : ""}><span class="ic" style="background:${bg}">${esc(glyph)}</span><div style="min-width:0"><div class="nm">${esc(tool.name)}</div><div class="st ${on ? "" : "off"}"><i class="dot"></i>${st}</div></div></div>`;
   }
   function skillState(t, s, run) {                         // a skill runs while its agent runs; its % climbs 2-4 points a second
     const on = !!run[s.agent] || (s.skill && !!run[t.lead] && membersOf(t).some((a) => a.skills && a.skills.includes(s.skill) && run[a.name]));

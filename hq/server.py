@@ -137,6 +137,8 @@ def mcp_servers():
 
 
 def tool_status(tool, servers):
+    if tool.get("via") == "posting":                       # an account connected under Accounts for posting
+        return "connected" if (accounts.summary().get(tool.get("account")) or {}).get("connected") else "not connected"
     if tool.get("via") == "skill":
         script = tool.get("script") or ""
         return "connected" if script and os.path.isfile(os.path.join(ROOT, script)) else "not connected"
@@ -153,7 +155,9 @@ def teams_payload(agent_list=None, running=None):
         members = sorted((a for a in agent_list if a["team"] == t["name"]), key=lambda a: (a["role"] != "head", a["name"]))
         team = dict(t)
         team["lead_label"] = label_of(t.get("lead", ""))
-        team["tools"] = [{**tool, "status": tool_status(tool, servers)} for tool in t.get("tools", []) if isinstance(tool, dict)]
+        team["tools"] = [{**tool, "status": tool_status(tool, servers),
+                          **({"detail": (accounts.summary().get(tool.get("account")) or {}).get("name", "")} if tool.get("via") == "posting" else {})}
+                         for tool in t.get("tools", []) if isinstance(tool, dict)]
         team["skills"] = [s for s in t.get("skills", []) if isinstance(s, dict)]
         team["agents"] = [a["name"] for a in members]
         team["agent_count"] = len(members)
