@@ -799,8 +799,11 @@ def translate(obj):
         return [{"type": "tool_done", "id": b.get("tool_use_id"), "is_error": bool(b.get("is_error")), "text": result_text(b)}
                 for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
     if t == "result":
+        u = obj.get("usage") or {}
+        tokens = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
         return [{"type": "result", "text": obj.get("result") or "", "is_error": bool(obj.get("is_error")),
-                 "cost_usd": obj.get("total_cost_usd"), "duration_ms": obj.get("duration_ms"), "turns": obj.get("num_turns")}]
+                 "cost_usd": obj.get("total_cost_usd"), "duration_ms": obj.get("duration_ms"), "turns": obj.get("num_turns"),
+                 "context": tokens // max(1, int(obj.get("num_turns") or 1))}]      # average tokens Claude read per turn
     return []
 
 
@@ -826,12 +829,34 @@ class Run:
         return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events)}
 
 
+FRESH_AFTER_IDLE = float(os.environ.get("HQ_LEAD_IDLE_MIN", "30")) * 60    # Claude's cache is gone by then: resuming re-buys the history
+FRESH_AFTER_CONTEXT = int(os.environ.get("HQ_LEAD_MAX_CONTEXT", "120000"))  # tokens per turn: past this a new chat is far cheaper
+FRESH_AFTER_COST = float(os.environ.get("HQ_LEAD_MAX_COST", "3"))           # dollars spent in one conversation
+
+
 class Desk:
-    """One lead conversation. Each message resumes it, so "OK" and corrections keep their context."""
+    """One lead conversation. Each message resumes it, so "OK" and corrections keep their context. To save tokens a new
+    conversation starts after a long pause, or once the old one grew big or expensive (the brain and the files carry over)."""
 
     def __init__(self):
         self.session_id, self.resumable, self.runs, self.order, self.current = str(uuid.uuid4()), False, {}, [], None
+        self.last_at, self.spent, self.context = 0.0, 0.0, 0
         self.lock = threading.Lock()
+
+    def fresh_reason(self):
+        if not self.resumable:
+            return ""
+        if time.time() - self.last_at > FRESH_AFTER_IDLE:
+            return f"over {int(FRESH_AFTER_IDLE // 60)} min since the last message"
+        if self.context > FRESH_AFTER_CONTEXT:
+            return "the conversation got long"
+        if self.spent > FRESH_AFTER_COST:
+            return f"this conversation cost over ${FRESH_AFTER_COST:g}"
+        return ""
+
+    def note_usage(self, ev):
+        self.spent += float(ev.get("cost_usd") or 0)
+        self.context = max(self.context, int(ev.get("context") or 0))
 
     def start(self, prompt):
         with self.lock:
@@ -844,6 +869,10 @@ class Desk:
         return run
 
     def _work(self, run):
+        why = self.fresh_reason()
+        if why:
+            self.session_id, self.resumable, self.spent, self.context = str(uuid.uuid4()), False, 0.0, 0
+            run.add({"type": "system", "text": f"new conversation to save tokens ({why}); the brain and files carry over"})
         for attempt in (1, 2):
             # one line: claude.cmd on Windows cuts -p at the first newline and drops the flags after it
             prompt = re.sub(r"\s*\n+\s*", " / ", run.prompt.strip())
@@ -870,6 +899,8 @@ class Desk:
                     continue
                 for ev in translate(obj):
                     got_result = got_result or ev["type"] == "result"
+                    if ev["type"] == "result":
+                        self.note_usage(ev)
                     run.add(ev)
             err = p.stderr.read().strip()
             p.wait()
@@ -884,6 +915,7 @@ class Desk:
             run.ok = False
             run.add({"type": "error", "text": (err or f"claude exited with code {p.returncode}")[-2000:]})
             break
+        self.last_at = time.time()
         run.done = True
 
     def state(self):
