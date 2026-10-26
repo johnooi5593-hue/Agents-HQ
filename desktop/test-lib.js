@@ -494,6 +494,262 @@ test("tailscaleInstallLines run winget for tailscale.tailscale", () => {
   assert.ok(lines.every((l) => !/rm |Remove-Item|del /i.test(l)));
 });
 
+// ---------------------------------------------------------------- the secure link (tailscale serve)
+
+// what the Tailscale CLI prints (shapes from 1.7x/1.8x on Windows and Linux)
+const TS = {
+  serveOk: "Available within your tailnet:\n\nhttps://desk-pc.tail1234.ts.net/\n|-- proxy http://127.0.0.1:7331\n\nServe started and running in the background.\nTo disable the proxy, run: tailscale serve --https=443 off\n",
+  serveNotEnabled: "\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=nAbCdEf123CNTRL\n\n",
+  httpsNotEnabled: "error: HTTPS is not enabled for your tailnet. To enable, visit: https://login.tailscale.com/f/https?node=n9xYz.\n",
+  certsOld: "your Tailscale account does not support getting TLS certs; enable HTTPS in the admin console",
+  magicDnsOff: "MagicDNS is disabled; enable it at https://login.tailscale.com/admin/dns to use serve\n",
+  status: (dns, extra = {}) => JSON.stringify({ Version: "1.88.1", BackendState: "Running", Self: { DNSName: dns, HostName: "DESK-PC", TailscaleIPs: ["100.101.5.6"] }, CurrentTailnet: { Name: "john@example.com", MagicDNSSuffix: "tail1234.ts.net", MagicDNSEnabled: true }, CertDomains: ["desk-pc.tail1234.ts.net"], ...extra }, null, 2),
+  serveJson: (proxy, extra = {}) => JSON.stringify({ TCP: { 443: { HTTPS: true } }, Web: { "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: proxy } } } }, ...extra }, null, 2),
+};
+
+test("secure link commands: serve on, off, reset, status", () => {
+  assert.deepStrictEqual(lib.serveOnArgs(7331), ["serve", "--bg", "--https=443", "http://127.0.0.1:7331"]);
+  assert.deepStrictEqual(lib.serveOnArgs(7335), ["serve", "--bg", "--https=443", "http://127.0.0.1:7335"]);
+  assert.deepStrictEqual(lib.serveOnArgs("x"), ["serve", "--bg", "--https=443", "http://127.0.0.1:7331"], "a broken port falls back to 7331");
+  assert.deepStrictEqual(lib.serveOffArgs(), ["serve", "--https=443", "off"]);
+  assert.deepStrictEqual(lib.serveResetArgs(), ["serve", "reset"]);
+  assert.deepStrictEqual(lib.serveStatusArgs(), ["serve", "status", "--json"]);
+  assert.deepStrictEqual(lib.serveStatusArgs(false), ["serve", "status"]);
+  assert.deepStrictEqual(lib.statusJsonArgs(), ["status", "--json"]);
+  assert.ok(!lib.serveOnArgs(7331).some((a) => /funnel/i.test(a)), "never Funnel (the public internet)");
+  assert.strictEqual(lib.cmdline("tailscale", lib.serveOnArgs(7331)), "tailscale serve --bg --https=443 http://127.0.0.1:7331", "nothing cmd.exe needs to quote");
+  assert.strictEqual(lib.TAILSCALE_TIMEOUT_MS, 20000);
+});
+
+test("parseStatusJson: Self.DNSName with and without the trailing dot, MagicDNS, garbage", () => {
+  assert.strictEqual(lib.parseStatusJson(TS.status("desk-pc.tail1234.ts.net.")).dnsName, "desk-pc.tail1234.ts.net", "trailing dot stripped");
+  assert.strictEqual(lib.parseStatusJson(TS.status("desk-pc.tail1234.ts.net")).dnsName, "desk-pc.tail1234.ts.net", "no trailing dot");
+  assert.strictEqual(lib.parseStatusJson(TS.status("DESK-PC.Tail1234.ts.net.")).dnsName, "desk-pc.tail1234.ts.net", "lower case");
+  const full = lib.parseStatusJson("Warning: client version \"1.86.0\" != tailscaled server version \"1.88.1\"\n" + TS.status("desk-pc.tail1234.ts.net."));
+  assert.deepStrictEqual(full, { dnsName: "desk-pc.tail1234.ts.net", magicDns: true, certDomains: ["desk-pc.tail1234.ts.net"], backend: "Running" }, "a warning line before the JSON is skipped");
+  assert.strictEqual(lib.parseStatusJson(TS.status("desk-pc.tail1234.ts.net.", { CurrentTailnet: { MagicDNSEnabled: false } })).magicDns, false);
+  assert.strictEqual(lib.parseStatusJson(TS.status("")).dnsName, "", "signed out: no name");
+  assert.strictEqual(lib.parseStatusJson(TS.status("evil.ts.net/<script>")).dnsName, "", "only plain host names");
+  for (const bad of ["", "not json", "[1,2]", "{ broken", null, undefined]) assert.deepStrictEqual(lib.parseStatusJson(bad), { dnsName: "", magicDns: null, certDomains: [], backend: "" }, String(bad));
+  assert.strictEqual(lib.secureUrl("desk-pc.tail1234.ts.net."), "https://desk-pc.tail1234.ts.net/");
+  assert.strictEqual(lib.secureUrl(""), "");
+});
+
+test("isSecureUrl (the QR whitelist) and isTailscaleAdminLink (the browser button)", () => {
+  for (const u of ["https://desk-pc.tail1234.ts.net/", "https://desk-pc.tail1234.ts.net", "https://a.b.ts.net/"]) assert.strictEqual(lib.isSecureUrl(u), true, u);
+  for (const u of ["http://desk-pc.tail1234.ts.net/", "https://desk-pc.tail1234.ts.net/x", "https://evil.com/.ts.net/", "https://ts.net/", "https://x.ts.net.evil.com/", "javascript:alert(1)", "", null, "https://x.ts.net:8443/"]) assert.strictEqual(lib.isSecureUrl(u), false, String(u));
+  assert.strictEqual(lib.isTailscaleAdminLink("https://login.tailscale.com/f/serve?node=nAbC123"), true);
+  assert.strictEqual(lib.isTailscaleAdminLink("https://login.tailscale.com/admin/dns"), true);
+  for (const u of ["http://login.tailscale.com/admin", "https://login.tailscale.com.evil.com/", "https://evil.com/login.tailscale.com/", "https://login.tailscale.com", "file:///c:/x", "https://login.tailscale.com/a b", 7, null]) assert.strictEqual(lib.isTailscaleAdminLink(u), false, String(u));
+});
+
+test("parseServeStatus: JSON and plain text, our port or another, nothing configured, Funnel", () => {
+  const on = lib.parseServeStatus(TS.serveJson("http://127.0.0.1:7331"), 7331);
+  assert.deepStrictEqual(on, { on: true, proxy: "http://127.0.0.1:7331", host: "desk-pc.tail1234.ts.net", funnel: false });
+  assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://127.0.0.1:7331"), 7332).on, false, "443 relays to another port");
+  assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://localhost:7333"), 7333).on, true, "localhost counts");
+  assert.strictEqual(lib.parseServeStatus(TS.serveJson("7334"), 7334).on, true, "a bare port counts");
+  assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://192.168.1.5:7331"), 7331).on, false, "another machine does not count");
+  assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://127.0.0.1:7331", { AllowFunnel: { "desk-pc.tail1234.ts.net:443": true } }), 7331).funnel, true);
+  const other = JSON.stringify({ Web: { "desk-pc.tail1234.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } });
+  assert.strictEqual(lib.parseServeStatus(other, 7331).on, false, "only port 443 counts");
+  const fg = JSON.stringify({ Foreground: { abc: { Web: { "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } } } });
+  assert.strictEqual(lib.parseServeStatus(fg, 7331).on, true, "a foreground serve counts too");
+  for (const none of ["{}", "", "No serve config\n", "not json at all"]) assert.deepStrictEqual(lib.parseServeStatus(none, 7331), { on: false, proxy: "", host: "", funnel: false }, JSON.stringify(none));
+  const plain = "\nhttps://desk-pc.tail1234.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n\n";
+  assert.deepStrictEqual(lib.parseServeStatus(plain, 7331), { on: true, proxy: "http://127.0.0.1:7331", host: "desk-pc.tail1234.ts.net", funnel: false }, "plain text");
+  assert.strictEqual(lib.parseServeStatus("https://desk-pc.tail1234.ts.net (Funnel on)\n|-- / proxy http://127.0.0.1:7331\n", 7331).funnel, true);
+  assert.strictEqual(lib.parseServeStatus("https://desk-pc.tail1234.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n", 7331).on, false, "plain text: only 443");
+  assert.strictEqual(lib.proxyPort("http://127.0.0.1:7331/"), 7331);
+  assert.strictEqual(lib.proxyPort("https+insecure://127.0.0.1:7331"), 0);
+});
+
+test("serveProblem: HTTPS / Serve not enabled gives the admin link, MagicDNS off, and the other failures", () => {
+  assert.strictEqual(lib.serveProblem({ code: 0, stdout: TS.serveOk }), null, "success");
+  const waited = lib.serveProblem({ code: null, timedOut: true, error: "timed out after 20 s", stdout: TS.serveNotEnabled });
+  assert.deepStrictEqual(waited, { kind: "https-off", link: "https://login.tailscale.com/f/serve?node=nAbCdEf123CNTRL", message: "Turn on HTTPS certificates in your Tailscale admin, then press Turn on again." }, "the CLI waits for the owner: the timeout still gives the link");
+  const exited = lib.serveProblem({ code: 1, stdout: "", stderr: TS.serveNotEnabled });
+  assert.strictEqual(exited.kind, "https-off");
+  assert.strictEqual(exited.link, "https://login.tailscale.com/f/serve?node=nAbCdEf123CNTRL");
+  const https = lib.serveProblem({ code: 1, stderr: TS.httpsNotEnabled });
+  assert.strictEqual(https.kind, "https-off");
+  assert.strictEqual(https.link, "https://login.tailscale.com/f/https?node=n9xYz", "a trailing full stop is not part of the link");
+  const old = lib.serveProblem({ code: 1, stderr: TS.certsOld });
+  assert.deepStrictEqual([old.kind, old.link], ["https-off", "https://login.tailscale.com/admin/dns"], "no link printed: the DNS page of the admin");
+  const mdns = lib.serveProblem({ code: 1, stderr: TS.magicDnsOff });
+  assert.deepStrictEqual([mdns.kind, mdns.link], ["magicdns-off", "https://login.tailscale.com/admin/dns"]);
+  assert.match(mdns.message, /MagicDNS/);
+  assert.strictEqual(lib.serveProblem({ code: 1, stderr: "Access denied: serve config denied\n\nUse 'sudo tailscale serve ...'" }).kind, "access-denied");
+  assert.strictEqual(lib.serveProblem({ code: 2, stderr: "flag provided but not defined: -bg\nUSAGE\n  serve <target>" }).kind, "old-version");
+  assert.strictEqual(lib.serveProblem({ code: 1, stderr: "failed to connect to local tailscaled; it doesn't appear to be running" }).kind, "not-running");
+  assert.strictEqual(lib.serveProblem({ code: 1, stderr: "Tailscale is stopped." }).kind, "not-running");
+  assert.strictEqual(lib.serveProblem({ code: 9009, stderr: "'tailscale' is not recognized as an internal or external command,\r\noperable program or batch file." }).kind, "missing");
+  assert.strictEqual(lib.serveProblem({ code: null, error: "spawn tailscale ENOENT" }).kind, "missing");
+  assert.strictEqual(lib.serveProblem({ code: null, timedOut: true, error: "timed out after 20 s" }).kind, "timeout");
+  const other = lib.serveProblem({ code: 1, stderr: "something new went wrong\nsecond line" });
+  assert.deepStrictEqual([other.kind, other.message], ["failed", "Tailscale answered: something new went wrong"]);
+  assert.strictEqual(lib.serveProblem(null).kind, "missing");
+});
+
+/** A fake tailscale runner: answers by the arguments, records every call. */
+function fakeTailscale(answers) {
+  const calls = [];
+  const runner = async (cmd, args, opts) => {
+    calls.push({ cmd, args: args.join(" "), timeoutMs: opts && opts.timeoutMs });
+    const a = answers[args.join(" ")];
+    const r = typeof a === "function" ? a(cmd) : a || { code: 1, stderr: "unexpected: " + args.join(" ") };
+    return { line: lib.cmdline(cmd, args), code: r.code === undefined ? 0 : r.code, stdout: r.stdout || "", stderr: r.stderr || "", error: r.error || null, timedOut: !!r.timedOut };
+  };
+  return { runner, calls };
+}
+
+test("enableSecureLink: on, then the https address from tailscale status", async () => {
+  const { runner, calls } = fakeTailscale({
+    "serve --bg --https=443 http://127.0.0.1:7332": { stdout: TS.serveOk.replace("7331", "7332") },
+    "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") },
+    "serve status --json": { stdout: TS.serveJson("http://127.0.0.1:7332") },
+  });
+  const r = await lib.enableSecureLink(7332, { run: runner, isWin: false });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.url, "https://desk-pc.tail1234.ts.net/");
+  assert.strictEqual(r.verified, true);
+  assert.strictEqual(r.funnel, false);
+  assert.deepStrictEqual(calls.map((c) => c.args), ["serve --bg --https=443 http://127.0.0.1:7332", "status --json", "serve status --json"]);
+  assert.ok(calls.every((c) => c.timeoutMs === 20000), "20 s for every tailscale command");
+  assert.strictEqual(r.steps.length, 3);
+  assert.strictEqual(r.steps[0].line, "tailscale serve --bg --https=443 http://127.0.0.1:7332");
+  assert.ok(r.steps[0].output.includes("https://desk-pc.tail1234.ts.net/"), "the log gets what tailscale printed");
+});
+
+test("enableSecureLink: HTTPS not enabled gives the admin link and does not read further", async () => {
+  const { runner, calls } = fakeTailscale({ "serve --bg --https=443 http://127.0.0.1:7331": { code: null, timedOut: true, error: "timed out after 20 s", stdout: TS.serveNotEnabled } });
+  const r = await lib.enableSecureLink(7331, { run: runner, isWin: false });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.problem.kind, "https-off");
+  assert.strictEqual(r.problem.link, "https://login.tailscale.com/f/serve?node=nAbCdEf123CNTRL");
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(r.steps[0].timedOut, true);
+});
+
+test("enableSecureLink and secureLinkInfo: MagicDNS off, signed out, Windows Program Files fallback, a runner that throws", async () => {
+  const mdns = fakeTailscale({
+    "serve --bg --https=443 http://127.0.0.1:7331": { stdout: TS.serveOk },
+    "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.", { CurrentTailnet: { MagicDNSEnabled: false } }) },
+  });
+  const r1 = await lib.enableSecureLink(7331, { run: mdns.runner, isWin: false });
+  assert.strictEqual(r1.ok, false);
+  assert.strictEqual(r1.problem.kind, "magicdns-off");
+
+  const out = fakeTailscale({ "status --json": { stdout: JSON.stringify({ BackendState: "NeedsLogin", Self: { DNSName: "" } }) } });
+  const info = await lib.secureLinkInfo(7331, { run: out.runner, isWin: false });
+  assert.strictEqual(info.ok, false);
+  assert.strictEqual(info.problem.kind, "not-running");
+
+  // Windows: tailscale is not on the PATH of the app yet; the one in Program Files answers
+  const calls = [];
+  const winRun = async (cmd, args) => {
+    calls.push(cmd);
+    if (cmd === "tailscale") return { line: "tailscale", code: 1, stdout: "", stderr: "'tailscale' is not recognized as an internal or external command,\r\noperable program or batch file.", error: null };
+    const key = args.join(" ");
+    const out = key === "status --json" ? TS.status("desk-pc.tail1234.ts.net.") : key === "serve status --json" ? TS.serveJson("http://127.0.0.1:7331") : "";
+    return { line: lib.cmdline(cmd, args), code: 0, stdout: out, stderr: "", error: null };
+  };
+  const w = await lib.secureLinkInfo(7331, { run: winRun, isWin: true, exists: (p) => p === lib.TAILSCALE_WIN_EXE });
+  assert.deepStrictEqual([w.ok, w.on, w.url], [true, true, "https://desk-pc.tail1234.ts.net/"]);
+  assert.deepStrictEqual(calls, ["tailscale", lib.TAILSCALE_WIN_EXE, "tailscale", lib.TAILSCALE_WIN_EXE]);
+  assert.ok(w.steps[0].line.startsWith('"C:\\Program Files\\Tailscale\\tailscale.exe" status'), "the log shows the quoted Program Files path");
+
+  const off = await lib.secureLinkInfo(7331, { run: fakeTailscale({ "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") }, "serve status --json": { stdout: "{}" } }).runner, isWin: false });
+  assert.deepStrictEqual([off.ok, off.on, off.url, off.problem], [true, false, "https://desk-pc.tail1234.ts.net/", null], "off, with the address it would have");
+
+  const thrown = await lib.enableSecureLink(7331, { run: async () => { throw new Error("boom"); }, isWin: false });
+  assert.strictEqual(thrown.ok, false, "never throws");
+  assert.ok(thrown.problem);
+});
+
+test("readServeStatus falls back to plain `tailscale serve status` on versions without --json", async () => {
+  const { runner, calls } = fakeTailscale({
+    "serve status --json": { code: 2, stderr: "flag provided but not defined: -json" },
+    "serve status": { stdout: "https://desk-pc.tail1234.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n" },
+  });
+  const s = await lib.readServeStatus(7331, { run: runner, isWin: false });
+  assert.strictEqual(s.on, true);
+  assert.deepStrictEqual(calls.map((c) => c.args), ["serve status --json", "serve status"]);
+});
+
+test("disableSecureLink: off, nothing to turn off, the reset fallback, no Tailscale", async () => {
+  const ok = fakeTailscale({ "serve --https=443 off": { stdout: "" } });
+  assert.strictEqual((await lib.disableSecureLink({ run: ok.runner, isWin: false })).ok, true);
+  assert.deepStrictEqual(ok.calls.map((c) => c.args), ["serve --https=443 off"]);
+
+  const none = fakeTailscale({ "serve --https=443 off": { code: 1, stderr: "error: port 443 is not being served" } });
+  assert.strictEqual((await lib.disableSecureLink({ run: none.runner, isWin: false })).ok, true, "nothing to turn off is fine");
+  assert.strictEqual(none.calls.length, 1, "no reset for that");
+
+  const fb = fakeTailscale({ "serve --https=443 off": { code: 2, stderr: "flag provided but not defined: -https" }, "serve reset": { stdout: "" } });
+  const r = await lib.disableSecureLink({ run: fb.runner, isWin: false });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(fb.calls.map((c) => c.args), ["serve --https=443 off", "serve reset"], "reset when off fails");
+  assert.strictEqual(r.steps.length, 2);
+
+  const both = fakeTailscale({ "serve --https=443 off": { code: 1, stderr: "failed to connect to local tailscaled" }, "serve reset": { code: 1, stderr: "failed to connect to local tailscaled" } });
+  const r2 = await lib.disableSecureLink({ run: both.runner, isWin: false });
+  assert.deepStrictEqual([r2.ok, r2.problem.kind], [false, "not-running"]);
+
+  const missing = fakeTailscale({ "serve --https=443 off": { code: 127, stderr: "sh: 1: tailscale: not found" } });
+  assert.strictEqual((await lib.disableSecureLink({ run: missing.runner, isWin: false })).ok, true, "no Tailscale: nothing is relayed");
+});
+
+test("the secure link helpers against a real process (a fake tailscale on the PATH)", async () => {
+  if (lib.IS_WIN) { console.log("      (skipped on Windows: the fake is a shell script)"); return; }
+  const dir = tmpdir();
+  const state = path.join(dir, "serve.json");
+  const script = path.join(dir, "tailscale");
+  fs.writeFileSync(script, [
+    "#!/bin/sh",
+    'echo "$*" >> "$TS_FAKE_DIR/calls.log"',
+    'case "$TS_FAKE_MODE:$*" in',
+    `  ok:"serve --bg --https=443 "*) printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"desk-pc.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}}}' "$4" > "$TS_FAKE_DIR/serve.json"; printf 'Available within your tailnet:\\n\\nhttps://desk-pc.tail1234.ts.net/\\n|-- proxy %s\\n\\nServe started and running in the background.\\n' "$4" ;;`,
+    `  off:"serve --bg"*) printf '\\nServe is not enabled on your tailnet.\\nTo enable, visit:\\n\\n         https://login.tailscale.com/f/serve?node=nFAKE42\\n\\n'; sleep 8 ;;`,
+    '  *:"serve status --json") cat "$TS_FAKE_DIR/serve.json" 2>/dev/null || echo "{}" ;;',
+    '  *:"serve --https=443 off") mv "$TS_FAKE_DIR/serve.json" "$TS_FAKE_DIR/serve.json.was" 2>/dev/null; true ;;',
+    `  *:"status --json") printf '{"BackendState":"Running","Self":{"DNSName":"desk-pc.tail1234.ts.net."},"CurrentTailnet":{"MagicDNSEnabled":true}}' ;;`,
+    '  *) echo "unexpected $*" >&2; exit 1 ;;',
+    "esac",
+  ].join("\n") + "\n");
+  fs.chmodSync(script, 0o755);
+  const saved = { PATH: process.env.PATH, mode: process.env.TS_FAKE_MODE, dir: process.env.TS_FAKE_DIR };
+  process.env.PATH = dir + path.delimiter + process.env.PATH;
+  process.env.TS_FAKE_DIR = dir;
+  try {
+    process.env.TS_FAKE_MODE = "ok";
+    const on = await lib.enableSecureLink(7339);
+    assert.deepStrictEqual([on.ok, on.url, on.verified], [true, "https://desk-pc.tail1234.ts.net/", true]);
+    assert.ok(fs.existsSync(state));
+    const info = await lib.secureLinkInfo(7339);
+    assert.deepStrictEqual([info.on, info.proxy], [true, "http://127.0.0.1:7339"]);
+    assert.strictEqual((await lib.secureLinkInfo(7331)).on, false, "relays to 7339, not 7331");
+    const off = await lib.disableSecureLink();
+    assert.strictEqual(off.ok, true);
+    assert.ok(!fs.existsSync(state));
+    assert.strictEqual((await lib.secureLinkInfo(7339)).on, false);
+
+    process.env.TS_FAKE_MODE = "off";                  // HTTPS not enabled: the CLI prints the link and waits
+    const t0 = Date.now();
+    const blocked = await lib.enableSecureLink(7339, { timeoutMs: 1500 });
+    assert.ok(Date.now() - t0 < 6000, "the time limit ends the wait");
+    assert.deepStrictEqual([blocked.ok, blocked.problem.kind, blocked.problem.link], [false, "https-off", "https://login.tailscale.com/f/serve?node=nFAKE42"]);
+    const log = fs.readFileSync(path.join(dir, "calls.log"), "utf8").trim().split("\n");
+    assert.deepStrictEqual(log, ["serve --bg --https=443 http://127.0.0.1:7339", "status --json", "serve status --json", "status --json", "serve status --json",
+      "status --json", "serve status --json", "serve --https=443 off", "status --json", "serve status --json", "serve --bg --https=443 http://127.0.0.1:7339"]);
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.mode === undefined) delete process.env.TS_FAKE_MODE; else process.env.TS_FAKE_MODE = saved.mode;
+    if (saved.dir === undefined) delete process.env.TS_FAKE_DIR; else process.env.TS_FAKE_DIR = saved.dir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------- misc
 
 test("constants", () => {

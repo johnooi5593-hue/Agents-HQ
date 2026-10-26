@@ -85,6 +85,19 @@
   .secret { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .secret code { font: 17px var(--mono); background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; user-select: text; }
   .ts-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 600; }
+  .addr .old { font-size: 12px; color: var(--warn); }
+
+  /* the secure link card (tailscale serve, https) */
+  .secure { background: #0f121a; border: 1px solid rgba(74, 222, 128, .45); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .secure-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .secure-title { font-weight: 700; font-size: 16px; }
+  .secure-body { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .secure-body img, .secure-body .qrbox { width: 200px; height: 200px; border-radius: 8px; background: #fff; display: block; flex: none; }
+  .secure-body .qrbox { display: grid; place-items: center; color: #555; font-size: 13px; text-align: center; padding: 8px; }
+  .secure-text { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .secure .url { font: 15px var(--mono); user-select: text; word-break: break-all; }
+  .secure .tag { font-size: 12.5px; font-weight: 600; color: var(--ok); }
+  .older { margin: 4px 0 0; }
   .hidden { display: none !important; }
   a.link { color: var(--accent); cursor: pointer; text-decoration: none; }
   a.link:hover { text-decoration: underline; }
@@ -142,11 +155,34 @@
   <section class="panel hidden" id="onphone">
     <h2>On your phone</h2>
     <ol class="steps">
-      <li>On the phone, open the browser and type one of the addresses below, or scan its QR code with the camera.</li>
+      <li>On the phone, open the browser and type the secure link below (or one of the older addresses), or scan its QR code with the camera.</li>
       <li>Type the password: <span class="secret" style="display:inline-flex"><code id="pw-shown">...</code><button class="small" id="btn-copy-pw">Copy</button></span></li>
       <li>For an app-like icon: on iPhone tap <b>Share</b>, then <b>Add to Home Screen</b>. On Android tap <b>⋮</b>, then <b>Add to Home screen</b>.</li>
     </ol>
     <div class="note muted small" id="addr-note"></div>
+    <div class="secure hidden" id="secure">
+      <div class="secure-head"><span class="secure-title">Secure link (https)</span><span class="pill" id="secure-pill"><span class="dot"></span><span id="secure-pill-text">Off</span></span></div>
+      <div id="secure-off-box">
+        <p class="muted small">An https address for your office through Tailscale. Safari shows no "not secure" page, and the microphone and the copy buttons work. Your phone needs Tailscale switched on, and it still asks for the password.</p>
+        <div class="row"><button class="primary" id="btn-secure-on">Turn on secure link</button></div>
+      </div>
+      <div class="secure-body hidden" id="secure-on-box">
+        <div class="qrbox" id="secure-qr">Making the QR code...</div>
+        <div class="secure-text">
+          <div class="url" id="secure-url"></div>
+          <div class="tag">Recommended · no warning on iPhone · microphone works</div>
+          <p class="muted small">Works on your devices that have Tailscale switched on, from anywhere.</p>
+          <div class="row"><button class="small" id="btn-secure-copy">Copy address</button><button class="small danger" id="btn-secure-off">Turn off secure link</button></div>
+        </div>
+      </div>
+      <div class="info hidden" id="secure-fix">
+        <p id="secure-fix-text"></p>
+        <div class="row" style="margin-top:8px"><button id="btn-secure-admin">Open Tailscale admin</button></div>
+      </div>
+      <div class="warning hidden" id="secure-funnel">Tailscale Funnel is on for this address, so anyone on the internet can reach the login page, not only your devices. Turn Funnel off in Tailscale unless you meant that.</div>
+      <div class="note" id="secure-note"></div>
+    </div>
+    <p class="muted small older hidden" id="older-title">Older http addresses (the iPhone shows a warning on these):</p>
     <div class="addrs" id="addrs"></div>
     <p class="muted small">The addresses stay the same as long as this computer keeps its network address and port <span id="port">7331</span> stays free. <a class="link" id="lnk-refresh">Refresh the addresses</a></p>
   </section>
@@ -155,7 +191,7 @@
   <section class="panel">
     <h2>Use it away from home: Tailscale</h2>
     <div class="ts-line"><span id="ts-text">Tailscale: checking...</span></div>
-    <p class="muted small">Tailscale is a free app that links your devices privately, so your phone reaches the office on mobile data or any Wi-Fi. Install it on this computer and on your phone (App Store or Play Store), and sign in with the same account on both. Then use the address marked "works anywhere (Tailscale)".</p>
+    <p class="muted small">Tailscale is a free app that links your devices privately, so your phone reaches the office on mobile data or any Wi-Fi. Install it on this computer and on your phone (App Store or Play Store), and sign in with the same account on both. Then turn on the secure link (https) above and use that address on the phone.</p>
     <div class="row">
       <button id="btn-ts-check">Check Tailscale</button>
       <button id="btn-ts-install" class="hidden">Install Tailscale</button>
@@ -218,7 +254,79 @@
     $("port").textContent = String(s.port);
     $("onphone").classList.toggle("hidden", !s.on);
     renderAddresses(s);
+    renderSecure(s);
     ["btn-gen", "btn-save", "pw"].forEach(function (id) { $(id).disabled = busy; });
+  }
+
+  // ---- the secure link card: shown when phone access is on and Tailscale is connected
+  var tsConnected = false, secureBusy = false, secureAsked = false, secureProxy = "";
+  function renderSecure(s) {
+    var sec = s.secure || {};
+    var show = !!s.on && (tsConnected || !!sec.on);
+    $("secure").classList.toggle("hidden", !show);
+    $("older-title").classList.toggle("hidden", !show || !(s.addresses || []).length);
+    if (!show) return;
+    if (!secureAsked && !secureBusy) { secureAsked = true; secureGet(); }
+    var working = secureBusy || !!sec.busy;
+    var on = !!sec.on && !!sec.url;
+    var pill = $("secure-pill"), text = $("secure-pill-text");
+    if (working) { pill.className = "pill wait"; text.textContent = "Working"; }
+    else if (on) { pill.className = "pill on"; text.textContent = "On"; }
+    else if (sec.want && s.active) { pill.className = "pill warn"; text.textContent = "Not on yet"; }
+    else { pill.className = "pill"; text.textContent = "Off"; }
+    $("secure-off-box").classList.toggle("hidden", on);
+    $("secure-on-box").classList.toggle("hidden", !on);
+    $("btn-secure-on").disabled = working || !s.active;
+    $("btn-secure-off").disabled = working;
+    $("btn-secure-on").textContent = sec.problem ? "Turn on again" : "Turn on secure link";
+    if (on && $("secure-url").textContent !== sec.url) {
+      $("secure-url").textContent = sec.url;
+      var box = $("secure-on-box"), old = box.firstElementChild;
+      var wait = document.createElement("div"); wait.className = "qrbox"; wait.id = "secure-qr"; wait.textContent = "Making the QR code...";
+      box.replaceChild(wait, old);
+      var url = sec.url;
+      qrFor(url).then(function (dataUrl) {
+        if ($("secure-url").textContent !== url || box.firstElementChild !== wait) return;
+        if (!dataUrl) { wait.textContent = "No QR code. Type the address instead."; return; }
+        var img = document.createElement("img"); img.alt = "QR code for " + url; img.src = dataUrl;
+        box.replaceChild(img, wait);
+      });
+    }
+    if (!on) $("secure-url").textContent = "";
+    var p = !on && sec.problem;
+    $("secure-fix").classList.toggle("hidden", !p);
+    if (p) {
+      $("secure-fix-text").textContent = p.message || "";
+      $("btn-secure-admin").classList.toggle("hidden", !p.link);
+      $("btn-secure-admin").setAttribute("data-link", p.link || "");
+    }
+    $("secure-funnel").classList.toggle("hidden", !(on && sec.funnel));
+  }
+
+  function secureGet() {
+    return api.phoneSecureGet().then(function (r) {
+      secureProxy = (r && r.proxy) || "";
+      if (st) { st.secure = r; render(st); }
+      if (secureProxy && !(r && r.on)) note("secure-note", "This computer's Tailscale https address already relays to " + secureProxy + ". Turn on secure link points it to the office instead.");
+    }).catch(function () { /* the card keeps what it had */ });
+  }
+
+  function secureCall(fn, pending) {
+    if (secureBusy) return;
+    secureBusy = true;
+    note("secure-note", pending);
+    if (st) render(st);
+    fn().then(function (r) {
+      secureBusy = false;
+      if (st && r) { st.secure = r; }
+      if (st) render(st);
+      var fix = r && r.ok === false && r.problem && r.problem.link;
+      note("secure-note", fix ? "" : (r && r.message) || "", r && r.ok === false ? "bad" : "good");
+    }).catch(function (e) {
+      secureBusy = false;
+      if (st) render(st);
+      note("secure-note", "The secure link did not change: " + (e && e.message || e) + ". Try again.", "bad");
+    });
   }
 
   function renderSave() {
@@ -242,9 +350,10 @@
       var qr = document.createElement("div"); qr.className = "qrbox"; qr.textContent = "Making the QR code...";
       var url = document.createElement("div"); url.className = "url"; url.textContent = a.url;
       var tag = document.createElement("div"); tag.className = "tag"; tag.textContent = a.label + (a.iface ? " · " + a.iface : "");
+      var old = document.createElement("div"); old.className = "old"; old.textContent = "older http address (iPhone shows a warning)";
       var copy = document.createElement("button"); copy.className = "small"; copy.textContent = "Copy address";
       copy.addEventListener("click", function () { copyText(a.url, "addr-note", "The address is copied."); });
-      card.appendChild(qr); card.appendChild(url); card.appendChild(tag); card.appendChild(copy);
+      card.appendChild(qr); card.appendChild(url); card.appendChild(tag); card.appendChild(old); card.appendChild(copy);
       box.appendChild(card);
       qrFor(a.url).then(function (dataUrl) {
         if (!dataUrl) { qr.textContent = "No QR code. Type the address instead."; return; }
@@ -331,6 +440,22 @@
   });
 
   $("btn-copy-pw").addEventListener("click", function () { if (st && st.password) copyText(st.password, "addr-note", "The password is copied."); });
+
+  // ---- the secure link buttons
+  $("btn-secure-on").addEventListener("click", function () {
+    secureCall(api.phoneSecureOn, "Turning the secure link on. Tailscale can take up to 20 seconds...");
+  });
+  $("btn-secure-off").addEventListener("click", function () { secureCall(api.phoneSecureOff, "Turning the secure link off..."); });
+  $("btn-secure-copy").addEventListener("click", function () {
+    var url = $("secure-url").textContent;
+    if (url) copyText(url, "secure-note", "The secure link is copied.");
+  });
+  $("btn-secure-admin").addEventListener("click", function () {
+    var link = $("btn-secure-admin").getAttribute("data-link");
+    if (!link) return;
+    api.phoneOpenLink(link).then(function (r) { note("secure-note", (r && r.message) || "", r && r.ok === false ? "bad" : "good"); })
+      .catch(function (e) { note("secure-note", "The link could not be opened: " + (e && e.message || e), "bad"); });
+  });
   $("lnk-refresh").addEventListener("click", function () { refresh(true); });
 
   // ---- Tailscale
@@ -345,10 +470,13 @@
       $("btn-ts-install").classList.toggle("hidden", !(r.canInstall && r.state === "missing"));
       $("ts-hint").classList.toggle("hidden", !!r.canInstall || r.state !== "missing");
       if (r.state === "signed-out") note("ts-note", "Open Tailscale on this computer (Start menu on Windows) and sign in, then press Check Tailscale.");
-      else if (r.state === "connected") note("ts-note", st && st.on ? "Use the address marked works anywhere (Tailscale) on your phone, with Tailscale switched on there too." : "Turn phone access on above to see the Tailscale address.", "good");
+      else if (r.state === "connected") note("ts-note", st && st.on ? "Use the secure link (https) above on your phone, with Tailscale switched on there too." : "Turn phone access on above to get the secure https link.", "good");
       else if (r.message) note("ts-note", r.message, "bad");
       else note("ts-note", "");
-      if (r.state === "connected") refresh(false);
+      var was = tsConnected;
+      tsConnected = r.state === "connected";
+      if (tsConnected) { if (was) secureAsked = false; refresh(false); }
+      else if (st) render(st);
     }).catch(function (e) {
       $("btn-ts-check").disabled = false;
       $("ts-text").textContent = "Tailscale: could not check";

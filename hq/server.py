@@ -822,6 +822,9 @@ class Handler(BaseHTTPRequestHandler):
         """True when a local proxy forwarded the request from another device (tailscale serve for https, or any
         reverse proxy): it must log in like any phone, even though it reaches us from 127.0.0.1."""
         h = self.headers
+        host = (h.get("Host") or "").strip().lower()
+        if host and not re.match(r"^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", host):
+            return True                                   # a phone typed a .ts.net or LAN name: never this computer's own window
         return any(h.get(k) for k in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-IP",
                                        "Tailscale-User-Login", "Tailscale-User-Name", "Tailscale-Headers-Info"))
 

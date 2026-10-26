@@ -132,6 +132,12 @@ Deliverables land in `work/<team>/<task>/` and `out/<clip>/`. Nothing is posted;
 
 The default caption style (黄字重点衬线动态字幕, the `yellow-serif` skill): white heavy serif captions, key words in warm yellow `#FBC238`, and one motion per sentence (typing, pop, burst, shine, flash), with full-screen, darkened-speaker and torn-paper layouts and light-leak transitions. A long talk becomes two 45-60 s topics. Each gets a planning page (`plan.md`: original line, key words, motion, picture and notes) that you can approve before anything is rendered. Every render keeps editable captions (`edit.ass` for Aegisub, `edit.srt` for CapCut) beside the video. Speech-to-text handles Chinese and English. The fonts (Noto Serif SC and Ma Shan Zheng, both SIL OFL) download on first use. The full guide is `.claude/skills/yellow-serif/GUIDE.md`. Ask for "word-by-word captions" to get the older reel style.
 
+## Your phone, with no "Not Secure" warning
+
+In the app, open **Phone access**, turn it on with a password, then press **Turn on secure link**. It uses Tailscale's free HTTPS (`tailscale serve`) to give your computer a real https address like `https://my-pc.my-tailnet.ts.net/`, shown with a QR code. Safari shows no warning, and the microphone and Copy buttons work on the phone. The first time, Tailscale may ask you to turn on HTTPS certificates in its admin page; the app shows the button. Phones still log in with your password: requests that arrive through Tailscale are never treated as this computer's own window.
+
+Without the app: turn on HTTPS at https://login.tailscale.com/admin/dns, then run `tailscale serve --bg 7331` once on the computer.
+
 ## Host it, so your phone can reach it
 
 The hosted version is the same app behind a login, in one Docker image. See `deploy/` and `fly.toml`. You need a server (Fly.io is the simplest), an Anthropic API key (a server can't use your Claude app login, so the office bills to the key; set a spend limit) and a password.

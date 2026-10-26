@@ -16,6 +16,13 @@
  * computer itself (HQ_LOCAL_TRUST=1). The password and the cookie secret (HQ_SECRET, so phones stay logged in across
  * restarts) are kept in settings.json, encrypted with Electron's safeStorage when the system offers it.
  *
+ * Secure link (phone.html, "Secure link (https)"): `tailscale serve --bg --https=443 http://127.0.0.1:<port>` gives the
+ * office an https://<computer>.<tailnet>.ts.net/ address inside the owner's tailnet, so the iPhone shows no warning and the
+ * microphone works. Tailscale relays it from 127.0.0.1, and hq/server.py makes every relayed request log in with the
+ * phone password even with HQ_LOCAL_TRUST=1. The link only stays on while our engine runs with the password: it is turned
+ * off before an engine without phone access starts, when phone access is turned off and when the app quits, and turned on
+ * again (on the new port, if it changed) whenever the engine comes up with phone access and settings.secureLink is true.
+ *
  * Build: copy the office into desktop/bundle (the GitHub workflow .github/workflows/windows-app.yml does this with
  * robocopy: the repository without .git, desktop, out, done, approved and the inbox contents), then `npm run dist:win`.
  */
@@ -60,6 +67,8 @@ let hiddenByUser = false;     // the user closed the window to the tray; it does
 let logStream = null;
 let phone = { password: "", secret: "" };   // decrypted phone password and cookie secret, in memory only
 let enginePhone = false;                     // the running engine was started with phone access on
+// the secure link (tailscale serve): applied = 443 relays to `port` as far as we know; maybe = it may still be on from earlier
+const secure = { applied: false, maybe: false, port: 0, url: "", busy: false, problem: null, funnel: false, checked: false };
 // every log line (the setup screen, engine.log) has the phone password and the secret blanked out
 const log = new lib.RingLog(500, { redact: (line) => lib.redact(line, [phone.password, phone.secret]) });
 
@@ -111,6 +120,8 @@ async function start() {
   say(`Agents HQ desktop ${app.getVersion()} on ${process.platform}; settings in ${userData}; office folder ${settings.officeDir}`);
   loadPhone();
   if (settings.phoneAccess) say("Phone access is on: phones on your network can open the office with the phone password.");
+  if (typeof settings.secureLink !== "boolean") settings.secureLink = false;
+  secure.maybe = settings.secureLink;          // Tailscale keeps a --bg serve across restarts: it may still be on
 
   // the office page may use the microphone (voice command); nothing else is granted
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => callback(permission === "media"));
@@ -321,6 +332,8 @@ async function startEngine() {
     if (phoneOn()) say("That engine was not started by this app, so phone access is not active. Close the window where it runs, then press Restart.");
     externalEngine = true;
     enginePhone = false;
+    // that engine may have no phone password: the secure link must not relay to it
+    if (secureMaybeOn()) await secureTask(() => removeSecure("the engine running now was not started by this app"));
     engineUp(settings.port);
     return;
   }
@@ -336,6 +349,10 @@ async function startEngine() {
 
   const env = await engineEnv({ phone: true });
   const withPhone = env.HQ_HOST === "0.0.0.0";
+  // the secure link relays to 127.0.0.1:<port>: off before an engine without the password starts, or on another port
+  if (secureMaybeOn() && !(withPhone && secure.applied && secure.port === port)) {
+    await secureTask(() => removeSecure(withPhone ? `the engine moves to port ${port}; it is turned on again when the engine is up` : "the engine starts without phone access"));
+  }
   const args = [...pythonCmd.slice(1), "hq/server.py", "--no-browser"];
   say(`Engine: ${pythonCmd[0]} ${args.join(" ")}   (port ${port}, folder ${settings.officeDir}${env.CLAUDE_BIN ? ", claude " + env.CLAUDE_BIN : ""}` +
     (withPhone ? ", phone access on: every network, password required except on this computer" : "") + ")");
@@ -375,6 +392,7 @@ const SIGN_IN_HINT = 'Press "Sign in to Claude Code", finish in the terminal, th
 function engineUp(port) {
   setState({ engine: "running", phase: "ready", port, url: `http://127.0.0.1:${port}`, message: "Agents HQ is running.", signedIn: lib.claudeSignedIn(app.getPath("home")) });
   updateTray();
+  syncSecure("the engine is up on port " + port);
   // straight to the office when every tool is there, the first-run setup finished and Claude Code is signed in; otherwise the setup screen stays
   if (state.allOk && settings.setupDone && state.signedIn) { showOffice(); return; }
   if (state.allOk && settings.setupDone) {
@@ -720,6 +738,10 @@ function registerIpc() {
   ipcMain.handle("phone:tailscale", fromApp(() => tailscaleInfo()));
   ipcMain.handle("phone:install-tailscale", fromApp(() => installTailscale()));
   ipcMain.handle("phone:generate", fromApp(() => ({ ok: true, password: lib.generatePassword() })));
+  ipcMain.handle("phone:secure-get", fromApp(() => secureGet()));
+  ipcMain.handle("phone:secure-on", fromApp(() => secureOn()));
+  ipcMain.handle("phone:secure-off", fromApp(() => secureOff()));
+  ipcMain.handle("phone:open-link", fromApp((url) => openAdminLink(url)));
   ipcMain.handle("phone:copy", fromApp((text) => {
     if (typeof text !== "string" || !text || text.length > 500) return { ok: false, message: "Nothing to copy." };
     clipboard.writeText(text);
@@ -814,6 +836,7 @@ function phoneState() {
     addresses: on ? lib.phoneAddresses(os.networkInterfaces(), state.port) : [],
     encrypted: !settings.phonePassword && !settings.phoneSecret,
     platform: process.platform,
+    secure: secureState(),
   };
 }
 
@@ -881,6 +904,8 @@ async function applyPhone(req) {
   const flipped = wantOn !== !!settings.phoneAccess;
   settings.phoneAccess = wantOn;
   savePhone();
+  // without phone access the engine has no password: the secure link goes first (settings.secureLink stays, so it comes back with phone access)
+  if (!wantOn && secureMaybeOn()) await secureTask(() => removeSecure("phone access turned off"));
   if (flipped) say(wantOn ? "Phone access turned on." : "Phone access turned off: only this computer can open the office.");
   else if (pwChanged) say("The phone password was changed; every phone has to log in again.");
   updateTray();
@@ -912,7 +937,7 @@ async function applyPhone(req) {
 
 /** A QR code (PNG data URL) for one of the phone addresses. */
 async function phoneQr(url) {
-  if (typeof url !== "string" || !/^http:\/\/\d{1,3}(\.\d{1,3}){3}:\d{1,5}\/?$/.test(url)) return { ok: false, message: "That is not a phone address." };
+  if (typeof url !== "string" || !(/^http:\/\/\d{1,3}(\.\d{1,3}){3}:\d{1,5}\/?$/.test(url) || lib.isSecureUrl(url))) return { ok: false, message: "That is not a phone address." };
   try {
     const QRCode = require("qrcode");
     const dataUrl = await QRCode.toDataURL(url, { errorCorrectionLevel: "M", margin: 2, width: 240, color: { dark: "#000000", light: "#ffffff" } });
@@ -942,11 +967,193 @@ function installTailscale() {
   return { ok: true, message: "A PowerShell window is installing Tailscale. Approve the Windows prompt, wait until it says Done, sign in to Tailscale, then press Check Tailscale." };
 }
 
+// ---------------------------------------------------------------- the secure link (tailscale serve)
+
+let secureQueue = Promise.resolve();
+let secureRetries = 0, secureRetryTimer = null;
+const SECURE_RETRIES = 6, SECURE_RETRY_MS = 30000;
+
+/** Run the secure link changes one after the other (the phone window, the engine starting and quitting all make them). */
+function secureTask(fn) {
+  const p = secureQueue.then(fn, fn);
+  secureQueue = p.catch((e) => say("Secure link: unexpected problem: " + (e && e.message || e)));
+  return p;
+}
+
+function secureMaybeOn() {
+  return secure.applied || secure.maybe;
+}
+
+/** The link should be on: the owner wants it, and our own engine runs with the phone password. */
+function secureWanted() {
+  return !!settings.secureLink && phoneOn() && enginePhone && !!child && state.engine === "running";
+}
+
+/** What phone.html shows in the secure link card. */
+function secureState() {
+  const active = enginePhone && state.engine === "running";
+  return {
+    want: !!(settings && settings.secureLink),
+    on: secure.applied && secure.port === state.port && active,
+    url: secure.url, busy: secure.busy, problem: secure.problem, funnel: secure.funnel, checked: secure.checked,
+  };
+}
+
+function pushPhone() {
+  if (phoneWin && !phoneWin.isDestroyed()) phoneWin.webContents.send("phone:state", phoneState());
+}
+
+/** Every tailscale command and its answer go to the log (the phone password is never part of them). */
+function logSteps(steps) {
+  for (const st of steps || []) {
+    const how = st.timedOut ? "no answer after " + lib.TAILSCALE_TIMEOUT_MS / 1000 + " s" : st.code === 0 ? "ok" : "exit code " + (st.code == null ? "none" : st.code);
+    say(`> ${st.line}   (${how})`);
+    for (const l of st.output) say("    " + l);
+  }
+}
+
+async function applySecure(port, why) {
+  say(`Secure link: turning it on for port ${port} (${why}).`);
+  if (IS_WIN) await lib.refreshPath(process.env);
+  const r = await lib.enableSecureLink(port);
+  logSteps(r.steps);
+  if (r.ok) {
+    Object.assign(secure, { applied: true, maybe: true, port, url: r.url, problem: null, funnel: !!r.funnel });
+    say(`Secure link on: ${r.url} relays to http://127.0.0.1:${port}; phones log in with the phone password.` + (r.verified ? "" : " (Tailscale's serve status did not confirm it; the address may take a few seconds.)"));
+    if (r.funnel) say("Warning: Tailscale Funnel is on for this address, so it is open to the whole internet, not only your devices. Turn Funnel off in Tailscale unless you meant that.");
+  } else {
+    Object.assign(secure, { applied: false, maybe: true, problem: r.problem });     // maybe: serve may have half changed
+    say("Secure link not on: " + (r.problem ? r.problem.message + (r.problem.link ? " " + r.problem.link : "") : "Tailscale did not say why."));
+  }
+  return r;
+}
+
+async function removeSecure(why) {
+  say(`Secure link: turning it off (${why}).`);
+  if (IS_WIN) await lib.refreshPath(process.env);
+  const r = await lib.disableSecureLink();
+  logSteps(r.steps);
+  if (r.ok) Object.assign(secure, { applied: false, maybe: false, funnel: false });
+  else say("The secure link could not be turned off: " + (r.problem ? r.problem.message : "Tailscale did not answer.") + " Run this in a terminal: tailscale serve --https=443 off");
+  return r;
+}
+
+/** After the engine came up (or changed): on when it is wanted and not yet on this port, off when it is not wanted. */
+function syncSecure(why) {
+  return secureTask(async () => {
+    if (secureWanted()) {
+      if (secure.applied && secure.port === state.port) return;
+      clearTimeout(secureRetryTimer);
+      const r = await applySecure(state.port, why);
+      if (r.ok) secureRetries = 0;
+      else if (r.problem && ["not-running", "timeout", "failed"].includes(r.problem.kind) && secureRetries < SECURE_RETRIES) {
+        secureRetries++;                // e.g. Tailscale is still connecting right after Windows starts
+        say(`Secure link: trying again in ${SECURE_RETRY_MS / 1000} seconds (${secureRetries} of ${SECURE_RETRIES}).`);
+        secureRetryTimer = setTimeout(() => syncSecure("trying again"), SECURE_RETRY_MS);
+      }
+    } else if (secureMaybeOn()) {
+      await removeSecure(why);
+    }
+    pushPhone();
+  });
+}
+
+/** phone:secure-get: what Tailscale says now (the https address, whether 443 relays to our port). */
+function secureGet() {
+  return secureTask(async () => {
+    if (IS_WIN) await lib.refreshPath(process.env);
+    const info = await lib.secureLinkInfo(state.port);
+    logSteps(info.steps);
+    secure.checked = true;
+    if (info.url) secure.url = info.url;
+    secure.funnel = !!info.funnel;
+    if (info.on && !(enginePhone && state.engine === "running")) {
+      // relaying to an engine without the phone password: never leave that on
+      await removeSecure("the engine on this port has no phone password right now");
+    } else if (info.on) {
+      Object.assign(secure, { applied: true, maybe: true, port: state.port, problem: null });
+      if (!settings.secureLink) { settings.secureLink = true; saveSettings(); }      // keep it on this port when the port changes
+    } else if (info.ok) {
+      secure.applied = false;
+      if (info.problem) secure.problem = info.problem;
+    } else {
+      secure.applied = false;
+      secure.problem = info.problem;
+    }
+    pushPhone();
+    return { ok: info.ok, proxy: info.on ? "" : info.proxy, ...secureState() };
+  });
+}
+
+/** phone:secure-on: needs phone access on with its password and our engine running with it. */
+async function secureOn() {
+  const notYet = () => {
+    if (!settings.phoneAccess || lib.passwordProblem(phone.password)) return "Turn phone access on above first (it needs the password), then turn on the secure link.";
+    if (externalEngine && !child) return "The engine running now was not started by this app, so the secure link cannot use it. Close the window where it runs, then press Restart on the setup screen.";
+    if (!(enginePhone && child && state.engine === "running")) return "Phone access is not active yet. Wait until the engine runs with phone access, then press Turn on again.";
+    return "";
+  };
+  const before = notYet();
+  if (before) return { ok: false, message: before, ...secureState() };
+  return secureTask(async () => {
+    const now = notYet();                                  // the engine may have changed while we waited for the queue
+    if (now) return { ok: false, message: now, ...secureState() };
+    secure.busy = true;
+    pushPhone();
+    let r;
+    try {
+      clearTimeout(secureRetryTimer);
+      secureRetries = 0;
+      r = await applySecure(state.port, "turned on in the phone window");
+      if (r.ok) { settings.secureLink = true; saveSettings(); }
+    } finally {
+      secure.busy = false;
+    }
+    pushPhone();
+    const message = r.ok ? `The secure link is on. On your phone, switch Tailscale on and open ${r.url}, then type the password.` : (r.problem && r.problem.message) || "The secure link did not turn on. Open the engine log to see why.";
+    return { ok: r.ok, message, ...secureState() };
+  });
+}
+
+/** phone:secure-off: always allowed. */
+function secureOff() {
+  return secureTask(async () => {
+    secure.busy = true;
+    pushPhone();
+    let r;
+    try {
+      clearTimeout(secureRetryTimer);
+      settings.secureLink = false;
+      saveSettings();
+      r = await removeSecure("turned off in the phone window");
+      if (r.ok) secure.problem = null;
+    } finally {
+      secure.busy = false;
+    }
+    pushPhone();
+    const message = r.ok ? "The secure link is off. The https address no longer opens the office." : "The secure link could not be turned off: " + ((r.problem && r.problem.message) || "Tailscale did not answer.");
+    return { ok: r.ok, message, ...secureState() };
+  });
+}
+
+/** The "Open Tailscale admin" button: https://login.tailscale.com/ links only, in the system browser. */
+function openAdminLink(url) {
+  if (!lib.isTailscaleAdminLink(url)) return { ok: false, message: "That is not a Tailscale admin link." };
+  say("Opening the Tailscale admin in the browser: " + url);
+  shell.openExternal(url);
+  return { ok: true, message: "The Tailscale admin opened in your browser. Turn on HTTPS certificates there, then press Turn on again." };
+}
+
 // ---------------------------------------------------------------- quit
 
 async function quit() {
   if (quitting) return;
   quitting = true;
+  clearTimeout(secureRetryTimer);
+  // the link goes with the app; it comes back on the next start when the engine is up with phone access
+  if (secureMaybeOn()) {
+    try { await Promise.race([secureTask(() => removeSecure("Agents HQ is quitting")), new Promise((r) => setTimeout(r, 8000))]); } catch (_) { /* quit anyway */ }
+  }
   try { await stopEngine(); } catch (_) { /* nothing more to do */ }
   if (tray) { tray.destroy(); tray = null; }
   app.quit();

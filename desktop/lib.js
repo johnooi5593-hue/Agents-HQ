@@ -7,6 +7,8 @@
  *   - settings load/save, port probing, an HTTP poll, a log ring buffer
  *   - the PowerShell lines that install what is missing, where the real claude executable is, the office folder,
  *     and whether Claude Code is signed in
+ *   - phone access: the addresses, the password, the engine environment, Tailscale detection and the secure https link
+ *     (tailscale serve): the commands, and reading what they print
  */
 const fs = require("fs");
 const net = require("net");
@@ -520,12 +522,19 @@ function parseTailscaleIp(text) {
 function tailscaleState(res) {
   const ip = res && res.code === 0 ? parseTailscaleIp(res.stdout) : "";
   if (ip) return { state: "connected", ip };
-  const text = String((res && res.error) || "") + "\n" + String((res && res.stderr) || "") + "\n" + String((res && res.stdout) || "");
-  if (!res || res.code === 127 || res.code === 9009 || (res.error && !res.timedOut && /ENOENT|not found/i.test(res.error)) ||
-      /is not recognized as an internal or external command|tailscale: (command )?not found/i.test(text)) {
-    return { state: "missing", ip: "" };
-  }
+  if (commandMissing(res)) return { state: "missing", ip: "" };
   return { state: "signed-out", ip: "" };
+}
+
+/** All the text a run() result has: error, stderr and stdout. */
+function resultText(res) {
+  return String((res && res.error) || "") + "\n" + String((res && res.stderr) || "") + "\n" + String((res && res.stdout) || "");
+}
+
+/** True when a run() result says the tailscale command does not exist (cmd.exe 9009, sh 127, ENOENT). */
+function commandMissing(res) {
+  return !res || res.code === 127 || res.code === 9009 || (!!res.error && !res.timedOut && /ENOENT|not found/i.test(res.error)) ||
+    /is not recognized as an internal or external command|tailscale(\.exe)?: (command )?not found/i.test(resultText(res));
 }
 
 /** Where Tailscale installs its command on Windows (on the PATH too, but only for programs started after the install). */
@@ -552,6 +561,286 @@ function tailscaleInstallLines() {
     "winget install -e --id tailscale.tailscale --accept-package-agreements --accept-source-agreements",
     "Write-Host 'Done. Open Tailscale from the Start menu and sign in, then go back to Agents HQ and press Check Tailscale.' -ForegroundColor Green",
   ];
+}
+
+// ---------------------------------------------------------------- the secure link: tailscale serve (https)
+//
+// `tailscale serve` gives this computer an https address inside the owner's tailnet, https://<computer>.<tailnet>.ts.net/,
+// with a real certificate, and relays it to the engine on 127.0.0.1. The iPhone then shows no "not secure" page and the
+// office page is a secure context (microphone, clipboard). It is tailnet only: Funnel (the public internet) is never used.
+// The relayed requests reach the engine from 127.0.0.1 but carry X-Forwarded-* and Tailscale-User-* headers, and
+// hq/server.py makes every relayed request log in with the phone password, even with HQ_LOCAL_TRUST=1.
+
+const TAILSCALE_TIMEOUT_MS = 20000;
+const TAILSCALE_ADMIN_DNS = "https://login.tailscale.com/admin/dns";
+
+/** `tailscale serve --bg --https=443 http://127.0.0.1:<port>`: the secure link on, kept by Tailscale in the background. */
+function serveOnArgs(port) {
+  return ["serve", "--bg", "--https=443", `http://127.0.0.1:${Number(port) || DEFAULT_PORT}`];
+}
+
+/** `tailscale serve --https=443 off`: only the https link this app made goes away. */
+function serveOffArgs() {
+  return ["serve", "--https=443", "off"];
+}
+
+/** `tailscale serve reset`: every serve setting goes away (the fallback when the off command fails). */
+function serveResetArgs() {
+  return ["serve", "reset"];
+}
+
+/** `tailscale serve status --json`, or with `json` false the plain text form (older versions without --json). */
+function serveStatusArgs(json = true) {
+  return json ? ["serve", "status", "--json"] : ["serve", "status"];
+}
+
+/** `tailscale status --json`: this computer's name in the tailnet (Self.DNSName). */
+function statusJsonArgs() {
+  return ["status", "--json"];
+}
+
+/** The JSON object in a command's output (text before the first "{" or after the last "}" is ignored), or null. */
+function parseJsonOutput(text) {
+  const s = String(text || "");
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  if (a < 0 || b < a) return null;
+  try {
+    const obj = JSON.parse(s.slice(a, b + 1));
+    return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** A DNS name without its trailing dot, lower case, or "" when it is not a plain host name. */
+function cleanDnsName(name) {
+  const s = String(name || "").trim().replace(/\.+$/, "").toLowerCase();
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(s) ? s : "";
+}
+
+/**
+ * What `tailscale status --json` says about this computer: { dnsName (no trailing dot), magicDns (true, false or null when
+ * not reported), certDomains, backend ("Running", "NeedsLogin", "Stopped"...) }. Never throws; dnsName "" when unknown.
+ */
+function parseStatusJson(text) {
+  const obj = parseJsonOutput(text);
+  if (!obj) return { dnsName: "", magicDns: null, certDomains: [], backend: "" };
+  const self = obj.Self && typeof obj.Self === "object" ? obj.Self : {};
+  const tailnet = obj.CurrentTailnet && typeof obj.CurrentTailnet === "object" ? obj.CurrentTailnet : null;
+  return {
+    dnsName: cleanDnsName(self.DNSName),
+    magicDns: tailnet && typeof tailnet.MagicDNSEnabled === "boolean" ? tailnet.MagicDNSEnabled : null,
+    certDomains: Array.isArray(obj.CertDomains) ? obj.CertDomains.map(cleanDnsName).filter(Boolean) : [],
+    backend: typeof obj.BackendState === "string" ? obj.BackendState : "",
+  };
+}
+
+/** https://<dnsname>/ for a tailnet name, or "". */
+function secureUrl(dnsName) {
+  const d = cleanDnsName(dnsName);
+  return d ? `https://${d}/` : "";
+}
+
+/** True for a secure link address: https://<name>.ts.net/ (what phone:qr may turn into a QR code). */
+function isSecureUrl(url) {
+  return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.ts\.net\/?$/.test(String(url || ""));
+}
+
+/** True for a link the app may open in the system browser from the secure link card: https://login.tailscale.com/... only. */
+function isTailscaleAdminLink(url) {
+  return typeof url === "string" && url.length <= 2000 && /^https:\/\/login\.tailscale\.com\/[^\s"'<>\\]*$/.test(url);
+}
+
+/** The local port a serve proxy target points at ("http://127.0.0.1:7331", "localhost:7331", "7331"), or 0 for anything else. */
+function proxyPort(target) {
+  const m = /^(?:https?:\/\/)?(?:(?:127\.0\.0\.1|localhost|\[::1\]):)?(\d{1,5})\/?$/i.exec(String(target || "").trim());
+  return m ? +m[1] : 0;
+}
+
+/**
+ * Does port 443 of the secure link relay to our engine? Reads `tailscale serve status --json` (the ServeConfig:
+ * Web["<host>:443"].Handlers["/"].Proxy, also inside Foreground sessions) or, for older versions, the plain text form
+ * ("https://<host> (tailnet only)" then "|-- / proxy http://127.0.0.1:7331").
+ * Returns { on (443 relays to `port`), proxy (what 443 relays to, or ""), host, funnel (443 is open to the internet) }.
+ */
+function parseServeStatus(text, port) {
+  const found = { proxy: "", host: "", funnel: false };
+  const obj = parseJsonOutput(text);
+  if (obj) {
+    const configs = [obj];
+    if (obj.Foreground && typeof obj.Foreground === "object") for (const c of Object.values(obj.Foreground)) if (c && typeof c === "object") configs.push(c);
+    for (const sc of configs) {
+      const web = sc.Web && typeof sc.Web === "object" ? sc.Web : {};
+      for (const [hostPort, cfg] of Object.entries(web)) {
+        const m = /^(.+):443$/.exec(hostPort);
+        if (!m || !cfg || typeof cfg.Handlers !== "object" || !cfg.Handlers) continue;
+        const root = cfg.Handlers["/"];
+        const proxy = root && typeof root.Proxy === "string" ? root.Proxy : "";
+        if (!proxy || found.proxy) continue;
+        found.proxy = proxy;
+        found.host = cleanDnsName(m[1]);
+        found.funnel = !!(sc.AllowFunnel && sc.AllowFunnel[hostPort]);
+      }
+    }
+  } else {
+    let host = "", funnel = false;
+    for (const raw of String(text || "").replace(/\r/g, "").split("\n")) {
+      const line = raw.trim();
+      const h = /^https:\/\/([^\s/:]+)(:\d+)?\/?(\s|$)/.exec(line);
+      if (h) { host = h[2] && h[2] !== ":443" ? "" : h[1]; funnel = /funnel on/i.test(line); continue; }
+      const p = /^\|--\s+\/\s+proxy\s+(\S+)/.exec(line);
+      if (p && host && !found.proxy) { found.proxy = p[1]; found.host = cleanDnsName(host); found.funnel = funnel; }
+    }
+  }
+  return { on: !!found.proxy && proxyPort(found.proxy) === Number(port), ...found };
+}
+
+/**
+ * What went wrong with a tailscale command, in a form the phone window can show: null when nothing did, else
+ * { kind, message, link }. kind is one of
+ *   https-off      HTTPS certificates (or Serve) are not enabled on the tailnet; `link` is the admin page that enables them
+ *   magicdns-off   MagicDNS is disabled on the tailnet; `link` is the DNS page of the admin
+ *   access-denied  tailscaled refused the change
+ *   old-version    this Tailscale does not know `serve --bg`
+ *   not-running    Tailscale is installed but not running or not signed in
+ *   missing        no tailscale command
+ *   timeout        no answer within the time limit
+ *   failed         anything else (message: the CLI's first line)
+ * The CLI prints the admin link while it waits for HTTPS to be enabled ("Serve is not enabled on your tailnet. To enable,
+ * visit: https://login.tailscale.com/f/serve?node=..."), so that output counts even when the command timed out.
+ */
+function serveProblem(res) {
+  const text = resultText(res);
+  if (res && res.code === 0 && !res.timedOut && !res.error) return null;
+  const link = (/https:\/\/login\.tailscale\.com\/[^\s"'<>\\)]+/.exec(text) || [""])[0].replace(/[.,;]+$/, "");
+  if (/MagicDNS (is )?(disabled|not enabled|off)|enable MagicDNS/i.test(text)) {
+    return { kind: "magicdns-off", link: link || TAILSCALE_ADMIN_DNS, message: "Turn on MagicDNS in your Tailscale admin (the DNS page), then press Turn on again." };
+  }
+  if (/(serve|https|https certificates|certificates|tls certificates?) (is |are )?not (enabled|available|supported)|not enabled on your tailnet|enable https|https is disabled|does not support getting tls certs|login\.tailscale\.com\/f\/(serve|https)/i.test(text)) {
+    return { kind: "https-off", link: link || TAILSCALE_ADMIN_DNS, message: "Turn on HTTPS certificates in your Tailscale admin, then press Turn on again." };
+  }
+  if (commandMissing(res)) return { kind: "missing", link: "", message: "Tailscale is not installed on this computer. Install it below, sign in, then press Turn on again." };
+  if (/access denied|permission denied|requires (root|administrator)/i.test(text)) {
+    return { kind: "access-denied", link: "", message: "Tailscale refused the change (access denied). Make sure Tailscale on this computer is signed in with your own account, then press Turn on again." };
+  }
+  if (/flag provided but not defined|unknown flag|invalid argument|unknown subcommand/i.test(text)) {
+    return { kind: "old-version", link: "", message: "This Tailscale is too old for the secure link. Update it from tailscale.com/download, then press Turn on again." };
+  }
+  if (/failed to connect to local tailscaled|is tailscaled running|tailscale is stopped|NeedsLogin|not logged in|logged out/i.test(text)) {
+    return { kind: "not-running", link: "", message: "Tailscale is not running or not signed in on this computer. Open Tailscale, sign in, then press Turn on again." };
+  }
+  if (res && res.timedOut) return { kind: "timeout", link: "", message: "Tailscale did not answer within 20 seconds. Check that it is running, then press Turn on again." };
+  const first = firstLine(res && (res.stderr || res.stdout || res.error)) || "exit code " + (res ? res.code : "none");
+  return { kind: "failed", link: "", message: "Tailscale answered: " + first.slice(0, 300) };
+}
+
+/**
+ * Run tailscale with these arguments (20 s timeout): the `tailscale` on the PATH, or on Windows the one in Program Files
+ * when the PATH does not have it yet. `opts.run`, `opts.exists` and `opts.isWin` replace the runner, fs.existsSync and
+ * the platform (tests); `opts.timeoutMs` the time limit. Never throws.
+ */
+async function runTailscale(args, opts = {}) {
+  const runner = opts.run || run;
+  const exists = opts.exists || fs.existsSync;
+  const timeoutMs = opts.timeoutMs || TAILSCALE_TIMEOUT_MS;
+  let res;
+  try {
+    res = await runner("tailscale", args, { timeoutMs });
+    if (commandMissing(res) && (opts.isWin != null ? opts.isWin : IS_WIN) && exists(TAILSCALE_WIN_EXE)) res = await runner(TAILSCALE_WIN_EXE, args, { timeoutMs });
+  } catch (e) {
+    res = { line: "tailscale " + args.join(" "), code: null, stdout: "", stderr: "", error: e.message, timedOut: false };
+  }
+  return { ...res, line: res.line || "tailscale " + args.join(" ") };
+}
+
+/**
+ * One step for main.js's log: { line, code, timedOut, output (the first lines of what it printed) }. With `summary`, a
+ * command that worked logs that one line instead of its output (`tailscale status --json` lists every device).
+ */
+function stepOf(res, summary) {
+  const ok = res.code === 0 && !res.timedOut && !res.error;
+  const output = ok && summary ? [summary]
+    : [res.stdout, res.stderr, res.error].filter(Boolean).join("\n").replace(/\r/g, "").split("\n").map((l) => l.trimEnd()).filter((l) => l.trim()).slice(0, 12);
+  return { line: res.line, code: res.code, timedOut: !!res.timedOut, output };
+}
+
+/** This computer's tailnet name and its https address: { ok, dnsName, url, magicDns, certDomains, problem, steps }. */
+async function readSecureName(opts = {}) {
+  const res = await runTailscale(statusJsonArgs(), opts);
+  const st = parseStatusJson(res.stdout);
+  const steps = [stepOf(res, "this computer is " + (st.dnsName || "(no name)") + (st.magicDns === false ? ", MagicDNS off" : "") + (st.backend ? ", " + st.backend : ""))];
+  if (!st.dnsName) {
+    const problem = serveProblem(res) || (st.backend && st.backend !== "Running"
+      ? { kind: "not-running", link: "", message: "Tailscale is not running or not signed in on this computer. Open Tailscale, sign in, then press Turn on again." }
+      : { kind: "failed", link: "", message: "Tailscale did not say this computer's name. Check that Tailscale is signed in, then try again." });
+    return { ok: false, dnsName: "", url: "", magicDns: st.magicDns, certDomains: st.certDomains, problem, steps };
+  }
+  if (st.magicDns === false) {
+    return { ok: false, dnsName: st.dnsName, url: secureUrl(st.dnsName), magicDns: false, certDomains: st.certDomains, steps,
+      problem: { kind: "magicdns-off", link: TAILSCALE_ADMIN_DNS, message: "Turn on MagicDNS in your Tailscale admin (the DNS page), then press Turn on again." } };
+  }
+  return { ok: true, dnsName: st.dnsName, url: secureUrl(st.dnsName), magicDns: st.magicDns, certDomains: st.certDomains, problem: null, steps };
+}
+
+/** Does the secure link relay to `port` right now? `tailscale serve status --json`, then the plain form. { on, proxy, host, funnel, steps }. */
+async function readServeStatus(port, opts = {}) {
+  const say = (s) => "443 relays to " + (s.proxy || "nothing") + (s.funnel ? " (Funnel on: open to the internet)" : "");
+  let res = await runTailscale(serveStatusArgs(true), opts);
+  let s = res.code === 0 ? parseServeStatus(res.stdout, port) : { on: false, proxy: "", host: "", funnel: false };
+  const steps = [stepOf(res, say(s))];
+  if (res.code !== 0 && /flag provided but not defined|unknown flag/i.test(resultText(res))) {
+    res = await runTailscale(serveStatusArgs(false), opts);
+    s = res.code === 0 ? parseServeStatus(res.stdout, port) : s;
+    steps.push(stepOf(res, say(s)));
+  }
+  return { ...s, steps };
+}
+
+/**
+ * The secure link as it is: { ok, on (443 relays to `port`), url, dnsName, proxy, funnel, problem, steps }.
+ * `url` is https://<dnsname>/ whenever Tailscale says the name, also while the link is off.
+ */
+async function secureLinkInfo(port, opts = {}) {
+  const name = await readSecureName(opts);
+  if (!name.dnsName) return { ok: false, on: false, url: "", dnsName: "", proxy: "", funnel: false, problem: name.problem, steps: name.steps };
+  const s = await readServeStatus(port, opts);
+  return { ok: true, on: s.on, url: name.url, dnsName: name.dnsName, proxy: s.proxy, funnel: s.funnel, problem: s.on ? null : name.problem, steps: [...name.steps, ...s.steps] };
+}
+
+/**
+ * Turn the secure link on for the engine on `port`: tailscale serve --bg --https=443 http://127.0.0.1:<port>, then read
+ * the https address and what 443 relays to. { ok, url, dnsName, verified (443 relays to `port`), funnel, problem, steps }. When HTTPS is not enabled on the tailnet, problem.kind is
+ * "https-off" with the admin link that enables it.
+ */
+async function enableSecureLink(port, opts = {}) {
+  const res = await runTailscale(serveOnArgs(port), opts);
+  const steps = [stepOf(res)];
+  const problem = serveProblem(res);
+  if (problem) return { ok: false, url: "", dnsName: "", problem, steps };
+  const name = await readSecureName(opts);
+  steps.push(...name.steps);
+  // serve is on, but without MagicDNS the phone cannot find the name: the owner has to turn it on first
+  if (name.problem && name.problem.kind === "magicdns-off") return { ok: false, url: name.url, dnsName: name.dnsName, problem: name.problem, steps };
+  const fromOutput = (/https:\/\/([a-z0-9.-]+\.ts\.net)\/?/i.exec(res.stdout || "") || [])[1] || "";
+  const dnsName = name.dnsName || cleanDnsName(fromOutput);
+  if (!dnsName) return { ok: false, url: "", dnsName: "", problem: name.problem, steps };
+  // check what 443 relays to now (informational: a format this version cannot read does not fail the call)
+  const s = await readServeStatus(port, opts);
+  steps.push(...s.steps);
+  return { ok: true, url: secureUrl(dnsName), dnsName, verified: s.on, funnel: s.funnel, problem: null, steps };
+}
+
+/** Turn the secure link off: tailscale serve --https=443 off, and `tailscale serve reset` when that fails. { ok, problem, steps }. */
+async function disableSecureLink(opts = {}) {
+  const res = await runTailscale(serveOffArgs(), opts);
+  const steps = [stepOf(res)];
+  // "off" for a port that serves nothing is an error in some versions: nothing to turn off is fine
+  if (res.code === 0 || /not (being )?served|nothing to (remove|turn off)|no serve config|does not exist/i.test(resultText(res))) return { ok: true, problem: null, steps };
+  if (commandMissing(res)) return { ok: true, problem: null, steps };              // no Tailscale, no secure link
+  const reset = await runTailscale(serveResetArgs(), opts);
+  steps.push(stepOf(reset));
+  if (reset.code === 0) return { ok: true, problem: null, steps };
+  return { ok: false, problem: serveProblem(reset) || serveProblem(res), steps };
 }
 
 // ---------------------------------------------------------------- the log ring buffer
@@ -601,6 +890,9 @@ module.exports = {
   isPortFree, findPort, httpGet, isAgentsHq, waitForHttp,
   PHONE_ENV_KEYS, PHONE_MIN_PASSWORD, PASSWORD_WORDS, TAILSCALE_WIN_EXE,
   isTailscaleIp, phoneAddresses, generatePassword, passwordProblem, buildEngineEnv, redact,
-  parseTailscaleIp, tailscaleState, checkTailscale, tailscaleInstallLines,
+  parseTailscaleIp, tailscaleState, checkTailscale, tailscaleInstallLines, commandMissing,
+  TAILSCALE_TIMEOUT_MS, TAILSCALE_ADMIN_DNS, serveOnArgs, serveOffArgs, serveResetArgs, serveStatusArgs, statusJsonArgs,
+  parseJsonOutput, cleanDnsName, parseStatusJson, secureUrl, isSecureUrl, isTailscaleAdminLink, proxyPort, parseServeStatus,
+  serveProblem, runTailscale, readSecureName, readServeStatus, secureLinkInfo, enableSecureLink, disableSecureLink,
   RingLog,
 };

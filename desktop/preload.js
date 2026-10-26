@@ -11,6 +11,8 @@ const INVOKE = {
   openFolder: "hq:openFolder", openLog: "hq:openLog", start: "hq:start", openPhone: "hq:openPhone",
   phoneGet: "phone:get", phoneSet: "phone:set", phoneQr: "phone:qr", phoneTailscale: "phone:tailscale",
   phoneInstallTailscale: "phone:install-tailscale", phoneGenerate: "phone:generate", phoneCopy: "phone:copy",
+  phoneSecureGet: "phone:secure-get", phoneSecureOn: "phone:secure-on", phoneSecureOff: "phone:secure-off",
+  phoneOpenLink: "phone:open-link",
 };
 // events main.js pushes to the page
 const EVENTS = { onLog: "hq:log", onState: "hq:state", onPhoneState: "phone:state" };
