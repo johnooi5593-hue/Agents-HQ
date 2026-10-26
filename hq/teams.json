@@ -270,6 +270,18 @@
           "skill": "yellow-serif"
         },
         {
+          "name": "poster-kinetic",
+          "note": "大字海报: one giant hero word per point, colour by meaning, whip / drop / zoom / stack, scripture cards, planning page first",
+          "agent": "clip-editor",
+          "skill": "poster-kinetic"
+        },
+        {
+          "name": "sermon-moments",
+          "note": "讲道特别时刻: text behind the head, active captions, question bar, grade wipe, wall, freeze, whip pan… only at the moment that earns it",
+          "agent": "clip-editor",
+          "skill": "sermon-moments"
+        },
+        {
           "name": "thumbnail-maker",
           "note": "the frame, the words and the placement for the cover",
           "agent": "thumbnail-designer",
