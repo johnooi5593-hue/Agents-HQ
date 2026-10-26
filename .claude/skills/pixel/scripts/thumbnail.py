@@ -16,6 +16,7 @@ ap.add_argument("--color", default="#FFD400")
 ap.add_argument("--accent", type=int, default=0, help="which word gets the color (0 = last word)")
 ap.add_argument("--at", type=float, default=None, help="use the frame at this second instead of the automatic pick")
 ap.add_argument("--pos", choices=["top", "middle", "bottom"], default="top", help="where the text goes")
+ap.add_argument("--font", default=None, help="a .ttf/.otf/.ttc file; Chinese/Japanese/Korean text picks Noto Serif SC (Yellow Serif) automatically")
 a = ap.parse_args()
 
 info = probe(a.src); W, H = info["width"], info["height"]
@@ -43,12 +44,16 @@ grad = Image.new("L", (1, H)); c0 = {"top": 0.0, "middle": 0.5, "bottom": 1.0}[a
 im = Image.composite(Image.new("RGBA", (W, H), (0, 0, 0, 255)), im, grad.resize((W, H)))
 words = a.text.upper().split(); acc = (a.accent or len(words)) - 1
 hl = tuple(int(a.color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+# Geist has no Chinese glyphs: CJK text uses the Yellow Serif font (Noto Serif SC) when it is installed
+CJK = any("　" <= ch <= "鿿" or "＀" <= ch <= "￯" for ch in a.text)
+CJK_FONTS = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", n) for n in ("NotoSerifSC-VF.ttf", "simsun.ttc", "msyh.ttc")]
+FONT = a.font or next((f for f in CJK_FONTS if CJK and os.path.isfile(f)), os.path.join(HERE, "fonts", "Geist.ttf"))
 size = int(W * 0.2)
-font = ImageFont.truetype(os.path.join(HERE, "fonts", "Geist.ttf"), size)
+font = ImageFont.truetype(FONT, size)
 try: font.set_variation_by_axes([900])
 except Exception: pass
 while max(font.getlength(w) for w in words) > W * 0.86 and size > 40:
-    size -= 6; font = ImageFont.truetype(os.path.join(HERE, "fonts", "Geist.ttf"), size)
+    size -= 6; font = ImageFont.truetype(FONT, size)
     try: font.set_variation_by_axes([900])
     except Exception: pass
 block = len(words) * int(size * 1.02); y0 = {"top": int(H * 0.08), "middle": (H - block) // 2, "bottom": H - block - int(H * 0.1)}[a.pos]
@@ -60,4 +65,4 @@ for i, w in enumerate(words):
     d.text(((W - font.getlength(w)) / 2, y), w, font=font, fill=(hl + (255,)) if i == acc else (255, 255, 255, 255)); y += int(size * 1.02)
 os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
 im.convert("RGB").save(a.out, quality=92)
-report(tool="thumbnail", out=a.out, frame_at_seconds=round(t, 2), text=" ".join(words), position=a.pos, size=f"{W}x{H}")
+report(tool="thumbnail", out=a.out, frame_at_seconds=round(t, 2), text=" ".join(words), position=a.pos, size=f"{W}x{H}", font=os.path.basename(FONT))

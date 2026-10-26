@@ -22,6 +22,8 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
                     device (a phone on Wi-Fi or Tailscale) does. Never combine with HQ_TRUST_PROXY.
 """
 import datetime, hashlib, hmac, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from followups import FollowUps
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs
@@ -309,6 +311,7 @@ def approve_folder(name):
     if os.path.exists(dst):
         return 409, {"error": "already approved"}
     shutil.move(src, dst)
+    on_approved(name)
     return 200, {"approved": name}
 
 
@@ -704,7 +707,7 @@ class Desk:
             cmd += ["--resume", self.session_id] if self.resumable else ["--session-id", self.session_id]
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             try:
-                p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=env)
             except OSError as e:
                 run.add({"type": "error", "text": f"could not start claude: {e}. Is Claude Code installed? (npm install -g @anthropic-ai/claude-code)"})
                 break
@@ -744,6 +747,21 @@ class Desk:
 
 
 desk = Desk()
+
+
+# after-approval follow-ups (hq/followups.py): approved/<name>/followups.json hands the work on to the chief of staff
+followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "add", **task})[1]["added"])
+
+
+def on_approved(name):
+    """Called right after out/<name> moved to approved/<name>. Runs in its own thread: the caller may hold TASK_LOCK."""
+    def work():
+        try:
+            if followups.approved(name):
+                notifier.refresh()
+        except Exception as e:
+            sys.stderr.write(f"follow-ups for {name}: {e}\n")
+    threading.Thread(target=work, daemon=True).start()
 
 
 # login: a signed, expiring token in an HttpOnly cookie; wrong passwords back off per address
@@ -1020,6 +1038,7 @@ def main():
     if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    followups.start()                    # also resends a follow-up queued before a restart
     url = f"http://localhost:{PORT}"
     print(f"Agents HQ is open at {url}   (Ctrl+C to close)" + ("   login required" if PASSWORD else ""))
     if "--no-browser" not in sys.argv:
