@@ -35,6 +35,7 @@ from status import CLIP_EXT, brain_entities, brain_notes, collect, files  # noqa
 import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
+from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
 HOST = os.environ.get("HQ_HOST", "127.0.0.1")
@@ -1108,6 +1109,7 @@ desk = Desk()
 
 # after-approval follow-ups (hq/followups.py): approved/<name>/followups.json hands the work on to the chief of staff
 followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "add", **task})[1]["added"])
+sermon_design = SermonDesignBridge(ROOT, task_action, load_tasks, notify=lambda: notifier.refresh())
 
 
 def on_approved(name):
@@ -1295,6 +1297,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.guard():
             return
+        if sermon_design.handle(self):
+            return
         if path == "/api/status":
             return self.send_json(status_payload())
         if path == "/api/teams":
@@ -1367,6 +1371,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/login", [self.cookie_header("", 0)])
         if not self.guard():
             return
+        if sermon_design.handle(self):
+            return
         if path == "/api/run":
             prompt = (self.read_json().get("prompt") or "")
             prompt = prompt.strip() if isinstance(prompt, str) else ""
@@ -1411,6 +1417,8 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlparse(self.path).path)
         if not self.guard():
             return
+        if sermon_design.handle(self):
+            return
         m = re.match(r"^/api/inbox/(clips|radar|stats|messages)/([^/]+)$", path)
         if not m:
             return self.send_json({"error": "not found"}, 404)
@@ -1442,6 +1450,15 @@ class Handler(BaseHTTPRequestHandler):
             channels.footage_task(rel, ch)
         return self.send_json({"saved": rel, "bytes": n}, 201)
 
+    def do_HEAD(self):
+        if not self.guard():
+            return
+        if sermon_design.handle(self):
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
 
 def restart_into_update():
     """The update changed the code on disk, but this process already loaded the old server: start the new one. On
@@ -1461,6 +1478,10 @@ def main():
     if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    try:
+        sermon_design.resume_pending()       # only read-only watches for previously accepted native jobs
+    except Exception:
+        print("Sermon delivery ledger needs attention; no generation was retried.", flush=True)
     followups.start()                    # also resends a follow-up queued before a restart
     publisher.run_scheduler()            # scheduled Instagram posts go out on time (or as soon as HQ runs again)
     channels.run_watcher()               # new videos in each channel's Google Drive folder become "New footage" tasks

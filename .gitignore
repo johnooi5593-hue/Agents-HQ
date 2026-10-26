@@ -30,3 +30,5 @@ inbox/messages/*
 .hq-accounts.json*
 .hq-channels.json*
 .hq-imported.json*
+hq/sermon-project-links.json
+hq/sermon-pending-deliveries.json
