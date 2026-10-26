@@ -62,12 +62,6 @@ def meta_error(e):
     return e
 
 
-def ig_refused(err):
-    """Instagram's processing errors in plain words."""
-    return PostError(f"Instagram could not process the video ({err}). Meta's servers fail like this now and then: try Post again "
-                     "in a few minutes. If it keeps failing, post this one by hand in the Instagram app.")
-
-
 def ig_ready(video):
     """An Instagram-ready copy of the video, to Meta's Reels rules (H.264 with closed GOPs, AAC 128k 48 kHz, at most 25 Mbps,
     index at the front, no edit lists: ffmpeg writes those by default and Instagram refuses them), or None without ffmpeg."""
@@ -650,15 +644,9 @@ class Publisher:
                 except OSError:
                     pass
 
-    def post_instagram_file(self, video, cover, text):
-        m = self.accounts.load().get("meta") or {}
+    def ig_direct(self, video, params, m):
+        """Direct upload: the container id, or the reason it was refused."""
         tok, ig = m["page_token"], m["ig_id"]
-        params = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
-        parked = []                                            # the hidden Page copies, removed once Instagram has posted
-        url = self.cover_url(cover, m, parked)
-        if url:
-            params["cover_url"] = url
-        cid = None                                             # direct upload first, the web address if it is refused
         _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, upload_type="resumable"))
         size = os.path.getsize(video)
         try:
@@ -666,37 +654,93 @@ class Publisher:
                 http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{j['id']}", body=f,
                      headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
                               "Content-Length": str(size)}, timeout=1800)
-            cid = j["id"]
         except PostError as e:
             if "ProcessingFailedError" not in str(e):
                 raise
-        vurl = None
-        for attempt in range(2):                               # a failed upload goes again from the web address (a minute later)
-            if not cid:
-                vurl = vurl or self.video_url(video, m, parked)
-                _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=vurl))
-                cid = j["id"]
-            err = self.ig_wait(cid, tok)
-            if not err:
-                break
-            if attempt:
-                raise ig_refused(err)
-            if vurl:
-                time.sleep(60)
-            cid = None
-        _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
-        for pid in parked:                                     # posted: the hidden copies on the Page aren't needed any more
+            return None, "upload refused"
+        err = self.ig_wait(j["id"], tok)
+        return (None, err) if err else (j["id"], None)
+
+    def ig_from_url(self, vurl, params, m):
+        """From a web address: the container id, or Instagram's error."""
+        _, _, j = http("POST", f"{GRAPH}/{m['ig_id']}/media", data=dict(params, video_url=vurl))
+        err = self.ig_wait(j["id"], m["page_token"])
+        return (None, err) if err else (j["id"], None)
+
+    def unpark(self, parked, tok):
+        for pid in parked:                                     # the hidden copies on the Page aren't needed any more
             try:
                 http("DELETE", f"{GRAPH}/{pid}?" + urllib.parse.urlencode({"access_token": tok}))
             except PostError:
                 pass
+        parked.clear()
+
+    def ig_test(self, base, m):
+        """When everything failed: send a 5-second test clip both ways (never published) to tell the route from the video."""
+        ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+        if not ff:
+            return []
+        fd, clip = tempfile.mkstemp(prefix="hq-igtest-", suffix=".mp4")
+        os.close(fd)
+        parked, out = [], []
+        try:
+            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30:d=5",
+                            "-f", "lavfi", "-i", "sine=f=440:d=5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                            "-ar", "48000", "-ac", "2", "-movflags", "+faststart", "-use_editlist", "0", "-shortest", clip],
+                           capture_output=True, timeout=300, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
+            for name, go in (("direct upload", lambda: self.ig_direct(clip, base, m)),
+                             ("web address", lambda: self.ig_from_url(self.video_url(clip, m, parked), base, m))):
+                try:
+                    cid, err = go()
+                    out.append(f"test clip by {name}: " + ("works" if cid else err))
+                except PostError as e:
+                    out.append(f"test clip by {name}: {e}")
+        except (OSError, subprocess.SubprocessError):
+            pass
+        finally:
+            self.unpark(parked, m["page_token"])
+            try:
+                os.remove(clip)
+            except OSError:
+                pass
+        return out
+
+    def post_instagram_file(self, video, cover, text):
+        m = self.accounts.load().get("meta") or {}
+        tok, ig = m["page_token"], m["ig_id"]
+        base = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
+        parked, tried, extra = [], [], {}                      # the hidden Page copies; what was tried, for the error
+        url = self.cover_url(cover, m, parked)
+        params = dict(base, cover_url=url) if url else base
+        if cover and not url:
+            tried.append("cover: Facebook would not hold it")
+        cid, err = self.ig_direct(video, params, m)            # 1. direct upload
+        if not cid:
+            tried.append("direct upload: " + err)
+            vurl = self.video_url(video, m, parked)             # 2. from the web address
+            cid, err = self.ig_from_url(vurl, params, m)
+            if not cid:
+                tried.append("web address: " + err)
+                time.sleep(30)                                 # 3. again, without the cover (the other file Instagram fetches)
+                cid, err = self.ig_from_url(vurl, base, m)
+                if not cid:
+                    tried.append("web address without cover: " + err)
+                elif url:
+                    extra["warning"] = "Posted without your cover: Instagram would not take it."
+        if not cid:
+            self.unpark(parked, tok)
+            tried += self.ig_test(base, m)
+            raise PostError("Instagram could not process the video. What Agents HQ tried: " + "; ".join(tried) +
+                            ". Send a screenshot of this to Claude, or post this one by hand in the Instagram app.")
+        _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
+        self.unpark(parked, tok)
         link = ""
         try:
             _, _, q = http("GET", f"{GRAPH}/{p['id']}?" + urllib.parse.urlencode({"fields": "permalink", "access_token": tok}))
             link = q.get("permalink", "")
         except PostError:
             pass
-        return link, {}
+        return link, extra
 
     # YouTube Short: resumable upload (vertical and short is what makes it a Short), then the cover as thumbnail
     def post_youtube(self, video, cover, text, when=None):
