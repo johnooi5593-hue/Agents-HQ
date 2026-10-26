@@ -806,17 +806,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def cookie_header(self, value, max_age):
-        secure = SECURE or (TRUST_PROXY and self.headers.get("X-Forwarded-Proto", "").lower() == "https")
+        secure = SECURE or ((TRUST_PROXY or LOCAL_TRUST) and self.headers.get("X-Forwarded-Proto", "").lower() == "https")
         return ("Set-Cookie", f"hq_session={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax" + ("; Secure" if secure else ""))
 
     def authed(self):
         if not PASSWORD:
             return True
         if LOCAL_TRUST and not TRUST_PROXY and self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1") \
-                and not self.headers.get("X-Forwarded-For"):
+                and not self.relayed():
             return True
         jar = cookies.SimpleCookie(self.headers.get("Cookie", ""))
         return "hq_session" in jar and token_ok(jar["hq_session"].value)
+
+    def relayed(self):
+        """True when a local proxy forwarded the request from another device (tailscale serve for https, or any
+        reverse proxy): it must log in like any phone, even though it reaches us from 127.0.0.1."""
+        h = self.headers
+        return any(h.get(k) for k in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-IP",
+                                       "Tailscale-User-Login", "Tailscale-User-Name", "Tailscale-Headers-Info"))
 
     def client_ip(self):
         fwd = self.headers.get("X-Forwarded-For", "") if TRUST_PROXY else ""
