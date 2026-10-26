@@ -1215,7 +1215,8 @@
         let n = 0; const t = setInterval(async () => { n++; await loadAccounts(); if ((rv.acc && rv.acc.youtube && rv.acc.youtube.connected) || n > 100 || !rv.open) clearInterval(t); }, 3000);
       } else {
         if (r.accounts) rv.acc = r.accounts;
-        if (kind === "meta") toast("social", "Connected", `Facebook Page ${r.page || ""}${r.instagram ? " and Instagram @" + r.instagram : " (no Instagram linked)"}`);
+        if (kind === "meta") toast("social", "Connected", `Facebook Page ${r.page || ""}${r.instagram ? " and Instagram @" + r.instagram : " (no Instagram linked)"}` +
+          (r.missing && r.missing.length ? `. Missing permission: ${r.missing.join(", ")}. Get the token again with these ticked, or posting will fail.` : ""));
       }
     } catch (e) { toast("social", "Accounts", e.message || "could not connect", { bad: true }); }
     rv.accBusy = ""; if (rv.open) renderReview();

@@ -49,6 +49,19 @@ def http(method, url, data=None, headers=None, body=None, timeout=120):
         raise PostError(f"no connection ({e.reason})") from None
 
 
+META_PERMS = ("pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish")
+
+
+def meta_error(e):
+    """A Meta permission error in plain words: which box to tick and where."""
+    msg = str(e)
+    for perm in META_PERMS:
+        if perm in msg:
+            return PostError(f"the Meta token is missing the {perm} permission. In Graph API Explorer, Get User Access Token again "
+                             f"with {perm} ticked, then paste the new token in Accounts for posting → Facebook & Instagram → Connect. ({msg})")
+    return e
+
+
 class Accounts:
     def __init__(self, root):
         self.path = os.path.join(root, ".hq-accounts.json")
@@ -97,13 +110,20 @@ class Accounts:
         want = str(page or "").strip().lower()
         chosen = next((p for p in pages if want and (want == p.get("id") or want in p.get("name", "").lower())), pages[0])
         ig = chosen.get("instagram_business_account") or {}
+        missing = []
+        try:                                                # what the token may do: posting fails later without these
+            _, _, pj = http("GET", f"{GRAPH}/me/permissions?" + urllib.parse.urlencode({"access_token": long_user}))
+            granted = {x.get("permission") for x in (pj or {}).get("data") or [] if x.get("status") == "granted"}
+            missing = [x for x in META_PERMS if x not in granted]
+        except PostError:
+            pass
         with self.lock:
             a = self.load()
             a["meta"] = {"app_id": app_id, "app_secret": app_secret, "user_token": long_user, "page_id": chosen["id"],
                          "page_name": chosen.get("name", ""), "page_token": chosen["access_token"],
                          "ig_id": ig.get("id", ""), "ig_username": ig.get("username", ""), "at": int(time.time())}
             self.save(a)
-        return {"page": chosen.get("name"), "pages": [p.get("name") for p in pages], "instagram": ig.get("username", "")}
+        return {"page": chosen.get("name"), "pages": [p.get("name") for p in pages], "instagram": ig.get("username", ""), "missing": missing}
 
     # ---------------------------------------------------------------- YouTube
     def youtube_begin(self, client_json, redirect):
@@ -516,7 +536,10 @@ class Publisher:
     def post_facebook(self, video, cover, text, when=None):
         m = self.accounts.load().get("meta") or {}
         tok, page = m["page_token"], m["page_id"]
-        _, _, j = http("POST", f"{GRAPH}/{page}/video_reels", data={"upload_phase": "start", "access_token": tok})
+        try:
+            _, _, j = http("POST", f"{GRAPH}/{page}/video_reels", data={"upload_phase": "start", "access_token": tok})
+        except PostError as e:
+            raise meta_error(e) from None
         vid, upload = j["video_id"], j.get("upload_url") or f"https://rupload.facebook.com/video-upload/v23.0/{j['video_id']}"
         size = os.path.getsize(video)
         with open(video, "rb") as f:
@@ -557,9 +580,10 @@ class Publisher:
         _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=params)
         cid = j["id"]
         size = os.path.getsize(video)
-        with open(video, "rb") as f:
+        with open(video, "rb") as f:                         # the upload host takes the user token, not the Page token
             http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{cid}", body=f,
-                 headers={"Authorization": "OAuth " + tok, "offset": "0", "file_size": str(size), "Content-Length": str(size)}, timeout=1800)
+                 headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
+                          "Content-Length": str(size)}, timeout=1800)
         for _ in range(120):                                   # up to 10 minutes of processing
             _, _, s = http("GET", f"{GRAPH}/{cid}?" + urllib.parse.urlencode({"fields": "status_code,status", "access_token": tok}))
             if s.get("status_code") == "FINISHED":
