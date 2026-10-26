@@ -165,14 +165,15 @@ class Accounts:
 
 # -------------------------------------------------------------------- the post copy
 def sections(text):
-    """post.md → {"youtube": [option, ...], "instagram": [...], "facebook": [...], "tiktok": [...], "pinned": [...]}.
-    A "## Platform" section is one option, or several under "### Option 1", "### Option 2"… for the owner to choose."""
-    out, cur, opts, buf = {}, None, [], []
+    """post.md → {"options": [...], "youtube": [...], "instagram": [...], "facebook": [...], "tiktok": [...], "pinned": [...],
+    "other": [...]}. "## Captions" holds the options used on every platform ("### Option 1", "### Option 2"…); a "## Platform"
+    section overrides one platform. Sections with other names (older post.md files) land in "other"."""
+    out, cur, opts, buf, num = {}, None, [], [], None
 
     def flush():
         if cur:
-            opts.append("\n".join(buf).strip())
-            out[cur] = [o for o in opts if o]
+            opts.append((num, "\n".join(buf).strip()))
+            out.setdefault(cur, []).extend({"n": n, "text": t} for n, t in opts if t)
     for line in (text or "").replace("\r", "").split("\n"):
         m2 = re.match(r"^##\s+(.*)$", line)
         m3 = re.match(r"^###\s+(.*)$", line)
@@ -180,12 +181,15 @@ def sections(text):
             flush()
             h = m2[1].lower()
             cur = ("youtube" if "youtube" in h else "instagram" if "instagram" in h else "facebook" if "facebook" in h
-                   else "tiktok" if "tiktok" in h else "pinned" if "pinned" in h else None)
-            opts, buf = [], []
+                   else "tiktok" if "tiktok" in h else "pinned" if "pinned" in h else "plan" if re.match(r"plan\b", h)
+                   else "options" if re.search(r"caption|option|标题|文案", h) else "other")
+            opts, buf, num = [], [], None
         elif m3 and cur:
             if "\n".join(buf).strip():
-                opts.append("\n".join(buf).strip())
+                opts.append((num, "\n".join(buf).strip()))
             buf = []
+            n = re.search(r"\d+", m3[1])
+            num = int(n[0]) if n else None
         elif cur:
             buf.append(line)
     flush()
@@ -193,42 +197,97 @@ def sections(text):
 
 
 def clean(text):
-    return re.sub(r"\*\*|__", "", text or "").strip()
+    """Post text without Markdown bold and without the notes meant for us (file paths, "Video:", "For Facebook…")."""
+    keep = [l for l in (text or "").split("\n")
+            if not re.search(r"(approved|out|inbox)/\S+\.(mp4|mov|jpe?g|png)", l, re.I)
+            and not re.match(r"^\s*[-*]?\s*(video|cover|thumbnail|file|for (facebook|instagram|youtube|tiktok)[^:：]*)\s*[:：(]", l, re.I)]
+    return re.sub(r"\*\*|__", "", "\n".join(keep)).strip()
+
+
+def split_title(text, fallback):
+    """An option's "Title: …" line (YouTube) and the rest (the caption everywhere)."""
+    t = clean(text)
+    m = re.search(r"^\s*[-*]?\s*(?:youtube\s*)?title\s*[:：]\s*(.+)$", t, re.I | re.M)
+    title = m[1].strip() if m else ""
+    body = (t[:m.start()] + t[m.end():]) if m else t
+    body = re.sub(r"^\s*[-*]?\s*(description|caption|hashtags|tags)\s*[:：]\s*", "", body, flags=re.I | re.M).strip()
+    if not title:
+        first = next((l.strip() for l in body.split("\n") if l.strip() and not l.strip().startswith("#")), "")
+        title = first or fallback
+    return title[:100], body
 
 
 def drafts(folder):
-    """The text each platform gets, from post.md (the owner can edit it in the app before posting)."""
+    """The caption options for the posting overview. Each option fills every platform at once: the owner picks one
+    (and the thumbnail) and Facebook, Instagram and YouTube all get it; they can still edit a platform's text."""
     try:
         with open(os.path.join(folder, "post.md"), encoding="utf-8") as f:
             s = sections(f.read())
     except OSError:
         s = {}
+    name = os.path.basename(folder).replace("-", " ")
+    common = s.get("options") or []
+    if not common and not any(s.get(k) for k in ("youtube", "instagram", "facebook")):
+        common = s.get("other") or []                         # an older post.md: its sections are the options
+    plat = {k: s.get(k) or [] for k in ("youtube", "instagram", "facebook")}
+    count = max([len(common)] + [max([e["n"] or 0 for e in v] + [len(v)]) for v in plat.values()])
 
-    def youtube(yt):
-        yt = clean(yt)
-        title = re.search(r"^\s*[-*]?\s*title\s*[:：]\s*(.+)$", yt, re.I | re.M)
-        desc = re.search(r"^\s*[-*]?\s*description\s*[:：]\s*(.*)$", yt, re.I | re.M | re.S)
-        title = title[1].strip() if title else (yt.split("\n")[0].strip() if yt else os.path.basename(folder).replace("-", " "))
-        description = desc[1].strip() if desc else "\n".join(yt.split("\n")[1:]).strip()
-        description = re.sub(r"^\s*[-*]?\s*(hashtags|tags)\s*[:：]\s*", "", description, flags=re.I | re.M)
-        if "#shorts" not in (title + description).lower():
-            description = (description + "\n#Shorts").strip()
-        return {"title": title[:100], "description": description[:4900]}
-    yts = [youtube(o) for o in s.get("youtube") or [""]]
-    igs = [{"caption": clean(o)[:2200]} for o in s.get("instagram") or []] or [{"caption": ""}]
-    fbs = [{"caption": clean(o)} for o in s.get("facebook") or []] or [dict(o) for o in igs]
-    return {"youtube": {**yts[0], "options": yts}, "instagram": {**igs[0], "options": igs}, "facebook": {**fbs[0], "options": fbs}}
+    def pick(entries, i):
+        """Option i+1 of a section: its "### Option N" by number, else the one text that serves every option, else by order."""
+        if not entries:
+            return None
+        hit = next((e["text"] for e in entries if e["n"] == i + 1), None)
+        if hit is not None:
+            return hit
+        if any(e["n"] for e in entries):
+            return None                                       # numbered, but not this option: no override
+        return entries[0]["text"] if len(entries) == 1 else entries[min(i, len(entries) - 1)]["text"]
+    options = []
+    for i in range(max(count, 1)):
+        base_title, base = split_title(pick(common, i) or "", name)
+        yt_src = pick(plat["youtube"], i)
+        yt_title, yt_body = split_title(yt_src, base_title) if yt_src else (base_title, base)
+        ig = clean(pick(plat["instagram"], i) or "") or base
+        fb = clean(pick(plat["facebook"], i) or "") or base or ig
+        desc = yt_body or base or ig
+        if "#shorts" not in (yt_title + desc).lower():
+            desc = (desc + "\n#Shorts").strip()
+        options.append({"title": yt_title, "caption": base or ig or fb,
+                        "youtube": {"title": yt_title, "description": desc[:4900]},
+                        "instagram": {"caption": ig[:2200]}, "facebook": {"caption": fb}})
+    first = options[0]
+    return {"options": options, "youtube": first["youtube"], "instagram": first["instagram"], "facebook": first["facebook"]}
+
+
+def media_files(folder):
+    """Videos and images that can be posted: in the folder, else one level down (topics); never in work/."""
+    found = {"video": [], "image": []}
+    for depth in (0, 1):
+        for dirpath, dirnames, filenames in os.walk(folder):
+            rel = os.path.relpath(dirpath, folder)
+            level = 0 if rel == "." else rel.count(os.sep) + 1
+            dirnames[:] = [d for d in dirnames if d != "work" and not d.startswith(".")]
+            if level != depth:
+                continue
+            for fn in sorted(filenames):
+                path = fn if level == 0 else rel.replace(os.sep, "/") + "/" + fn
+                if fn.lower().endswith(VIDEO_EXT):
+                    found["video"].append(path)
+                elif fn.lower().endswith((".jpg", ".jpeg", ".png")):
+                    found["image"].append(path)
+        if found["video"]:
+            break
+    rank = lambda n: (0 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I) else 2 if re.search(r"clean|nocap|no-captions", n, re.I)
+                      else 3 if os.path.basename(n).lower().startswith("cut") else 1)
+    found["video"].sort(key=rank)
+    found["image"].sort(key=lambda n: (0 if "cover" in os.path.basename(n).lower() else 1, n))
+    return found
 
 
 def media(folder):
-    """The finished video and the cover in an approved folder."""
-    names = sorted(os.listdir(folder))
-    vids = [n for n in names if n.lower().endswith(VIDEO_EXT)]
-    rank = lambda n: (0 if re.match(r"(edit|final|reel)\b", n, re.I) else 2 if re.search(r"clean|nocap|no-captions", n, re.I) else 3 if n.lower().startswith("cut") else 1)
-    vids.sort(key=rank)
-    covers = [n for n in names if n.lower().endswith((".jpg", ".jpeg", ".png"))]
-    covers.sort(key=lambda n: 0 if "cover" in n.lower() else 1)
-    return (os.path.join(folder, vids[0]) if vids else None), (os.path.join(folder, covers[0]) if covers else None)
+    """The default video and cover to post."""
+    f = media_files(folder)
+    return (os.path.join(folder, f["video"][0]) if f["video"] else None), (os.path.join(folder, f["image"][0]) if f["image"] else None)
 
 
 # -------------------------------------------------------------------- posting
@@ -254,22 +313,22 @@ class Publisher:
                 json.dump(r, f, indent=1, ensure_ascii=False)
 
     def payload(self, folder):
-        video, cover = media(folder)
+        f = media_files(folder)
         return {"accounts": self.accounts.summary(), "drafts": drafts(folder), "posted": self.record(folder),
-                "video": os.path.basename(video) if video else "", "cover": os.path.basename(cover) if cover else "",
+                "videos": f["video"], "covers": f["image"], "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
                 "busy": folder in self.busy}
 
     def start(self, folder, chosen, video_name="", cover_name=""):
         """chosen: {platform: {text fields}}; video_name / cover_name: the files the owner picked in the folder.
         Posts in the background; returns the platforms started."""
         video, cover = media(folder)
-        names = set(os.listdir(folder))
+        files = media_files(folder)
         if video_name:
-            if video_name not in names or not video_name.lower().endswith(VIDEO_EXT):
+            if video_name not in files["video"]:
                 raise PostError("that video is not in this folder")
             video = os.path.join(folder, video_name)
         if cover_name:
-            if cover_name not in names or not cover_name.lower().endswith((".jpg", ".jpeg", ".png")):
+            if cover_name not in files["image"]:
                 raise PostError("that thumbnail is not in this folder")
             cover = os.path.join(folder, cover_name)
         if not video:
@@ -287,7 +346,7 @@ class Publisher:
         self.busy.add(folder)
         for p in todo:
             self.note(folder, p, state="waiting", error="", warning="", link=done.get(p, {}).get("link", ""),
-                      video=os.path.basename(video), cover=os.path.basename(cover) if cover else "")
+                      video=os.path.relpath(video, folder).replace(os.sep, "/"), cover=os.path.relpath(cover, folder).replace(os.sep, "/") if cover else "")
 
         def one(p):                                             # every platform at the same time
             self.note(folder, p, state="posting", error="")

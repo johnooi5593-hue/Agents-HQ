@@ -948,7 +948,8 @@ body.review-open { overflow: hidden; }
   .rv-sec { padding: 12px; }
   .rv-video video { max-height: 58vh; width: 100%; }
   .rv-imgs { grid-template-columns: repeat(2, 1fr); }
-  .rv-actions { justify-content: stretch; } .rv-actions .btn { flex: 1; }
+  .rv-actions { justify-content: stretch; flex-wrap: wrap; } .rv-actions .btn { flex: 1; padding: 0 12px; }
+  .rv-actions .btn[data-rv-approve="post"] { flex: 1 1 100%; order: -1; }   /* the main button gets its own full-width row */
 }
 
 /* posting overview and accounts (review screen) */
@@ -983,3 +984,11 @@ body.review-open { overflow: hidden; }
 .acc-help summary { cursor: pointer; color: #9fb4ff; font: 600 13px Inter, sans-serif; }
 .acc-help ol { margin: 8px 0 0; padding-left: 20px; color: #cfd5e3; font: 13px/1.6 Inter, sans-serif; }
 .acc-help code { font-size: 12px; background: #0d1016; padding: 1px 5px; border-radius: 6px; }
+.pub-caps { display: flex; flex-direction: column; gap: 8px; }
+.pub-cap { position: relative; display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 40px 12px 14px; border-radius: 14px; border: 2px solid rgba(255,255,255,.08); background: #0d1016; color: #cfd5e3; cursor: pointer; font: 14px/1.45 Inter, sans-serif; }
+.pub-cap b { color: #fff; font-weight: 700; }
+.pub-cap span { white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.pub-cap.on { border-color: #f5c84b; box-shadow: 0 0 0 3px rgba(245,200,75,.18); }
+.pub-cap i { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border-radius: 50%; background: #f5c84b; color: #111; display: grid; place-items: center; }
+.pub-cap i svg { width: 14px; height: 14px; }
+.pub-edit { margin-top: 10px; }

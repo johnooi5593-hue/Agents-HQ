@@ -1026,7 +1026,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", pub: null, pubSub: "", edits: {}, sel: null, pick: {} });
+      accounts: !!accounts, acc: null, accBusy: "", pub: null, pubSub: "", pubEdit: false, edits: {}, sel: null, pick: {} });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1071,12 +1071,13 @@
   }
   const chosenPub = () => PUB.filter(([k]) => rv.pub && rv.sel && rv.sel[k] && (rv.pub.accounts[k] || {}).connected).map(([k]) => k);
   function pubValue(k, f) { const key = k + "." + f; return rv.edits[key] != null ? rv.edits[key] : ((rv.pub.drafts[k] || {})[f] || ""); }
-  function pickPub(kind, val) {                             // the owner picks the cover, the video version, or a caption option
+  function pickPub(kind, val) {                             // the owner picks the topic, the thumbnail, the video, or one caption for every platform
     if (kind === "topic") { stopPubPoll(); loadPub(val); return; }
+    if (kind === "edit") { rv.pubEdit = !rv.pubEdit; renderReview(); return; }
     if (kind === "video" || kind === "cover") rv.pick[kind] = val;
-    else if (kind.startsWith("opt:")) {
-      const k = kind.slice(4), o = ((rv.pub.drafts[k] || {}).options || [])[+val];
-      if (o) { for (const f of Object.keys(o)) rv.edits[k + "." + f] = o[f]; rv.pick[kind] = +val; }
+    else if (kind === "caption") {
+      const o = ((rv.pub.drafts || {}).options || [])[+val];
+      if (o) { for (const [k] of PUB) for (const [f, v] of Object.entries(o[k] || {})) rv.edits[k + "." + f] = v; rv.pick.caption = +val; }
     }
     renderReview();
   }
@@ -1093,35 +1094,43 @@
     try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", "Posting", Object.keys(platforms).map((k) => PUB.find((p) => p[0] === k)[1]).join(", ")); }
     catch (e) { toast("social", "Post", e.message || "could not post", { bad: true }); }
   }
-  function pubSection(vids, imgs) {
+  function pubSection() {
     const p = rv.pub; if (!p) return "";
-    const sub = rv.pubSub || "", inSub = (f) => f.path === (sub ? sub + "/" : "") + f.name;   // posting uses the files of this clip or topic
-    const post = ((rv.data && rv.data.files) || []).find((f) => /^post\.md$/i.test(f.name) && inSub(f));
+    const sub = rv.pubSub || "", files = (rv.data && rv.data.files) || [];
+    const fileOf = (rel) => files.find((f) => f.path === (sub ? sub + "/" : "") + rel);
+    const post = fileOf("post.md");
     const plan = post ? postSections(post.text).find((x) => /^plan\b/i.test(x.title)) : null;
-    const vSel = rv.pick.video || p.video, cSel = rv.pick.cover || p.cover;
-    const vOpts = vids.filter(inSub), cOpts = imgs.filter(inSub), targets = pubTargets();
+    const vSel = rv.pick.video || p.video, cSel = rv.pick.cover || p.cover, cap = rv.pick.caption || 0;
+    const opts = (p.drafts && p.drafts.options) || [], targets = pubTargets(), on = chosenPub();
     let h = `<div class="rv-sec pub"><div class="rv-h">Posting overview <span>prepared by Social</span><button class="rv-copy" data-rv-accounts type="button">Accounts</button></div>`;
     if (targets.length > 1) h += `<div class="pub-h">Topic <span>each topic is its own post</span></div><div class="rv-chips">${targets.map((t) => `<button class="rv-chip ${t === sub ? "on" : ""}" data-pub-pick="topic" data-pub-val="${esc(t)}" type="button">${esc(prettyName(t || "main"))}</button>`).join("")}</div>`;
     if (plan) h += `<div class="md pub-plan">${mdHtml(plan.body)}</div>`;
-    if (cOpts.length > 1) h += `<div class="pub-h">Thumbnail <span>tap one</span></div><div class="pub-pick">${cOpts.map((i) => `<button class="pub-thumb ${i.name === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(i.name)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy">${i.name === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
-    if (vOpts.length > 1) h += `<div class="pub-h">Video <span>which version to post</span></div><div class="rv-chips">${vOpts.map((x) => `<button class="rv-chip ${x.name === vSel ? "on" : ""}" data-pub-pick="video" data-pub-val="${esc(x.name)}" type="button">${x.name === vSel ? svg("check") : svg("play")}${esc(prettyName(x.path))}</button>`).join("")}</div>`;
+    // 1. the thumbnail: one for every platform
+    const covers = (p.covers || []).map((n) => ({ n, f: fileOf(n) })).filter((x) => x.f);
+    if (covers.length) h += `<div class="pub-h">1 · Thumbnail <span>${covers.length > 1 ? "tap the one you want, it goes on every platform" : "used on every platform"}</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<button class="pub-thumb ${n === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(f.url)}" alt="" loading="lazy">${n === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
+    // 2. the caption: one choice fills Facebook, Instagram and YouTube
+    if (opts.length) h += `<div class="pub-h">2 · Caption <span>${opts.length > 1 ? "tap one, it fills every platform" : "used on every platform"}</span></div><div class="pub-caps">${opts.map((o, i) => `<button class="pub-cap ${i === cap ? "on" : ""}" data-pub-pick="caption" data-pub-val="${i}" type="button">${i === cap ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title || "")}</b><span>${esc(o.caption || "")}</span></button>`).join("")}</div>`;
+    // 3. the video: only when there is more than one version
+    if ((p.videos || []).length > 1) h += `<div class="pub-h">Video <span>which version to post</span></div><div class="rv-chips">${p.videos.map((n) => `<button class="rv-chip ${n === vSel ? "on" : ""}" data-pub-pick="video" data-pub-val="${esc(n)}" type="button">${n === vSel ? svg("check") : svg("play")}${esc(prettyName(n))}</button>`).join("")}</div>`;
+    else if (!p.videos || !p.videos.length) h += '<div class="pub-warn">No video found in this folder yet, so there is nothing to post.</div>';
+    // where it goes
+    h += `<div class="pub-h">${opts.length ? "3" : "2"} · Post to</div>`;
     for (const [k, label] of PUB) {
-      const acc = p.accounts[k] || {}, done = (p.posted || {})[k] || {}, on = !!(rv.sel && rv.sel[k]) && acc.connected;
-      const opts = (p.drafts[k] || {}).options || [];
+      const acc = p.accounts[k] || {}, done = (p.posted || {})[k] || {}, ticked = on.includes(k);
       const st = done.state === "posted" ? `<a class="pub-ok" href="${esc(done.link || "#")}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
         : done.state === "failed" ? `<span class="pub-bad">Failed: ${esc(done.error || "")}</span>`
         : done.state === "posting" || done.state === "waiting" ? `<span class="pub-run"><span class="spin"></span> ${done.state === "posting" ? "Posting…" : "Waiting…"}</span>` : "";
-      h += `<div class="pub-row ${on ? "on" : ""}"><label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${on ? "checked" : ""} ${acc.connected ? "" : "disabled"}><b>${label}</b>
+      h += `<div class="pub-row ${ticked ? "on" : ""}"><label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${ticked ? "checked" : ""} ${acc.connected ? "" : "disabled"}><b>${label}</b>
         <span class="pub-acc">${acc.connected ? esc(acc.name || "connected") : acc.problem ? esc(acc.problem) : "not connected"}</span></label>${st}`;
       if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts type="button">Connect</button>`;
       if (done.warning) h += `<div class="pub-warn">${esc(done.warning)}</div>`;
-      if (on && opts.length > 1) h += `<div class="rv-chips">${opts.map((o, i) => `<button class="rv-chip ${(rv.pick["opt:" + k] || 0) === i ? "on" : ""}" data-pub-pick="opt:${k}" data-pub-val="${i}" type="button">Option ${i + 1}</button>`).join("")}</div>`;
-      if (on) h += k === "youtube"
+      if (ticked && rv.pubEdit) h += k === "youtube"
         ? `<input class="pub-in" data-pub-field="youtube.title" maxlength="100" value="${esc(pubValue(k, "title"))}" placeholder="Title"><textarea class="pub-in" rows="3" data-pub-field="youtube.description" placeholder="Description">${esc(pubValue(k, "description"))}</textarea>`
         : `<textarea class="pub-in" rows="4" data-pub-field="${k}.caption" placeholder="Caption">${esc(pubValue(k, "caption"))}</textarea>`;
       h += "</div>";
     }
-    h += `<div class="pub-note">Posts <b>${esc(vSel || "the video")}</b>${cSel ? ` with the thumbnail <b>${esc(cSel)}</b>` : ""}. You can edit any text above before posting. TikTok: post by hand with the TikTok text below.</div></div>`;
+    if (on.length) h += `<button class="rv-copy pub-edit" data-pub-pick="edit" type="button">${rv.pubEdit ? "Hide the text per platform" : "Change the text for one platform"}</button>`;
+    h += `<div class="pub-note">Posts <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} to every ticked account at the same time. TikTok: post by hand with the TikTok text below.</div></div>`;
     return h;
   }
   // ---- accounts: connect Facebook + Instagram (one Meta app) and YouTube (one Google OAuth client), once
@@ -1270,10 +1279,11 @@
       html += "</div>";
     }
     if (imgs.length) html += `<div class="rv-sec"><div class="rv-h">Covers and images <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`).join("")}</div></div>`;
-    html += pubSection(vids, imgs);
+    html += pubSection();
     if (post) {
-      const secs = postSections(post.text).filter((x) => !/^plan\b/i.test(x.title));
-      html += `<div class="rv-sec"><div class="rv-h">Post copy <button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="all" type="button">Copy all</button></div>${secs.map((s, i) => `<div class="rv-post"><div class="rv-post-h"><b>${esc(s.title || "Copy")}</b><button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="${i}" type="button">Copy</button></div><div class="md">${mdHtml(s.body)}</div></div>`).join("")}</div>`;
+      // with the posting overview above, only what you post by hand is left here (TikTok, the pinned comment)
+      const secs = postSections(post.text).map((x, i) => ({ ...x, i })).filter((x) => !/^plan\b/i.test(x.title) && !(rv.pub && /^(captions?|options?|youtube|instagram|facebook)\b/i.test(x.title)));
+      if (secs.length) html += `<div class="rv-sec"><div class="rv-h">${rv.pub ? "Post by hand" : "Post copy"} <button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="all" type="button">Copy all</button></div>${secs.map((s) => `<div class="rv-post"><div class="rv-post-h"><b>${esc(s.title || "Copy")}</b><button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="${s.i}" type="button">Copy</button></div><div class="md">${mdHtml(s.body)}</div></div>`).join("")}</div>`;
     }
     if (srt) {
       const cues = parseSrt(srt.text);
