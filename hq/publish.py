@@ -551,7 +551,7 @@ class Publisher:
         http("POST", f"{GRAPH}/{page}/video_reels", data=finish)
         return f"https://www.facebook.com/reel/{vid}", {}
 
-    def cover_url(self, cover, m):
+    def cover_url(self, cover, m, parked):
         """Instagram wants the cover as a URL: park it on the Page as an unpublished photo and use its address."""
         if not cover:
             return ""
@@ -564,12 +564,13 @@ class Publisher:
                     f"--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"cover.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n").encode() \
                 + img + f"\r\n--{boundary}--\r\n".encode()
             _, _, j = http("POST", f"{GRAPH}/{m['page_id']}/photos", body=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+            parked.append(j["id"])
             _, _, p = http("GET", f"{GRAPH}/{j['id']}?" + urllib.parse.urlencode({"fields": "images", "access_token": m["page_token"]}))
             return (p.get("images") or [{}])[0].get("source", "")
         except (PostError, KeyError, OSError):
             return ""                                          # Instagram then picks a frame itself
 
-    def video_url(self, video, m):
+    def video_url(self, video, m, parked):
         """Instagram fetches the video from a web address: park it on the Page as an unpublished video and use its address."""
         boundary = "hq" + secrets.token_hex(8)
         with open(video, "rb") as f:
@@ -583,6 +584,7 @@ class Publisher:
                            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))}, timeout=1800)
         except PostError as e:
             raise meta_error(e) from None
+        parked.append(j["id"])
         for _ in range(120):                                   # up to 10 minutes until Facebook has the file ready
             _, _, v = http("GET", f"{GRAPH}/{j['id']}?" + urllib.parse.urlencode({"fields": "source,status", "access_token": m["page_token"]}))
             st = (v.get("status") or {}).get("video_status")
@@ -599,7 +601,8 @@ class Publisher:
         m = self.accounts.load().get("meta") or {}
         tok, ig = m["page_token"], m["ig_id"]
         params = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
-        url = self.cover_url(cover, m)
+        parked = []                                            # the hidden Page copies, removed once Instagram has posted
+        url = self.cover_url(cover, m, parked)
         if url:
             params["cover_url"] = url
         cid = None
@@ -620,7 +623,7 @@ class Publisher:
                     a.setdefault("meta", {})["ig_by_url"] = True
                     self.accounts.save(a)
         if not cid:
-            _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=self.video_url(video, m)))
+            _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=self.video_url(video, m, parked)))
             cid = j["id"]
         for _ in range(120):                                   # up to 10 minutes of processing
             _, _, s = http("GET", f"{GRAPH}/{cid}?" + urllib.parse.urlencode({"fields": "status_code,status", "access_token": tok}))
@@ -632,6 +635,11 @@ class Publisher:
         else:
             raise PostError("Instagram is still processing the video after 10 minutes; try Post again later")
         _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
+        for pid in parked:                                     # posted: the hidden copies on the Page aren't needed any more
+            try:
+                http("DELETE", f"{GRAPH}/{pid}?" + urllib.parse.urlencode({"access_token": tok}))
+            except PostError:
+                pass
         link = ""
         try:
             _, _, q = http("GET", f"{GRAPH}/{p['id']}?" + urllib.parse.urlencode({"fields": "permalink", "access_token": tok}))
