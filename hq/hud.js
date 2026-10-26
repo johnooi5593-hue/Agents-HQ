@@ -646,14 +646,19 @@
     const r = 13, c = 2 * Math.PI * r, off = c * (1 - clamp(p, 0, 100) / 100);
     return `<span class="ring"><svg viewBox="0 0 32 32"><circle class="trk" cx="16" cy="16" r="${r}"/><circle class="arc" cx="16" cy="16" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="n">${Math.round(p)}</span></span>`;
   }
+  // A task whose video, thumbnail and caption are all ready reads "Final · <clip>" (the server checks the folder).
+  function taskTitle(t) {
+    if (!t) return "";
+    return t.final ? "Final · " + String(t.title).replace(/^(final|thumbnails?|covers?|captions?|post copy|copy|edit|video|clip|posting)\s*[·:\-–|]\s*/i, "") : t.title;
+  }
   function taskRow(t) {                                    // one board row; the section decides glyph and control
     let glyph, meta, act, cls = "";
     if (t.status === "doing") { glyph = t.progress != null ? ring(t.progress) : '<span class="spin"></span>'; meta = t.subtitle || t.agent || "running"; act = t.progress != null ? "" : '<span class="chev">›</span>'; if (t.progress != null) { act = glyph; glyph = '<span class="spin"></span>'; } }
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : ""; }
     else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = t.subtitle || timeAgo(t.done_at || t.updated); act = '<span class="chev">›</span>'; }
     else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
-    const title = t.date && t.status !== "done" && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${t.title} · ${relDay(t.date)} ${fmtTime(t.time)}` : t.title;
-    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
+    const title = t.date && t.status !== "done" && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
+    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${tagPill(t.team)}${t.final ? '<span class="final-pill" title="Video, thumbnail and caption are all ready">✓ Final</span>' : ""}<span>${esc(meta)}</span></div></div><div class="act">${act}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
   }
   function taskDetail(t) {
     const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {}, top = m ? m[1].split("/")[0] : "";
@@ -1313,7 +1318,7 @@
     if (rv.accounts) { host.innerHTML = accountsCard(); return; }
     const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
     const name = rv.folder ? rv.folder.split("/").slice(1).join("/") : "";
-    const title = task ? task.title : prettyName(name);
+    const title = task ? taskTitle(task) : prettyName(name);
     const files = (rv.data && rv.data.files) || [], loading = rv.folder && !rv.data;
     const rank = (f) => (/^(edit|final|reel)\b/i.test(f.name) ? 0 : /clean|nocap|no-captions/i.test(f.name) ? 2 : /^cut/i.test(f.name) ? 3 : 1);
     const vids = files.filter((f) => f.kind === "video").sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));

@@ -1015,3 +1015,4 @@ body.review-open { overflow: hidden; }
 .fin-item svg { width: 14px; height: 14px; color: #6ee7a8; }
 .fin-item.no { color: #ffb4b4; font-weight: 800; }
 .fin-video { display: block; margin-top: 10px; max-width: 220px; max-height: 390px; width: 100%; aspect-ratio: 9 / 16; border-radius: 12px; background: #000; object-fit: contain; }
+.final-pill { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; background: rgba(110,231,168,.16); color: #6ee7a8; font: 700 11px Inter, sans-serif; }

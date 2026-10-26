@@ -547,10 +547,30 @@ def work_payload(folder):
     return {"folder": folder, "area": m[1], "name": m[2], "files": files}
 
 
+def task_final(task):
+    """True when the work folder a task names (out:<name>, approved/ once approved) has a video, a thumbnail and a caption."""
+    m = re.search(r"out:([^\s,;]+)", task.get("note") or "")
+    if not m:
+        return False
+    name = m.group(1).strip("/")
+    for area in ("out", "approved"):
+        d = safe_join(os.path.join(ROOT, area), name)
+        if d and os.path.isdir(d):
+            try:
+                f = publish.media_files(d)
+                caps = publish.drafts(d)["options"]
+                return bool(f["video"] and f["image"] and os.path.isfile(os.path.join(d, "post.md")) and any((o.get("caption") or "").strip() for o in caps))
+            except OSError:
+                return False
+    return False
+
+
 def status_payload():
     ensure_coffee_chat()
     s = collect()
     ag, running, tasks = agents()["agents"], events()["running"], load_tasks()["tasks"]
+    for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
+        t["final"] = task_final(t)
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
     s["update"] = dict(UPDATE)
     s["brain_notes"] = sum(s.get("brain", {}).values())
