@@ -569,21 +569,59 @@ class Publisher:
         except (PostError, KeyError, OSError):
             return ""                                          # Instagram then picks a frame itself
 
-    # Instagram Reel: container (resumable) → upload to rupload → wait until processed → publish
+    def video_url(self, video, m):
+        """Instagram fetches the video from a web address: park it on the Page as an unpublished video and use its address."""
+        boundary = "hq" + secrets.token_hex(8)
+        with open(video, "rb") as f:
+            data = f.read()
+        head = "".join(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n"
+                       for k, v in (("published", "false"), ("access_token", m["page_token"])))
+        body = (head + f"--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"video.mp4\"\r\n"
+                       f"Content-Type: video/mp4\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        try:
+            _, _, j = http("POST", f"https://graph-video.facebook.com/v23.0/{m['page_id']}/videos", body=body,
+                           headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))}, timeout=1800)
+        except PostError as e:
+            raise meta_error(e) from None
+        for _ in range(120):                                   # up to 10 minutes until Facebook has the file ready
+            _, _, v = http("GET", f"{GRAPH}/{j['id']}?" + urllib.parse.urlencode({"fields": "source,status", "access_token": m["page_token"]}))
+            st = (v.get("status") or {}).get("video_status")
+            if v.get("source") and st in (None, "ready"):
+                return v["source"]
+            if st == "error":
+                raise PostError("Facebook could not process the video for Instagram")
+            time.sleep(5)
+        raise PostError("Facebook is still processing the video for Instagram after 10 minutes; try Post again later")
+
+    # Instagram Reel: container (direct upload, or from a web address for apps without Facebook Login for Business)
+    # → wait until processed → publish
     def post_instagram(self, video, cover, text, when=None):
         m = self.accounts.load().get("meta") or {}
         tok, ig = m["page_token"], m["ig_id"]
-        params = {"media_type": "REELS", "upload_type": "resumable", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
+        params = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
         url = self.cover_url(cover, m)
         if url:
             params["cover_url"] = url
-        _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=params)
-        cid = j["id"]
-        size = os.path.getsize(video)
-        with open(video, "rb") as f:                         # the upload host takes the user token, not the Page token
-            http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{cid}", body=f,
-                 headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
-                          "Content-Length": str(size)}, timeout=1800)
+        cid = None
+        if not m.get("ig_by_url"):
+            _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, upload_type="resumable"))
+            size = os.path.getsize(video)
+            try:
+                with open(video, "rb") as f:                     # the upload host takes the user token, not the Page token
+                    http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{j['id']}", body=f,
+                         headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
+                                  "Content-Length": str(size)}, timeout=1800)
+                cid = j["id"]
+            except PostError as e:
+                if "ProcessingFailedError" not in str(e):
+                    raise
+                with self.accounts.lock:                          # this app can't upload directly: use the web address from now on
+                    a = self.accounts.load()
+                    a.setdefault("meta", {})["ig_by_url"] = True
+                    self.accounts.save(a)
+        if not cid:
+            _, _, j = http("POST", f"{GRAPH}/{ig}/media", data=dict(params, video_url=self.video_url(video, m)))
+            cid = j["id"]
         for _ in range(120):                                   # up to 10 minutes of processing
             _, _, s = http("GET", f"{GRAPH}/{cid}?" + urllib.parse.urlencode({"fields": "status_code,status", "access_token": tok}))
             if s.get("status_code") == "FINISHED":
