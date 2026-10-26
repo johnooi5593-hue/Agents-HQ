@@ -700,7 +700,9 @@ class Desk:
 
     def _work(self, run):
         for attempt in (1, 2):
-            cmd = [CLAUDE, "-p", run.prompt, "--output-format", "stream-json", "--verbose", "--model", model_for(run.prompt)]
+            # one line: claude.cmd on Windows cuts -p at the first newline and drops the flags after it
+            prompt = re.sub(r"\s*\n+\s*", " / ", run.prompt.strip())
+            cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model_for(prompt)]
             allowed = allow_list()
             if allowed:
                 cmd += ["--allowedTools", *allowed]
