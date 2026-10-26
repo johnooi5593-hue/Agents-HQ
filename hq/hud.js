@@ -656,8 +656,9 @@
     return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
   }
   function taskDetail(t) {
-    const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {};
-    if (m && st.out && st.out[m[1]]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[m[1]].files || []).length} files</button>`);
+    const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {}, top = m ? m[1].split("/")[0] : "";
+    if (m && st.out && st.out[top]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[top].files || []).length} files</button>`);
+    else if (m && st.approved && st.approved[top]) files.push(`<button class="btn sm blue" data-rv-folder="approved/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open to post</button>`);
     const moves = ["todo", "doing", "review", "done"].filter((s) => s !== t.status).map((s) => `<button class="btn sm" data-move="${esc(t.id)}:${s}">${({ todo: "To do", doing: "Running", review: "Waiting", done: "Done" })[s]}</button>`).join("");
     return `<div class="task-detail"><div><b>${esc(t.title)}</b> <span class="hint">· ${esc(t.kind)}${t.agent ? " · " + esc(t.agent) : ""}${t.date ? " · " + esc(t.date) + (t.time ? " " + esc(t.time) : "") : ""} · created ${esc(timeAgo(t.created))}</span></div>${t.note ? `<div class="nt">${esc(t.note)}</div>` : '<div class="hint" style="margin-top:4px">No note on this task.</div>'}${files.length ? `<div>${files.join("")}</div>` : ""}<div class="row">${moves}<button class="btn sm" data-remove="${esc(t.id)}" style="margin-left:auto">Remove</button></div></div>`;
   }
@@ -1032,7 +1033,13 @@
   var rv = { open: false, folder: null, taskId: null, data: null, vid: 0, img: null, mode: null, pushed: false };
   const fmtBytes = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? Math.round(n / 1e3) + " KB" : n + " B");
   const prettyName = (s) => String(s || "").replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim();
-  function folderOfTask(t) { const m = /out:([^\s,;]+)/.exec((t && t.note) || ""); return m ? "out/" + m[1].replace(/\/+$/, "") : null; }
+  // A task's work folder: out/<name> while it waits for the OK, approved/<name> once approved (the folder moves there,
+  // the task's note still says out:<name>), so an approved video can be opened again to post or schedule it.
+  function folderOfTask(t) {
+    const m = /out:([^\s,;]+)/.exec((t && t.note) || ""); if (!m) return null;
+    const name = m[1].replace(/\/+$/, ""), top = name.split("/")[0], st = state.status || {};
+    return !(st.out && st.out[top]) && st.approved && st.approved[top] ? "approved/" + name : "out/" + name;
+  }
   function ensureReviewHost() {
     let host = $("#review");
     if (!host) {

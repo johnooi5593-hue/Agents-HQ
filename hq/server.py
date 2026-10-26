@@ -743,6 +743,12 @@ def auto_update():
     and the two brains are merged so no rule or lesson is lost. Local commits are merged, never thrown away. The result
     is kept in UPDATE and shown in the app (user menu, and a warning when an update could not be applied)."""
     now = int(time.time())
+    if os.environ.get("HQ_UPDATE_NOTE"):                  # restarted into the version just pulled: keep that result
+        try:
+            UPDATE.update(json.loads(os.environ["HQ_UPDATE_NOTE"]), changed=False)
+            return
+        except ValueError:
+            pass
     if os.environ.get("HQ_NO_UPDATE"):
         try:
             UPDATE["version"] = git("rev-parse", "--short", "HEAD", timeout=10).stdout.strip()
@@ -756,6 +762,7 @@ def auto_update():
                 UPDATE.update(ok=False, message="this folder isn't linked to GitHub and Git couldn't link it", at=now)
             print("update check skipped:", UPDATE["message"]); return
         if UPDATE.get("from") == "copy":
+            UPDATE["changed"] = True
             return
         before = git("rev-parse", "--short", "HEAD").stdout.strip()
         UPDATE.update(version=before, **{"from": before})
@@ -803,7 +810,7 @@ def auto_update():
                     git("stash", "drop", "--quiet")
         after = git("rev-parse", "--short", "HEAD").stdout.strip()
         if merged_ok:
-            UPDATE.update(ok=True, version=after, message=f"updated {before} -> {after}", at=now)
+            UPDATE.update(ok=True, version=after, message=f"updated {before} -> {after}", at=now, changed=before != after)
             print(f"Agents HQ updated {before} -> {after}" + (f" (your local changes kept; backup in .hq-backup)" if dirty else ""))
         else:
             UPDATE.update(ok=False, version=after, message="the update conflicts with changes made on this computer: " + ((m.stderr or m.stdout).strip().splitlines() or ["merge failed"])[-1], at=now)
@@ -1316,8 +1323,21 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"saved": os.path.relpath(dst, ROOT), "bytes": n}, 201)
 
 
+def restart_into_update():
+    """The update changed the code on disk, but this process already loaded the old server: start the new one. On
+    Windows the new engine runs as this one's child (the desktop app stops the whole tree); elsewhere it replaces it."""
+    env = dict(os.environ, HQ_UPDATE_NOTE=json.dumps({k: v for k, v in UPDATE.items() if k != "changed"}))
+    args = [sys.executable] + sys.argv
+    print("Agents HQ: starting the updated version", flush=True)
+    if os.name == "nt":
+        sys.exit(subprocess.call(args, env=env))
+    os.execve(sys.executable, args, env)
+
+
 def main():
     auto_update()
+    if UPDATE.get("changed"):
+        restart_into_update()
     if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
