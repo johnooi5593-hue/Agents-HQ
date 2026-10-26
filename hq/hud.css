@@ -873,3 +873,80 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   .hq-bubble.icon { width: 24px; height: 22px; font-size: 11.5px; }
 }
 @media (prefers-reduced-motion: reduce) { .hq-bubble, .hq-bubble.icon { animation: none; } }
+
+/* ---------- the review screen: watch, read and approve finished work inside the app ---------- */
+.review { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(6, 8, 12, .72); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.review[hidden] { display: none; }
+body.review-open { overflow: hidden; }
+.rv-card { width: min(980px, 100%); max-height: 100%; display: flex; flex-direction: column; background: #12151c; border: 1px solid rgba(255,255,255,.08); border-radius: 18px; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden; }
+.rv-head { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+.rv-back { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px 0 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); background: #1b1f2b; color: #ecf0fc; font: 600 14px Inter, -apple-system, "Segoe UI", Roboto, sans-serif; cursor: pointer; }
+.rv-back .i { width: 18px; height: 18px; }
+.rv-title { min-width: 0; flex: 1; }
+.rv-title .t { font: 700 17px Inter, -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rv-title .s { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: #8b93a7; font: 12px ui-monospace, "JetBrains Mono", Menlo, monospace; }
+.rv-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.rv-sec { background: #171b24; border: 1px solid rgba(255,255,255,.05); border-radius: 14px; padding: 14px; }
+.rv-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; color: #cfd5e3; font: 700 13px Inter, -apple-system, "Segoe UI", Roboto, sans-serif; text-transform: none; }
+.rv-h span { color: #7f8291; font: 12px ui-monospace, Menlo, monospace; }
+.rv-h .rv-copy { margin-left: auto; }
+.rv-more > summary { cursor: pointer; list-style: none; margin-bottom: 0; }
+.rv-more[open] > summary { margin-bottom: 10px; }
+.rv-more > summary::-webkit-details-marker { display: none; }
+.rv-more > summary::after { content: "▾"; margin-left: auto; color: #7f8291; }
+.rv-video { display: flex; justify-content: center; background: #000; border-radius: 12px; overflow: hidden; }
+.rv-video video { display: block; max-width: 100%; max-height: min(62vh, 640px); width: auto; background: #000; }
+.rv-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.rv-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.1); background: #1d2230; color: #cfd5e3; font: 13px Inter, sans-serif; cursor: pointer; }
+.rv-chip .i { width: 14px; height: 14px; }
+.rv-chip.on { background: #2b3a66; border-color: #4f7cff; color: #fff; }
+.rv-imgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.rv-img { padding: 0; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: #0b0d12; overflow: hidden; cursor: zoom-in; text-align: left; }
+.rv-img img { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover; }
+.rv-img span { display: block; padding: 6px 8px; color: #9aa3b2; font: 11px ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rv-light { position: fixed; inset: 0; z-index: 95; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.92); padding: 56px 12px 12px; cursor: zoom-out; }
+.rv-light img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+.rv-light .rv-back { position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px; }
+.rv-post { border-top: 1px solid rgba(255,255,255,.06); padding: 10px 0 2px; }
+.rv-post:first-of-type { border-top: 0; padding-top: 0; }
+.rv-post-h { display: flex; align-items: center; margin-bottom: 6px; color: #fff; font: 13px Inter, sans-serif; }
+.rv-post-h .rv-copy { margin-left: auto; }
+.rv-copy { min-height: 32px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12); background: #222838; color: #dfe4f0; font: 600 12px Inter, sans-serif; cursor: pointer; }
+.rv-cues { display: flex; flex-direction: column; gap: 4px; max-height: 280px; overflow-y: auto; }
+.rv-cue { display: flex; gap: 10px; align-items: baseline; text-align: left; padding: 8px 10px; border-radius: 10px; border: 0; background: transparent; color: #e6e8ef; font: 15px "Noto Serif SC", "Songti SC", SimSun, serif; cursor: pointer; }
+.rv-cue:hover, .rv-cue:active { background: #1f2533; }
+.rv-cue .ts { flex: none; color: #7f8291; font: 12px ui-monospace, Menlo, monospace; }
+.rv-file { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.05); }
+.rv-file .nm { flex: 1; min-width: 0; color: #cfd5e3; font: 13px ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-file .sz { color: #7f8291; font: 12px ui-monospace, Menlo, monospace; }
+.rv-dl { color: #9fb6ff; font: 600 12px Inter, sans-serif; text-decoration: none; padding: 6px 4px; }
+.rv-empty { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 40px 10px; color: #8b93a7; font: 14px Inter, sans-serif; }
+.md { color: #e6e8ef; font: 14px/1.55 Inter, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; word-break: break-word; }
+.md .md-h { font-weight: 700; color: #fff; margin: 8px 0 4px; } .md .md-h1 { font-size: 17px; } .md .md-h2 { font-size: 15px; } .md .md-h3, .md .md-h4 { font-size: 14px; color: #cfd5e3; }
+.md .md-li { padding-left: 16px; position: relative; } .md .md-li::before { content: "•"; position: absolute; left: 4px; color: #FBC238; }
+.md .md-gap { height: 6px; }
+.md code { font: 12px ui-monospace, Menlo, monospace; background: #222838; padding: 1px 5px; border-radius: 5px; }
+.md-table { overflow-x: auto; margin: 6px 0; }
+.md-table table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+.md-table th, .md-table td { border: 1px solid rgba(255,255,255,.08); padding: 6px 8px; text-align: left; vertical-align: top; }
+.md-table th { background: #1d2230; color: #fff; }
+.rv-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border-top: 1px solid rgba(255,255,255,.06); background: #12151c; }
+.rv-actions .btn { min-height: 46px; padding: 0 20px; font-size: 15px; }
+.rv-actions.done { flex-wrap: wrap; }
+.rv-actions.done .msg { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; color: #cfeee0; font: 14px Inter, sans-serif; }
+.rv-actions.done .msg .i { width: 18px; height: 18px; color: #4cceac; }
+.rv-changes { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border-top: 1px solid rgba(255,255,255,.06); }
+.rv-changes textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 76px; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,.12); background: #0d1016; color: #fff; font: 16px Inter, sans-serif; }
+.rv-changes .row { display: flex; justify-content: flex-end; gap: 10px; }
+.rv-changes .btn { min-height: 44px; }
+.trow.approval.ia { cursor: pointer; }
+@media (max-width: 600px), (max-height: 500px) and (max-width: 1000px) {
+  .review { padding: 0; background: #0b0d12; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .rv-card { width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; }
+  .rv-head { padding-top: max(10px, env(safe-area-inset-top)); }
+  .rv-body { padding: 12px; gap: 12px; }
+  .rv-sec { padding: 12px; }
+  .rv-video video { max-height: 58vh; width: 100%; }
+  .rv-imgs { grid-template-columns: repeat(2, 1fr); }
+  .rv-actions { justify-content: stretch; } .rv-actions .btn { flex: 1; }
+}

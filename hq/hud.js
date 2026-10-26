@@ -583,7 +583,7 @@
   // A phone: a tap on a team card or a double-tap on a room flies there first; a second tap (or Open) opens the team.
   function roomTap(key) { if (isPhone() && state.focused !== key) focusTeam(key); else openTeam(key); }
   // A phone: the office does not draw while a full sheet covers it (battery), and resumes when it closes.
-  function phonePause() { const cover = isPhone() && (state.view !== "office" || $("#lead-log").classList.contains("open") || $("#hud").classList.contains("ask-open") || !$("#notif-list").hidden || !!state.voice); callScene("pause", cover); }
+  function phonePause() { if (rv.open) { callScene("pause", true); return; } const cover = isPhone() && (state.view !== "office" || $("#lead-log").classList.contains("open") || $("#hud").classList.contains("ask-open") || !$("#notif-list").hidden || !!state.voice); callScene("pause", cover); }
   // the lead log: a drawer on desktop, a sheet on a phone (the Lead tab)
   function setLead(on) {
     const lg = $("#lead-log"); lg.classList.toggle("open", !!on);
@@ -625,7 +625,7 @@
   }
   function taskDetail(t) {
     const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {};
-    if (m && st.out && st.out[m[1]]) for (const f of st.out[m[1]].files || []) files.push(`<a href="/files/out/${encodeURIComponent(m[1])}/${encodeURIComponent(f)}" target="_blank" rel="noopener">${esc(f)}</a>`);
+    if (m && st.out && st.out[m[1]]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[m[1]].files || []).length} files</button>`);
     const moves = ["todo", "doing", "review", "done"].filter((s) => s !== t.status).map((s) => `<button class="btn sm" data-move="${esc(t.id)}:${s}">${({ todo: "To do", doing: "Running", review: "Waiting", done: "Done" })[s]}</button>`).join("");
     return `<div class="task-detail"><div><b>${esc(t.title)}</b> <span class="hint">· ${esc(t.kind)}${t.agent ? " · " + esc(t.agent) : ""}${t.date ? " · " + esc(t.date) + (t.time ? " " + esc(t.time) : "") : ""} · created ${esc(timeAgo(t.created))}</span></div>${t.note ? `<div class="nt">${esc(t.note)}</div>` : '<div class="hint" style="margin-top:4px">No note on this task.</div>'}${files.length ? `<div>${files.join("")}</div>` : ""}<div class="row">${moves}<button class="btn sm" data-remove="${esc(t.id)}" style="margin-left:auto">Remove</button></div></div>`;
   }
@@ -717,7 +717,7 @@
     const counts = { all: tasks.length + outWaiting.length, running: doing.length, waiting: review.length + outWaiting.length, done: done.length };
     const f = state.filter, show = (k) => f === "all" || f === k;
     const sec = (title, dot, n) => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span></div>`;
-    const approvalRow = ({ name, info }) => `<div class="trow approval hot" data-out="${esc(name)}"><span class="g">${info.cover ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/cover.jpg" alt="">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`}</span><div class="tt"><div class="title">${esc(name.replace(/[-_]+/g, " "))}</div><div class="meta">${tagPill("Creative")}<span>${info.edit ? "edit ready" : `${(info.files || []).length} file${(info.files || []).length === 1 ? "" : "s"}`} · needs your approval</span>${info.edit ? `<a class="mono" href="/files/out/${encodeURIComponent(name)}/edit.mp4" target="_blank" rel="noopener" style="color:#9fb6ff">▶ watch</a>` : ""}</div></div><div class="act"><button class="btn primary sm" data-approve-out="${esc(name)}">Approve</button></div></div>`;
+    const approvalRow = ({ name, info }) => `<div class="trow approval hot ia" data-out="${esc(name)}" data-rv-folder="out/${esc(name)}"><span class="g">${info.cover ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/cover.jpg" alt="">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`}</span><div class="tt"><div class="title">${esc(name.replace(/[-_]+/g, " "))}</div><div class="meta">${tagPill("Creative")}<span>${info.edit ? "edit ready" : `${(info.files || []).length} file${(info.files || []).length === 1 ? "" : "s"}`} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div></div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button></div></div>`;
     const scrollTop = p.querySelector(".pbody") ? p.querySelector(".pbody").scrollTop : 0;
     const teamOpts = state.teams.map((t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
     let body = "";
@@ -989,9 +989,190 @@
     renderAll(); drawMinimap();
   }
 
+  // ---------- the review screen: watch, read and approve finished work without leaving the office ----------
+  // Opens over everything (full screen on a phone, a large card on desktop). Videos play inline, covers open in a
+  // lightbox, captions are a tappable list that seeks the video, post copy has Copy buttons, and Approve / Ask for
+  // changes act right here. The phone's back gesture and the browser's Back button close it (history state), so the
+  // owner never lands on a raw file with no way home.
+  var rv = { open: false, folder: null, taskId: null, data: null, vid: 0, img: null, mode: null, pushed: false };
+  const fmtBytes = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? Math.round(n / 1e3) + " KB" : n + " B");
+  const prettyName = (s) => String(s || "").replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").trim();
+  function folderOfTask(t) { const m = /out:([^\s,;]+)/.exec((t && t.note) || ""); return m ? "out/" + m[1].replace(/\/+$/, "") : null; }
+  function ensureReviewHost() {
+    let host = $("#review");
+    if (!host) { host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host); }
+    return host;
+  }
+  async function openReview({ folder, taskId }) {
+    const host = ensureReviewHost(), st = state.status || {};
+    const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
+    Object.assign(rv, { open: true, folder: folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null });
+    if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
+    host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
+    renderReview();
+    if (rv.folder) {
+      try { rv.data = await getJSON(`/api/work?folder=${encodeURIComponent(rv.folder)}`); }
+      catch (e) { rv.data = { error: e.message || "could not open this folder", files: [] }; }
+      if (rv.open) renderReview();
+    }
+  }
+  function closeReview(fromHistory) {
+    if (!rv.open) return;
+    rv.open = false;
+    const host = $("#review");
+    if (host) { host.querySelectorAll("video").forEach((v) => { try { v.pause(); } catch (e) { /* gone */ } }); host.hidden = true; host.innerHTML = ""; }
+    document.body.classList.remove("review-open");
+    callScene("pause", false); phonePause();
+    if (rv.pushed && !fromHistory) { rv.pushed = false; try { history.back(); } catch (e) { /* ignore */ } } else rv.pushed = false;
+  }
+  function parseSrt(text) {
+    const cues = [], toSec = (t) => { const m = /(\d+):(\d+):(\d+)[,.](\d+)/.exec(t); return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / 1000 : 0; };
+    for (const block of String(text || "").replace(/\r/g, "").split(/\n\n+/)) {
+      const lines = block.trim().split("\n"); const i = lines.findIndex((l) => l.includes("-->"));
+      if (i < 0) continue;
+      const [a] = lines[i].split("-->"); const words = lines.slice(i + 1).join(" ").replace(/<[^>]+>/g, "").trim();
+      if (words) cues.push({ t: toSec(a), text: words });
+    }
+    return cues;
+  }
+  function mdHtml(text) {                                   // a small, safe Markdown renderer: headings, lists, tables, bold, code
+    const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>");
+    const out = [], lines = String(text || "").replace(/\r/g, "").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (/^\s*\|.*\|\s*$/.test(l)) {                       // a table: collect its rows
+        const rows = []; while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(lines[i]); i++; } i--;
+        const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+        const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+        out.push(`<div class="md-table"><table>${body.map((r, k) => `<tr>${cells(r).map((c) => (k === 0 ? `<th>${inline(c)}</th>` : `<td>${inline(c)}</td>`)).join("")}</tr>`).join("")}</table></div>`);
+        continue;
+      }
+      const h = /^(#{1,4})\s+(.*)$/.exec(l);
+      if (h) { out.push(`<div class="md-h md-h${h[1].length}">${inline(h[2])}</div>`); continue; }
+      const li = /^\s*(?:[-*•]|\d+[.)])\s+(.*)$/.exec(l);
+      if (li) { out.push(`<div class="md-li">${inline(li[1])}</div>`); continue; }
+      if (!l.trim()) { out.push('<div class="md-gap"></div>'); continue; }
+      out.push(`<div class="md-p">${inline(l)}</div>`);
+    }
+    return out.join("");
+  }
+  function copyText(text) {                                 // the clipboard API needs https; a phone on Wi-Fi or Tailscale is plain http
+    const done = () => toast("chief", "Copied", shortTask(text, 60));
+    if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done, () => legacy()); return; }
+    legacy();
+    function legacy() {
+      const ta = el('<textarea readonly style="position:fixed;left:-9999px;top:0"></textarea>'); ta.value = text; document.body.appendChild(ta);
+      ta.select(); ta.setSelectionRange(0, text.length);
+      let ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      ta.remove(); if (ok) done(); else toast("chief", "Copy", "Press and hold the text to copy it.", { bad: true });
+    }
+  }
+  function postSections(text) {                             // post.md: one copyable block per "## Platform" section
+    const parts = String(text || "").replace(/\r/g, "").split(/\n(?=##\s)/);
+    return parts.map((p) => { const m = /^##\s+(.*)\n?([\s\S]*)$/.exec(p.trim()); return m ? { title: m[1].trim(), body: m[2].trim() } : { title: "", body: p.replace(/^#\s+.*\n?/, "").trim() }; }).filter((s) => s.body);
+  }
+  function renderReview() {
+    const host = $("#review"); if (!host || !rv.open) return;
+    const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
+    const name = rv.folder ? rv.folder.split("/").slice(1).join("/") : "";
+    const title = task ? task.title : prettyName(name);
+    const files = (rv.data && rv.data.files) || [], loading = rv.folder && !rv.data;
+    const rank = (f) => (/^(edit|final|reel)\b/i.test(f.name) ? 0 : /clean|nocap|no-captions/i.test(f.name) ? 2 : /^cut/i.test(f.name) ? 3 : 1);
+    const vids = files.filter((f) => f.kind === "video").sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
+    const imgs = files.filter((f) => f.kind === "image").sort((a, b) => (/cover/i.test(b.name) - /cover/i.test(a.name)) || a.path.localeCompare(b.path));
+    const byName = (re) => files.find((f) => f.kind === "text" && re.test(f.name) && f.text != null);
+    const post = byName(/^post\.md$/i), notes = byName(/^notes\.md$/i), plan = byName(/^plan\.md$/i), srt = byName(/\.srt$/i);
+    const shown = new Set([post, notes, plan, srt].filter(Boolean).map((f) => f.path));
+    const others = files.filter((f) => !vids.includes(f) && !imgs.includes(f) && !shown.has(f.path));
+    const area = rv.folder ? rv.folder.split("/")[0] : "", canApprove = area === "out" || (task && task.status === "review");
+    const v = vids[rv.vid] || vids[0], poster = imgs.find((i) => /cover/i.test(i.name)) || imgs[0];
+    let html = `<div class="rv-card">
+      <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
+        <div class="rv-title"><div class="t">${esc(title)}</div><div class="s">${tagPill(task ? task.team : "Creative")}<span>${area === "approved" ? "approved" : task && task.status !== "review" ? esc(task.status) : "waiting for your OK"}${files.length ? ` · ${files.length} file${files.length === 1 ? "" : "s"}` : ""}</span></div></div></div>
+      <div class="rv-body">`;
+    if (loading) html += '<div class="rv-empty"><span class="spin"></span> Opening…</div>';
+    else if (rv.data && rv.data.error) html += `<div class="rv-empty">${esc(rv.data.error)}. The folder may have been approved or moved.</div>`;
+    if (v) {
+      html += `<div class="rv-sec"><div class="rv-video"><video src="${esc(v.url)}" ${poster ? `poster="${esc(poster.url)}"` : ""} controls playsinline preload="metadata" id="rv-player"></video></div>`;
+      if (vids.length > 1) html += `<div class="rv-chips">${vids.map((x, i) => `<button class="rv-chip ${x === v ? "on" : ""}" data-rv-vid="${i}" type="button">${svg("play")}${esc(prettyName(x.path))}</button>`).join("")}</div>`;
+      html += "</div>";
+    }
+    if (imgs.length) html += `<div class="rv-sec"><div class="rv-h">Covers and images <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`).join("")}</div></div>`;
+    if (post) {
+      const secs = postSections(post.text);
+      html += `<div class="rv-sec"><div class="rv-h">Post copy <button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="all" type="button">Copy all</button></div>${secs.map((s, i) => `<div class="rv-post"><div class="rv-post-h"><b>${esc(s.title || "Copy")}</b><button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="${i}" type="button">Copy</button></div><div class="md">${mdHtml(s.body)}</div></div>`).join("")}</div>`;
+    }
+    if (srt) {
+      const cues = parseSrt(srt.text);
+      if (cues.length) html += `<div class="rv-sec"><div class="rv-h">Captions <span>${cues.length} lines · tap a line to jump there</span></div><div class="rv-cues">${cues.map((c) => `<button class="rv-cue" data-rv-seek="${c.t.toFixed(2)}" type="button"><span class="ts">${Math.floor(c.t / 60)}:${pad2(Math.floor(c.t % 60))}</span>${esc(c.text)}</button>`).join("")}</div></div>`;
+    }
+    if (notes) html += `<div class="rv-sec"><div class="rv-h">Notes</div><div class="md">${mdHtml(notes.text)}</div></div>`;
+    if (plan) html += `<details class="rv-sec rv-more"><summary class="rv-h">Planning page (企划页)</summary><div class="md">${mdHtml(plan.text)}</div></details>`;
+    if (task && task.note && !/^out:\S+$/.test(task.note.trim())) html += `<div class="rv-sec"><div class="rv-h">Note on the task</div><div class="md">${mdHtml(task.note)}</div></div>`;
+    if (others.length) html += `<details class="rv-sec rv-more"><summary class="rv-h">Other files <span>${others.length}</span></summary>${others.map((f) => `<div class="rv-file"><span class="nm">${esc(f.path)}</span><span class="sz">${fmtBytes(f.size)}</span>${f.text != null ? `<button class="rv-copy" data-rv-copy="${esc(f.path)}" data-rv-part="raw" type="button">Copy</button>` : ""}<a class="rv-dl" href="${esc(f.url)}" download="${esc(f.name)}">Save</a></div>`).join("")}</details>`;
+    if (!loading && !files.length && !task) html += '<div class="rv-empty">Nothing in this folder yet.</div>';
+    if (!rv.folder && task) html += `<div class="rv-sec"><div class="rv-h">Details</div><div class="md">${mdHtml([task.subtitle, task.agent ? "By " + task.agent : "", task.date ? "Date: " + task.date + (task.time ? " " + task.time : "") : "", "Created " + timeAgo(task.created)].filter(Boolean).join("\n"))}</div></div>`;
+    html += "</div>";
+    if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence" required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
+    else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved. It's in <b>approved/</b> for you to post. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
+    else html += `<div class="rv-actions">${canApprove ? `<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button><button class="btn primary" data-rv-approve type="button">Approve</button>` : `<button class="btn" data-rv-close type="button">Close</button>`}</div>`;
+    html += "</div>";
+    if (rv.img) html += `<div class="rv-light" data-rv-img=""><img src="${esc(rv.img)}" alt=""><button class="rv-back" data-rv-img="" type="button">${svg("close")}<span>Close</span></button></div>`;
+    const keepTime = $("#rv-player") && $("#rv-player").getAttribute("src") === (v && v.url) ? $("#rv-player").currentTime : null;
+    const scroll = host.querySelector(".rv-body") ? host.querySelector(".rv-body").scrollTop : 0;
+    host.innerHTML = html;
+    if (keepTime) { const p = $("#rv-player"); if (p) p.currentTime = keepTime; }
+    const b = host.querySelector(".rv-body"); if (b) b.scrollTop = scroll;
+    if (rv.mode === "changes") { const t = $("#rv-change-text"); if (t) t.focus(); }
+  }
+  async function reviewApprove() {
+    const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
+    const name = rv.folder && rv.folder.startsWith("out/") ? rv.folder.slice(4) : null;
+    try {
+      if (task) await postJSON("/api/tasks", { action: "approve", id: task.id });             // also moves out/<name> when the note names it
+      else if (name) await postJSON("/api/approve", { name });
+      if (task && name && folderOfTask(task) !== rv.folder) { try { await postJSON("/api/approve", { name }); } catch (e) { /* already moved */ } }
+      rv.mode = "approved"; if (rv.folder && rv.folder.startsWith("out/")) rv.folder = "approved/" + rv.folder.slice(4);
+      try { rv.data = await getJSON(`/api/work?folder=${encodeURIComponent(rv.folder)}`); } catch (e) { /* keep the last */ }
+      renderReview(); refresh();
+    } catch (e) { toast("creative", "Approve", e.message || "could not approve", { bad: true }); }
+  }
+  function reviewChanges(text) {
+    const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
+    const what = rv.folder ? rv.folder : `board task ${task ? task.id : ""}`;
+    send(`Changes requested by the owner on ${what}${task ? ` (board task ${task.id}: ${task.title})` : ""}: ${text}\nApply them, put the new version back in Waiting for my OK, and save what we learned with /retro.`);
+    if (task) taskAction({ action: "move", id: task.id, status: "doing" });
+    toast("chief", "Sent to the team", shortTask(text, 70));
+    closeReview();
+  }
+  function reviewClick(e) {                                 // returns true when the click belonged to the review screen
+    const b = e.target.closest("[data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
+    if (!b) return false;
+    const d = b.dataset;
+    if (d.rvFolder) { openReview({ folder: d.rvFolder, taskId: d.rvTask || null }); return true; }
+    if (d.rvTask) { openReview({ taskId: d.rvTask }); return true; }
+    if (d.rvClose != null) { closeReview(); return true; }
+    if (d.rvVid != null) { rv.vid = +d.rvVid; renderReview(); return true; }
+    if (d.rvImg != null) { rv.img = d.rvImg || null; renderReview(); return true; }
+    if (d.rvSeek != null) { const p = $("#rv-player"); if (p) { p.currentTime = +d.rvSeek; p.play().catch(() => {}); p.scrollIntoView({ block: "nearest", behavior: "smooth" }); } return true; }
+    if (d.rvCopy) {
+      const f = ((rv.data && rv.data.files) || []).find((x) => x.path === d.rvCopy); if (!f) return true;
+      if (d.rvPart === "all" || d.rvPart === "raw") copyText(d.rvPart === "raw" ? f.text : f.text.replace(/^#{1,4}\s+/gm, "").replace(/\*\*/g, "").trim());
+      else { const s = postSections(f.text)[+d.rvPart]; if (s) copyText(s.body.replace(/\*\*/g, "")); }
+      return true;
+    }
+    if (d.rvMode != null) { rv.mode = d.rvMode || null; renderReview(); return true; }
+    if (d.rvApprove != null) { reviewApprove(); return true; }
+    if (d.rvRetro != null) { send(`/retro ${rv.folder || "board task " + rv.taskId} (the owner approved it)`); toast("chief", "Retro started", "The team is writing down what worked."); closeReview(); return true; }
+    return false;
+  }
+  window.addEventListener("popstate", () => { if (rv.open) closeReview(true); });
+
   // ---------- events ----------
   function wire() {
     document.addEventListener("click", (e) => {
+      if (reviewClick(e)) return;                          // the review screen and everything that opens it
+      if (rv.open) return;
       const b = e.target.closest("button, [data-open], [data-chip], [data-open-cal], [data-agent], .tab");
       const inMenu = e.target.closest("#user-menu, #ask-any, #notif-list, #bell");
       if (!inMenu) closeMenus();
@@ -1025,9 +1206,10 @@
       if (d.close != null) { if (b.closest("#agent-card")) hideAgentCard(); else openPanel("office"); return; }
       if (d.ptab) { state.panelTab = d.ptab; renderTeamPanel(); return; }
       if (d.filter) { state.filter = d.filter; renderBoard(); return; }
-      if (d.approve) { taskAction({ action: "approve", id: d.approve }, "Approved. The owner publishes; nothing is posted by the office."); return; }
-      if (d.approveOut) { approveOut(d.approveOut); return; }
-      if (d.review || d.open) { const id = d.review || d.open; state.openDetail = state.openDetail === id ? null : id; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
+      if (d.approve) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.approve); if (t && folderOfTask(t)) { openReview({ taskId: t.id }); return; } taskAction({ action: "approve", id: d.approve }, "Approved. The owner publishes; nothing is posted by the office."); return; }
+      if (d.approveOut) { openReview({ folder: "out/" + d.approveOut }); return; }   // look before you approve
+      if (d.review) { openReview({ taskId: d.review }); return; }
+      if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.remove) { taskAction({ action: "remove", id: d.remove }, "Task removed from the board."); return; }
       if (d.run) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.run); if (t) { send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); setLead(true); } return; }
@@ -1044,6 +1226,7 @@
     document.addEventListener("click", (e) => { const z = e.target.closest(".drop"); if (z && !e.target.closest("button")) { const pk = $("#picker"); pk.onchange = () => { if (pk.files.length) upload(z.dataset.kind, Array.from(pk.files)); pk.value = ""; }; pk.value = ""; pk.click(); } });
     document.addEventListener("submit", (e) => {
       const f = e.target;
+      if (f.id === "rv-changes") { e.preventDefault(); const t = $("#rv-change-text").value.trim(); if (t) reviewChanges(t); return; }
       if (f.id === "ask-any") { e.preventDefault(); submitAsk(); }
       else if (f.id === "lead-form") { e.preventDefault(); const i = $("#lead-input"); if (i.value.trim()) send(i.value.trim()); i.value = ""; }
       else if (f.id === "add-task") { e.preventDefault(); const title = $("#task-title").value.trim(); if (!title) return; state.addTeam = $("#task-team").value; taskAction({ action: "add", title, team: $("#task-team").value }, `Added "${shortTask(title, 40)}" to the board.`); }
@@ -1068,6 +1251,7 @@
     $("#avatar").addEventListener("click", () => { const m = $("#user-dropdown"); const was = m.hidden; closeMenus(); m.hidden = !was; });
     window.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); focusAsk(); return; }
+      if (e.key === "Escape" && rv.open) { if (rv.img) { rv.img = null; renderReview(); } else closeReview(); return; }
       if (e.key === "Escape") { if (state.voice) closeVoice(); else if ($("#hud").classList.contains("ask-open")) closeAsk(); else if (!$("#ask-menu").hidden || !$("#user-dropdown").hidden || !$("#notif-list").hidden) closeMenus(); else if (!$("#agent-card").hidden) hideAgentCard(); else if (state.view !== "office") openPanel("office"); }
     });
     window.addEventListener("hq-office-ready", onSceneReady);

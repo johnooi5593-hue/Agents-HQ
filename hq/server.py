@@ -444,6 +444,41 @@ def ensure_coffee_chat(today=None):
         save_tasks(db)
 
 
+WORK_KIND = {".mp4": "video", ".mov": "video", ".m4v": "video", ".webm": "video", ".mkv": "video",
+             ".jpg": "image", ".jpeg": "image", ".png": "image", ".webp": "image", ".gif": "image",
+             ".md": "text", ".txt": "text", ".srt": "text", ".ass": "text", ".json": "text", ".csv": "text", ".vtt": "text"}
+
+
+def work_payload(folder):
+    """GET /api/work?folder=out/<name> (or approved/<name>): every file in a finished work folder, so the review screen
+    can show videos, images and texts in the app instead of opening raw links. Small text files come with their content."""
+    m = re.match(r"^(out|approved)/([^/]+)$", folder or "")
+    base = safe_join(os.path.join(ROOT, m[1]), m[2]) if m else None
+    if not base or not os.path.isdir(base):
+        return None
+    files = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        if os.path.relpath(dirpath, base).count(os.sep) >= 2:
+            continue
+        for fn in sorted(filenames):
+            if fn.startswith("."):
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, base).replace(os.sep, "/")
+            ext = os.path.splitext(fn)[1].lower()
+            item = {"name": fn, "path": rel, "url": f"/files/{m[1]}/{m[2]}/{rel}", "kind": WORK_KIND.get(ext, "other"),
+                    "size": os.path.getsize(full), "mtime": int(os.path.getmtime(full))}
+            if item["kind"] == "text" and item["size"] <= 96 * 1024:
+                try:
+                    with open(full, encoding="utf-8", errors="replace") as f:
+                        item["text"] = f.read()
+                except OSError:
+                    pass
+            files.append(item)
+    return {"folder": folder, "area": m[1], "name": m[2], "files": files}
+
+
 def status_payload():
     ensure_coffee_chat()
     s = collect()
@@ -864,6 +899,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(cal) if cal else self.send_json({"error": "month must be YYYY-MM"}, 400)
         if path == "/api/brain":
             return self.send_json(brain_payload())
+        if path == "/api/work":
+            w = work_payload(qs.get("folder", [""])[0])
+            return self.send_json(w) if w else self.send_json({"error": "no such work folder"}, 404)
         if path == "/api/chatter":
             return self.send_json(chatter_payload())
         if path == "/api/brain/notes":
