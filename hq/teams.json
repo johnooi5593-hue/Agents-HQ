@@ -282,6 +282,12 @@
           "skill": "sermon-moments"
         },
         {
+          "name": "sound-effects",
+          "note": "音效: real CC0 sounds (Openverse) for every move and hit, each peaking on the exact frame of its motion",
+          "agent": "clip-editor",
+          "skill": "sfx"
+        },
+        {
           "name": "thumbnail-maker",
           "note": "the frame, the words and the placement for the cover",
           "agent": "thumbnail-designer",

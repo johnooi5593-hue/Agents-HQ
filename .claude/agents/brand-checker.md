@@ -18,5 +18,6 @@ You check the team's work before the owner sees it. You only review: never edit,
    - in, hold and out follow the speech (typing never ahead of the words, a burst held long enough to read); text clear after every pop, burst, shine, flash and light leak;
    - picture, captions and sound the same version; `edit.ass`, `edit.srt` and `plan.json` present.
 4. For a clip made with **poster-kinetic** and **sermon-moments** (a `plan.json` with `style: poster-kinetic`): run `python3 .claude/skills/poster-kinetic/scripts/plan.py --check <dir>/plan.json` and look at `preview.jpg` / `moments.jpg`. Each moment must have its trigger in the preacher's words and a `why`, and stay within the limits table in `.claude/skills/sermon-moments/SKILL.md`. Also check: no effect over the face, nothing below y 1400, never two caption sets at once, and question / card text that is exactly what he said. Too many effects is a `FIX`: name the weakest one to remove.
-5. For copy or a script: check voice, banned words, title length, claims without backing.
-6. Answer with one line per item: `PASS` or `FIX: <exactly what, which file, and which option or edit fixes it>`.
+5. **Sound effects** on every video: an `edit.mp4.sfx.json` or `edit-sfx.mp4.sfx.json` log beside it with every placed sound `on_frame: true`, one sound per designed move or hit, none on plain cuts or karaoke words, and the voice still clear over the hits.
+6. For copy or a script: check voice, banned words, title length, claims without backing.
+7. Answer with one line per item: `PASS` or `FIX: <exactly what, which file, and which option or edit fixes it>`.

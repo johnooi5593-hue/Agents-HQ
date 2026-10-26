@@ -913,7 +913,8 @@ def main():
     for o in overlays:
         if o["kind"] == "card":
             o["_img"] = card_image(o)
-            o["_cy"] = {"top": 560, "middle": 820, "low": 1000}.get(o.get("zone") or "low", 1000)
+            # "cy" (optional) places the card's centre exactly, for a face that sits between the zones
+            o["_cy"] = float(o["cy"]) if isinstance(o.get("cy"), (int, float)) else {"top": 560, "middle": 820, "low": 1000}.get(o.get("zone") or "low", 1000)
             if o["_cy"] + o["_img"].height / 2 > SAFE["bottom"]:
                 o["_cy"] = SAFE["bottom"] - o["_img"].height / 2
             for L in Ls:
