@@ -136,6 +136,8 @@ The default caption style (黄字重点衬线动态字幕, the `yellow-serif` sk
 
 After Creative finishes a clip (one captioned video, one cover), the Social team writes `post.md`: the posting plan and 2-3 text options for every platform. Open the task in the app and you get the **posting overview**: the video, the thumbnail (tap another one if there are several), the video version, and the text for each platform (tap an option, edit anything). **Approve & post** posts to every ticked account at the same time; each one shows its link, or what went wrong. A long talk cut into topics shows one tab per topic, and each topic is its own post. TikTok you post by hand with the TikTok text.
 
+**Schedule it:** under **When**, pick **Schedule** and a date and time (10 minutes to 4 weeks ahead), then **Approve & schedule**. Facebook and YouTube receive the video right away and publish it themselves at that time. Instagram has no scheduling in its API, so Agents HQ posts it then: keep the computer on with Agents HQ running (if it was off, it posts as soon as Agents HQ opens and says it was late). A scheduled post shows on the board and in the Calendar, and a waiting Instagram post can be cancelled from the same screen.
+
 Connect the accounts once under your name (top right) → **Accounts for posting**; the screen walks you through it:
 - **Facebook + Instagram:** a Meta app of your own (App ID, App secret and a token from the Graph API Explorer). Instagram must be a Professional account linked to your Facebook Page.
 - **YouTube:** a Google Cloud OAuth client (Desktop app); you sign in once. Google keeps uploads from a new API project **private** until the project passes Google's free YouTube API audit.

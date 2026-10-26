@@ -1016,7 +1016,7 @@
     let host = $("#review");
     if (!host) {
       host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host);
-      host.addEventListener("input", (e) => { const f = e.target.dataset && e.target.dataset.pubField; if (f) rv.edits[f] = e.target.value; });
+      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
       host.addEventListener("change", (e) => { const k = e.target.dataset && e.target.dataset.pubSel; if (k) { rv.sel[k] = e.target.checked; renderReview(); } });
     }
     return host;
@@ -1026,7 +1026,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", pub: null, pubSub: "", pubEdit: false, edits: {}, sel: null, pick: {} });
+      accounts: !!accounts, acc: null, accBusy: "", pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {} });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1050,7 +1050,7 @@
     if (sub != null) rv.pubSub = sub; else if (!targets.includes(rv.pubSub)) rv.pubSub = targets[0];
     if (sub != null) { rv.sel = null; rv.edits = {}; rv.pick = {}; }
     try { rv.pub = await getJSON(`${PUB_URL}?folder=${encodeURIComponent(pubFolder())}`); } catch (e) { rv.pub = null; }
-    if (rv.pub && !rv.sel) { rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && ((rv.pub.posted[k] || {}).state !== "posted"); }
+    if (rv.pub && !rv.sel) { rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && !["posted", "scheduled"].includes((rv.pub.posted[k] || {}).state); }
     if (rv.pub && rv.pub.busy) startPubPoll();
     if (rv.open) renderReview();
   }
@@ -1074,12 +1074,24 @@
   function pickPub(kind, val) {                             // the owner picks the topic, the thumbnail, the video, or one caption for every platform
     if (kind === "topic") { stopPubPoll(); loadPub(val); return; }
     if (kind === "edit") { rv.pubEdit = !rv.pubEdit; renderReview(); return; }
+    if (kind === "when") { rv.whenOn = val === "later"; if (rv.whenOn && !rv.whenVal) rv.whenVal = defaultWhen(); renderReview(); return; }
     if (kind === "video" || kind === "cover") rv.pick[kind] = val;
     else if (kind === "caption") {
       const o = ((rv.pub.drafts || {}).options || [])[+val];
       if (o) { for (const [k] of PUB) for (const [f, v] of Object.entries(o[k] || {})) rv.edits[k + "." + f] = v; rv.pick.caption = +val; }
     }
     renderReview();
+  }
+  // ---- scheduling: a local date and time from the picker, sent as a unix time
+  const pad = (n) => String(n).padStart(2, "0");
+  const localInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  function defaultWhen() { const d = new Date(Date.now() + 86400000); d.setHours(20, 0, 0, 0); return localInput(d); }   // tomorrow 8 pm
+  const whenUnix = () => (rv.whenOn && rv.whenVal ? Math.floor(new Date(rv.whenVal).getTime() / 1000) : null);
+  const fmtWhen = (u) => new Date(u * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  function whenSay() { const u = whenUnix(); if (!u) return ""; const m = Math.round((u * 1000 - Date.now()) / 60000); return m < 10 ? "Pick a time at least 10 minutes from now." : `Goes out ${fmtWhen(u)}.`; }
+  async function cancelScheduled(k) {
+    try { rv.pub = await postJSON(PUB_URL, { folder: pubFolder(), cancel: k }); renderReview(); toast("social", "Cancelled", "The scheduled Instagram post won't go out."); }
+    catch (e) { toast("social", "Cancel", e.message || "could not cancel", { bad: true }); }
   }
   async function startPost() {
     const folder = pubFolder();
@@ -1090,8 +1102,10 @@
       if (((rv.pub.posted || {})[k] || {}).state === "posted") platforms[k].again = true;
     }
     if (!Object.keys(platforms).length) return;
-    const body = { folder, platforms, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover };
-    try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", "Posting", Object.keys(platforms).map((k) => PUB.find((p) => p[0] === k)[1]).join(", ")); }
+    const when = whenUnix();
+    const body = { folder, platforms, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover, when };
+    const names = Object.keys(platforms).map((k) => PUB.find((p) => p[0] === k)[1]).join(", ");
+    try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", when ? "Scheduled" : "Posting", when ? `${names} · ${fmtWhen(when)}` : names); }
     catch (e) { toast("social", "Post", e.message || "could not post", { bad: true }); }
   }
   function pubSection() {
@@ -1119,7 +1133,9 @@
       const acc = p.accounts[k] || {}, done = (p.posted || {})[k] || {}, ticked = on.includes(k);
       const st = done.state === "posted" ? `<a class="pub-ok" href="${esc(done.link || "#")}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
         : done.state === "failed" ? `<span class="pub-bad">Failed: ${esc(done.error || "")}</span>`
-        : done.state === "posting" || done.state === "waiting" ? `<span class="pub-run"><span class="spin"></span> ${done.state === "posting" ? "Posting…" : "Waiting…"}</span>` : "";
+        : done.state === "scheduled" ? `<span class="pub-sched">${svg("cal")} Scheduled · ${esc(fmtWhen(done.when))}${done.job ? ` <button class="rv-copy" data-pub-cancel="${k}" type="button">Cancel</button>` : ""}</span>`
+        : done.state === "cancelled" ? '<span class="pub-acc">Schedule cancelled</span>'
+        : ["posting", "waiting", "uploading"].includes(done.state) ? `<span class="pub-run"><span class="spin"></span> ${({ posting: "Posting…", waiting: "Waiting…", uploading: "Uploading for the scheduled time…" })[done.state]}</span>` : "";
       h += `<div class="pub-row ${ticked ? "on" : ""}"><label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${ticked ? "checked" : ""} ${acc.connected ? "" : "disabled"}><b>${label}</b>
         <span class="pub-acc">${acc.connected ? esc(acc.name || "connected") : acc.problem ? esc(acc.problem) : "not connected"}</span></label>${st}`;
       if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts type="button">Connect</button>`;
@@ -1130,7 +1146,11 @@
       h += "</div>";
     }
     if (on.length) h += `<button class="rv-copy pub-edit" data-pub-pick="edit" type="button">${rv.pubEdit ? "Hide the text per platform" : "Change the text for one platform"}</button>`;
-    h += `<div class="pub-note">Posts <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} to every ticked account at the same time. TikTok: post by hand with the TikTok text below.</div></div>`;
+    if (on.length) {
+      h += `<div class="pub-h">${opts.length ? "4" : "3"} · When</div><div class="rv-chips"><button class="rv-chip ${rv.whenOn ? "" : "on"}" data-pub-pick="when" data-pub-val="now" type="button">${rv.whenOn ? "" : svg("check")}Post now</button><button class="rv-chip ${rv.whenOn ? "on" : ""}" data-pub-pick="when" data-pub-val="later" type="button">${rv.whenOn ? svg("check") : svg("cal")}Schedule</button></div>`;
+      if (rv.whenOn) h += `<input class="pub-in pub-when" type="datetime-local" data-pub-when value="${esc(rv.whenVal)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><div class="pub-note" id="pub-when-say">${esc(whenSay())}</div>${on.includes("instagram") ? '<div class="pub-note">Facebook and YouTube publish it themselves at that time. Instagram is posted by Agents HQ, so keep this computer on with Agents HQ running then; if it was off, it posts as soon as Agents HQ opens again.</div>' : ""}`;
+    }
+    h += `<div class="pub-note">${rv.whenOn ? "Schedules" : "Posts"} <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} on every ticked account${rv.whenOn ? " for the time above" : " at the same time"}. TikTok: post by hand with the TikTok text below.</div></div>`;
     return h;
   }
   // ---- accounts: connect Facebook + Instagram (one Meta app) and YouTube (one Google OAuth client), once
@@ -1300,7 +1320,8 @@
     else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
     else {
       const n = chosenPub().length, busyPub = rv.pub && rv.pub.busy;
-      const postBtn = n ? `<button class="btn primary" data-rv-approve="post" type="button">${area === "approved" ? "Post now" : "Approve &amp; post"} (${n})</button>` : "";
+      const verb = rv.whenOn ? "schedule" : "post";
+      const postBtn = n ? `<button class="btn primary" data-rv-approve="post" type="button">${area === "approved" ? (rv.whenOn ? "Schedule" : "Post now") : `Approve &amp; ${verb}`} (${n})</button>` : "";
       html += `<div class="rv-actions">${canApprove ? `<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button><button class="btn ${n ? "" : "primary"}" data-rv-approve type="button">Approve${n ? " only" : ""}</button>${postBtn}`
         : area === "approved" && rv.pub ? `<button class="btn" data-rv-close type="button">Close</button>${busyPub ? '<button class="btn" disabled type="button"><span class="spin"></span> Posting…</button>' : postBtn}` : `<button class="btn" data-rv-close type="button">Close</button>`}</div>`;
     }
@@ -1336,12 +1357,13 @@
     closeReview();
   }
   function reviewClick(e) {                                 // returns true when the click belonged to the review screen
-    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-pub-pick], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
+    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task]");
     if (!b) return false;
     const d = b.dataset;
     if (d.rvAccounts != null) { openReview({ accounts: true }); return true; }
     if (d.acc) { if (!rv.accBusy) accountAction(d.acc); return true; }
     if (d.pubPick) { pickPub(d.pubPick, d.pubVal); return true; }
+    if (d.pubCancel) { cancelScheduled(d.pubCancel); return true; }
     if (d.rvFolder) { openReview({ folder: d.rvFolder, taskId: d.rvTask || null }); return true; }
     if (d.rvTask) { openReview({ taskId: d.rvTask }); return true; }
     if (d.rvClose != null) { closeReview(); return true; }

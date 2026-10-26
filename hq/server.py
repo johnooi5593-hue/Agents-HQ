@@ -322,7 +322,23 @@ def approve_folder(name):
 
 html_escape = html.escape
 accounts = publish.Accounts(ROOT)
-publisher = publish.Publisher(ROOT, accounts)
+
+
+def post_scheduled(folder, when, platforms):
+    """A scheduled post becomes a dated "post" task on the board, so it shows in the Calendar."""
+    t = time.localtime(int(when))
+    names = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube"}
+    code, r = task_action({"action": "add", "title": "Post: " + os.path.relpath(folder, os.path.join(ROOT, "approved")).replace(os.sep, " / "),
+                           "team": "Social", "kind": "post", "status": "todo", "date": time.strftime("%Y-%m-%d", t),
+                           "time": time.strftime("%H:%M", t), "note": ", ".join(names.get(p, p) for p in platforms)})
+    return r.get("added", {}).get("id") if code < 400 else None
+
+
+def post_finished(folder, task_id, states):
+    task_action({"action": "move", "id": task_id, "status": "done"})
+
+
+publisher = publish.Publisher(ROOT, accounts, on_schedule=post_scheduled, on_finish=post_finished)
 
 
 def approved_dir(folder, areas=("approved",)):
@@ -1241,9 +1257,12 @@ class Handler(BaseHTTPRequestHandler):
             d = approved_dir(body.get("folder"))
             if not d:
                 return self.send_json({"error": "only approved work can be posted"}, 404)
-            chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
             try:
-                started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""))
+                if body.get("cancel") in publish.PLATFORMS:      # cancel a scheduled Instagram post still waiting here
+                    publisher.cancel(d, body["cancel"])
+                    return self.send_json(publisher.payload(d))
+                chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
+                started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""), body.get("when") or None)
             except publish.PostError as e:
                 return self.send_json({"error": str(e)}, 400)
             return self.send_json({"started": started, **publisher.payload(d)}, 202)
@@ -1289,6 +1308,7 @@ def main():
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     followups.start()                    # also resends a follow-up queued before a restart
+    publisher.run_scheduler()            # scheduled Instagram posts go out on time (or as soon as HQ runs again)
     url = f"http://localhost:{PORT}"
     print(f"Agents HQ is open at {url}   (Ctrl+C to close)" + ("   login required" if PASSWORD else ""))
     if "--no-browser" not in sys.argv:

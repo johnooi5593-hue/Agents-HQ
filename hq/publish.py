@@ -291,9 +291,18 @@ def media(folder):
 
 
 # -------------------------------------------------------------------- posting
+SCHEDULE_MIN, SCHEDULE_MAX = 10 * 60, 28 * 86400              # Facebook wants 10 minutes ahead at least; four weeks is plenty
+NATIVE_SCHEDULE = ("facebook", "youtube")                     # these publish at the time by themselves; Instagram is posted by us
+
+
 class Publisher:
-    def __init__(self, root, accounts):
+    """Posts now, or at a time the owner picks. Facebook and YouTube upload at once and publish at that time on their own
+    (the computer may sleep); Instagram has no scheduling in its API, so the job waits in posted.json and the scheduler
+    here posts it when it is due (as soon as Agents HQ runs again if the computer was off)."""
+
+    def __init__(self, root, accounts, on_schedule=None, on_finish=None):
         self.root, self.accounts, self.lock, self.busy = root, accounts, threading.Lock(), set()
+        self.on_schedule, self.on_finish = on_schedule, on_finish     # the board: a dated "post" task, done when all went out
 
     def record_path(self, folder):
         return os.path.join(folder, "posted.json")
@@ -308,7 +317,10 @@ class Publisher:
     def note(self, folder, platform, **kw):
         with self.lock:
             r = self.record(folder)
-            r[platform] = {**r.get(platform, {}), **kw, "at": int(time.time())}
+            if platform.startswith("_"):
+                r[platform] = kw.get("value")
+            else:
+                r[platform] = {**r.get(platform, {}), **kw, "at": int(time.time())}
             with open(self.record_path(folder), "w", encoding="utf-8") as f:
                 json.dump(r, f, indent=1, ensure_ascii=False)
 
@@ -318,9 +330,9 @@ class Publisher:
                 "videos": f["video"], "covers": f["image"], "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
                 "busy": folder in self.busy}
 
-    def start(self, folder, chosen, video_name="", cover_name=""):
-        """chosen: {platform: {text fields}}; video_name / cover_name: the files the owner picked in the folder.
-        Posts in the background; returns the platforms started."""
+    def start(self, folder, chosen, video_name="", cover_name="", when=None):
+        """chosen: {platform: {text fields}}; video_name / cover_name: the files the owner picked in the folder;
+        when: a unix time to publish at, or None for now. Works in the background; returns the platforms started."""
         video, cover = media(folder)
         files = media_files(folder)
         if video_name:
@@ -333,26 +345,45 @@ class Publisher:
             cover = os.path.join(folder, cover_name)
         if not video:
             raise PostError("no video in this folder")
+        if when is not None:
+            try:
+                when = int(when)
+            except (TypeError, ValueError):
+                raise PostError("that is not a time") from None
+            ahead = when - time.time()
+            if ahead < SCHEDULE_MIN:
+                raise PostError("pick a time at least 10 minutes from now")
+            if ahead > SCHEDULE_MAX:
+                raise PostError("pick a time within the next 4 weeks")
         summary = self.accounts.summary()
         todo = [p for p in PLATFORMS if p in chosen and summary[p]["connected"]]
         if not todo:
             raise PostError("pick at least one connected account")
         done = self.record(folder)
-        again = [p for p in todo if (done.get(p) or {}).get("state") == "posted" and not chosen[p].get("again")]
+        again = [p for p in todo if (done.get(p) or {}).get("state") in ("posted", "scheduled") and not chosen[p].get("again")]
         if again:
-            raise PostError(f"already posted to {', '.join(again)}; tick 'post again' to post a second time")
+            raise PostError(f"already posted or scheduled to {', '.join(again)}")
         if folder in self.busy:
             raise PostError("still posting this one")
+        rel = lambda path: os.path.relpath(path, folder).replace(os.sep, "/") if path else ""
         self.busy.add(folder)
         for p in todo:
-            self.note(folder, p, state="waiting", error="", warning="", link=done.get(p, {}).get("link", ""),
-                      video=os.path.relpath(video, folder).replace(os.sep, "/"), cover=os.path.relpath(cover, folder).replace(os.sep, "/") if cover else "")
+            self.note(folder, p, state="waiting", error="", warning="", when=when or 0, job=None, link=done.get(p, {}).get("link", ""),
+                      video=rel(video), cover=rel(cover))
+        if when and self.on_schedule:
+            try:
+                self.note(folder, "_task", value=self.on_schedule(folder, when, todo))
+            except Exception:                                  # the board is a nice-to-have, never a reason not to post
+                pass
 
         def one(p):                                             # every platform at the same time
-            self.note(folder, p, state="posting", error="")
+            if when and p not in NATIVE_SCHEDULE:               # Instagram: wait here, the scheduler posts it when due
+                self.note(folder, p, state="scheduled", job={"text": chosen[p], "video": rel(video), "cover": rel(cover)})
+                return
+            self.note(folder, p, state="posting" if not when else "uploading", error="")
             try:
-                link, extra = getattr(self, "post_" + p)(video, cover, chosen[p])
-                self.note(folder, p, state="posted", link=link, error="", **extra)
+                link, extra = getattr(self, "post_" + p)(video, cover, chosen[p], when)
+                self.note(folder, p, state="scheduled" if when else "posted", link=link, error="", **extra)
             except Exception as e:                              # one platform failing never stops the others
                 self.note(folder, p, state="failed", error=str(e)[:400])
 
@@ -365,11 +396,80 @@ class Publisher:
                     t.join()
             finally:
                 self.busy.discard(folder)
+                self.check_finished(folder)
         threading.Thread(target=work, daemon=True).start()
         return todo
 
+    def cancel(self, folder, platform):
+        """Cancel a scheduled post that is still waiting here (Instagram). Facebook and YouTube already hold theirs."""
+        r = self.record(folder).get(platform) or {}
+        if r.get("state") != "scheduled" or not r.get("job"):
+            raise PostError("only a scheduled Instagram post waiting in Agents HQ can be cancelled here; "
+                            "cancel Facebook in Meta Business Suite and YouTube in YouTube Studio")
+        self.note(folder, platform, state="cancelled", job=None)
+        self.check_finished(folder)
+
+    def check_finished(self, folder):
+        r = self.record(folder)
+        states = [(r.get(p) or {}).get("state") for p in PLATFORMS if r.get(p)]
+        if r.get("_task") and states and all(st in ("posted", "failed", "cancelled") for st in states) and self.on_finish:
+            try:
+                self.on_finish(folder, r["_task"], states)
+            except Exception:
+                pass
+            self.note(folder, "_task", value=None)
+
+    def folders(self):
+        """Every approved folder (and topic) with a posted.json."""
+        base = os.path.join(self.root, "approved")
+        found = []
+        for dirpath, dirnames, filenames in os.walk(base):
+            rel = os.path.relpath(dirpath, base)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1        # approved/<name> is 1, approved/<name>/<topic> is 2
+            dirnames[:] = [d for d in dirnames if d != "work" and not d.startswith(".")] if depth < 2 else []
+            if "posted.json" in filenames:
+                found.append(dirpath)
+        return found
+
+    def run_due(self, now=None):
+        """Post what is due: Instagram jobs waiting here; Facebook and YouTube posts count as out once their time passed."""
+        now = now or time.time()
+        for folder in self.folders():
+            if folder in self.busy:
+                continue
+            r = self.record(folder)
+            for p in PLATFORMS:
+                e = r.get(p) or {}
+                if e.get("state") != "scheduled" or not e.get("when") or e["when"] > now:
+                    continue
+                if not e.get("job"):                            # the platform published it by itself
+                    self.note(folder, p, state="posted")
+                    continue
+                job = e["job"]
+                self.note(folder, p, state="posting", job=None)
+                try:
+                    video = os.path.join(folder, job["video"])
+                    cover = os.path.join(folder, job["cover"]) if job.get("cover") else None
+                    link, extra = getattr(self, "post_" + p)(video, cover, job["text"], None)
+                    late = now - e["when"] > 15 * 60
+                    self.note(folder, p, state="posted", link=link, error="",
+                              warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late else ""), **extra)
+                except Exception as ex:
+                    self.note(folder, p, state="failed", error=str(ex)[:400])
+            self.check_finished(folder)
+
+    def run_scheduler(self, every=30):
+        def loop():
+            while True:
+                try:
+                    self.run_due()
+                except Exception as e:                          # keep the scheduler alive whatever one folder does
+                    print("scheduler:", e)
+                time.sleep(every)
+        threading.Thread(target=loop, daemon=True).start()
+
     # Facebook Page Reel: start → upload the file to rupload → finish (published)
-    def post_facebook(self, video, cover, text):
+    def post_facebook(self, video, cover, text, when=None):
         m = self.accounts.load().get("meta") or {}
         tok, page = m["page_token"], m["page_id"]
         _, _, j = http("POST", f"{GRAPH}/{page}/video_reels", data={"upload_phase": "start", "access_token": tok})
@@ -378,8 +478,10 @@ class Publisher:
         with open(video, "rb") as f:
             http("POST", upload, body=f, headers={"Authorization": "OAuth " + tok, "offset": "0", "file_size": str(size),
                                                     "Content-Length": str(size)}, timeout=1800)
-        http("POST", f"{GRAPH}/{page}/video_reels", data={"upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED",
-                                                         "description": text.get("caption", ""), "access_token": tok})
+        finish = {"upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED", "description": text.get("caption", ""), "access_token": tok}
+        if when:                                               # Facebook holds it and publishes it at that time
+            finish.update(video_state="SCHEDULED", scheduled_publish_time=str(int(when)))
+        http("POST", f"{GRAPH}/{page}/video_reels", data=finish)
         return f"https://www.facebook.com/reel/{vid}", {}
 
     def cover_url(self, cover, m):
@@ -401,7 +503,7 @@ class Publisher:
             return ""                                          # Instagram then picks a frame itself
 
     # Instagram Reel: container (resumable) → upload to rupload → wait until processed → publish
-    def post_instagram(self, video, cover, text):
+    def post_instagram(self, video, cover, text, when=None):
         m = self.accounts.load().get("meta") or {}
         tok, ig = m["page_token"], m["ig_id"]
         params = {"media_type": "REELS", "upload_type": "resumable", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
@@ -433,11 +535,13 @@ class Publisher:
         return link, {}
 
     # YouTube Short: resumable upload (vertical and short is what makes it a Short), then the cover as thumbnail
-    def post_youtube(self, video, cover, text):
+    def post_youtube(self, video, cover, text, when=None):
         tok = self.accounts.youtube_token()
         meta = {"snippet": {"title": text.get("title") or "Short", "description": text.get("description", ""), "categoryId": "22"},
                 "status": {"privacyStatus": text.get("privacy") if text.get("privacy") in ("public", "unlisted", "private") else "public",
                            "selfDeclaredMadeForKids": False}}
+        if when:                                               # uploaded private now, YouTube makes it public at that time
+            meta["status"].update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(when))))
         size = os.path.getsize(video)
         _, h, _ = http("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
                        body=json.dumps(meta).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json; charset=UTF-8",
@@ -449,9 +553,12 @@ class Publisher:
             _, _, v = http("PUT", where, body=f, headers={"Authorization": "Bearer " + tok, "Content-Type": "video/*", "Content-Length": str(size)}, timeout=3600)
         vid, extra = v["id"], {}
         privacy = (v.get("status") or {}).get("privacyStatus", "")
-        if privacy and privacy != meta["status"]["privacyStatus"]:
+        if privacy and privacy != meta["status"]["privacyStatus"] and not when:
             extra["warning"] = (f"YouTube set it to {privacy}: uploads from a new Google API project stay private until Google audits "
                                 "the project. Make it public in YouTube Studio if it lets you, or apply for the audit.")
+        if when:
+            extra["warning"] = ("Scheduled in YouTube Studio for that time. If your Google project hasn't passed the YouTube audit yet, "
+                                "YouTube keeps it private even then.")
         if cover:
             try:
                 with open(cover, "rb") as f:

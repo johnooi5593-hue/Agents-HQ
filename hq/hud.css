@@ -992,3 +992,7 @@ body.review-open { overflow: hidden; }
 .pub-cap i { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border-radius: 50%; background: #f5c84b; color: #111; display: grid; place-items: center; }
 .pub-cap i svg { width: 14px; height: 14px; }
 .pub-edit { margin-top: 10px; }
+.pub-sched { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #9fb4ff; font: 600 13px Inter, sans-serif; }
+.pub-sched svg { width: 14px; height: 14px; }
+.pub-when { color-scheme: dark; margin-top: 6px; }
+.rv-chip svg { width: 14px; height: 14px; }
