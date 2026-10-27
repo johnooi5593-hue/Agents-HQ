@@ -677,7 +677,7 @@
     const on = tool.status === "connected";
     const posting = tool.via === "posting";                 // Facebook, Instagram, YouTube: connected under Accounts for posting
     const st = on ? `Connected · ${esc(posting ? tool.detail || "posting" : tool.via || "MCP")}` : posting ? "Not connected · tap to connect" : "Not connected";
-    return `<div class="tool ${posting ? "ia" : ""}" title="${esc(tool.name)}" ${posting ? "data-rv-accounts" : ""}><span class="ic" style="background:${bg}">${esc(glyph)}</span><div style="min-width:0"><div class="nm">${esc(tool.name)}</div><div class="st ${on ? "" : "off"}"><i class="dot"></i>${st}</div></div></div>`;
+    return `<div class="tool ${posting ? "ia" : ""}" title="${esc(tool.name)} · ${st}" ${posting ? "data-rv-accounts" : ""}><span class="ic" style="background:${bg}">${esc(glyph)}</span><div style="min-width:0;flex:1"><div class="nm">${esc(tool.name)}</div><div class="st ${on ? "" : "off"}"><i class="dot"></i><span class="tx">${st}</span></div></div></div>`;
   }
   function skillState(t, s, run) {                         // a skill runs while its agent runs; its % climbs 2-4 points a second
     const on = !!run[s.agent] || (s.skill && !!run[t.lead] && membersOf(t).some((a) => a.skills && a.skills.includes(s.skill) && run[a.name]));
