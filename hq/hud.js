@@ -214,6 +214,9 @@
     try {
       const [s, t] = await Promise.all([getJSON("/api/status"), getJSON("/api/teams")]);
       state.status = s; state.teams = t.teams || state.teams;
+      const asked = new Set((s.tasks || []).filter((x) => x.asks).map((x) => x.id));      // the lead just asked about a task: say so
+      if (state.askedSeen) for (const x of s.tasks || []) if (x.asks && !state.askedSeen.has(x.id)) toast("chief", "Lead asks you · " + shortTask(taskTitle(x), 40), shortTask(((x.chat || []).slice(-1)[0] || {}).text || "Open the task on the board to answer.", 160));
+      state.askedSeen = asked;
       if (t.brain_notes != null) state.brainNotes = t.brain_notes;
       if (Date.now() - state.hookAt > 8000) { state.hookRunning = s.running || {}; state.hookSig = JSON.stringify(state.hookRunning); }   // a slow status reply never overwrites a fresher events poll
       noteHookStarts(hookRun());
@@ -666,17 +669,38 @@
   }
   function taskRow(t) {                                    // one board row; the section decides glyph and control
     let glyph, meta, act, cls = "";
-    if (t.status === "doing") { glyph = t.progress != null ? ring(t.progress) : '<span class="spin"></span>'; meta = t.subtitle || t.agent || "running"; act = t.progress != null ? "" : '<span class="chev">›</span>'; if (t.progress != null) { act = glyph; glyph = '<span class="spin"></span>'; } }
+    const lastLead = (t.chat || []).filter((m) => m.from === "lead").slice(-1)[0];
+    if (t.asks && ["todo", "doing"].includes(t.status) && !(t.live && t.live.state)) {   // the lead asked: show the question, Answer opens the chat
+      glyph = '<span class="warn">?</span>'; meta = lastLead ? "Lead: " + lastLead.text.replace(/\s+/g, " ") : "the lead needs your answer";
+      act = `<button class="btn sm primary" data-manage="${esc(t.id)}" type="button">Answer</button>`;
+    } else if (t.status === "doing") {
+      const live = t.live && t.live.state;                  // the lead is on it now, it waits in line, or nothing runs it (stopped)
+      if (live === "working") { glyph = '<span class="spin"></span>'; meta = "working · " + (t.live.step || t.subtitle || "the lead is on it"); act = t.progress != null ? ring(t.progress) : '<span class="chev">›</span>'; }
+      else if (live === "queued") { glyph = '<span class="wait-g" title="Waiting for the lead">…</span>'; meta = "waiting in line · the lead finishes its current job first"; act = '<span class="chev">›</span>'; }
+      else { glyph = '<span class="stop-g" title="Nothing is working on this now">❚❚</span>'; meta = "stopped · nothing is working on it" + (t.subtitle ? " · last note: " + t.subtitle : ""); act = `<button class="btn sm blue" data-run="${esc(t.id)}" type="button" title="Start this task again">Run again</button>`; cls = "stopped"; }
+    }
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : ""; }
     else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = t.subtitle || timeAgo(t.done_at || t.updated); act = canReedit(t) ? `<button class="btn sm" data-reedit="${esc(t.id)}" type="button" title="Make changes: a new version goes back to the team">Re-edit</button>` : '<span class="chev">›</span>'; }
     else if (t.status === "cancelled") { glyph = '<span class="cx-g">✕</span>'; meta = "cancelled " + timeAgo(t.updated); act = `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore</button>`; cls = "cancelled"; }
     else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now">Edit</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
     const title = t.date && !["done", "cancelled"].includes(t.status) && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
     // every task has its own ⋯: channel, move, cancel, delete (clicking the title of a task with a video opens its review instead)
-    const manage = `<button class="btn sm mng ${state.openDetail === t.id ? "on" : ""}" data-manage="${esc(t.id)}" type="button" title="Manage: channel, move, cancel, delete" aria-label="Manage this task" aria-expanded="${state.openDetail === t.id}">⋯</button>`;
+    const manage = `<button class="btn sm mng ${state.openDetail === t.id ? "on" : ""}" data-manage="${esc(t.id)}" type="button" title="Chat and manage: channel, move, cancel, delete" aria-label="Chat and manage this task" aria-expanded="${state.openDetail === t.id}">⋯</button>`;
     if (state.flash === t.id) cls += " flash";
-    const nOlder = ((state.older || {})[t.id] || []).length; if (nOlder) meta += ` · +${nOlder} older version${nOlder === 1 ? "" : "s"}`;               // a task that just moved (Re-edit): slides in and glows once
-    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${chPill(t.ch)}${tagPill(t.team)}${t.final ? '<span class="final-pill" title="Video, thumbnail and caption are all ready">✓ Final</span>' : ""}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
+    if (t.asks) cls += " asks";
+    if (state.openDetail === t.id) act = act.replace(">Answer<", ">Close<");
+    const asks = t.asks ? `<button class="ask-pill" data-manage="${esc(t.id)}" type="button" title="Open the chat to answer">${(t.chat || []).slice(-1).some((m) => m.error) ? "Stopped · see why" : "Lead asks you"}</button>` : "";
+    const nChat = (t.chat || []).length;
+    const nOlder = ((state.older || {})[t.id] || []).length; if (nOlder) meta += ` · +${nOlder} older version${nOlder === 1 ? "" : "s"}`;
+    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${asks}${chPill(t.ch)}${tagPill(t.team)}${t.final ? '<span class="final-pill" title="Video, thumbnail and caption are all ready">✓ Final</span>' : ""}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage.replace("⋯", nChat ? `⋯<i class="chat-n">${nChat}</i>` : "⋯")}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
+  }
+  // the task's chat: the lead's replies about this task, and the owner's messages to its team
+  function taskChat(t) {
+    const msgs = (t.chat || []).map((m) => `<div class="msg ${m.from === "owner" ? "me" : "lead"}${m.error ? " err" : ""}"><div class="who">${m.from === "owner" ? "You" : "Lead"} · ${esc(timeAgo(m.at))}</div><div class="tx">${esc(m.text)}</div></div>`).join("");
+    const team = t.team || "the team", live = t.live && t.live.state;
+    return `<div class="td-chat"><span class="td-l">Chat with ${esc(team)}</span>${msgs ? `<div class="msgs">${msgs}</div>` : '<div class="hint">No messages yet. What the lead says about this task shows up here.</div>'}
+      ${live === "working" ? `<div class="hint live"><span class="spin"></span> The lead is on it now: ${esc(t.live.step || "")}</div>` : live === "queued" ? '<div class="hint live">Your message waits in line; the lead finishes its current job first.</div>' : ""}
+      <form class="say" data-say-form="${esc(t.id)}"><textarea id="say-text" class="field" rows="2" placeholder="Message ${esc(team)} about this task: a change, an answer, OK to go ahead…" required></textarea><button class="btn sm blue" type="submit">Send</button></form></div>`;
   }
   // a finished task whose work was approved (approved/<name>) can go back for changes, as a new version
   const canReedit = (t) => { const f = folderOfTask(t); return !!f && f.startsWith("approved/") && !/^approved\/thumbnail-final-/.test(f); };
@@ -693,7 +717,7 @@
     const older = ((state.older || {})[t.id] || []).sort((a, b) => b.rev - a.rev);
     if (older.length) files.push(`<div class="td-vers"><span class="td-l">Older versions · ${older.length} (Delete removes them too)</span>${older.map((x) => `<button class="btn sm" data-rv-folder="out/${esc(x.name)}" type="button">${svg("play")} v${x.rev}</button>`).join("")}</div>`);
     const reedit = state.reedit === t.id ? `<form class="reedit" data-reedit-form="${esc(t.id)}"><label class="td-l" for="reedit-text">What should change?</label><textarea id="reedit-text" class="field" rows="3" placeholder="For example: fix the subtitle at 0:12, make the cover title bigger" required></textarea><div class="hint">The approved version stays as it is (it may be posted already). The team makes a new version and it comes back to Waiting for you.</div><div class="td-end"><button class="btn sm" data-reedit-cancel type="button">Not now</button><button class="btn sm blue" type="submit">Send to the team</button></div></form>` : "";
-    return `<div class="task-detail">${reedit}<div><b>${esc(t.title)}</b> <span class="hint">· ${esc(t.kind)}${t.agent ? " · " + esc(t.agent) : ""}${t.date ? " · " + esc(t.date) + (t.time ? " " + esc(t.time) : "") : ""} · created ${esc(timeAgo(t.created))}</span></div>${t.note ? `<div class="nt">${esc(t.note)}</div>` : '<div class="hint" style="margin-top:4px">No note on this task.</div>'}${files.length ? `<div>${files.join("")}</div>` : ""}
+    return `<div class="task-detail">${reedit}${taskChat(t)}<div><b>${esc(t.title)}</b> <span class="hint">· ${esc(t.kind)}${t.agent ? " · " + esc(t.agent) : ""}${t.date ? " · " + esc(t.date) + (t.time ? " " + esc(t.time) : "") : ""} · created ${esc(timeAgo(t.created))}</span></div>${t.note ? `<div class="nt">${esc(t.note)}</div>` : '<div class="hint" style="margin-top:4px">No note on this task.</div>'}${files.length ? `<div>${files.join("")}</div>` : ""}
       <div class="td-grid"><span class="td-l">Channel</span><select class="field td-ch" data-task-ch="${esc(t.id)}" aria-label="Channel of this task">${chOpts}</select>
       <span class="td-l">Move to</span><div class="td-moves">${moves}</div></div>
       <div class="td-end">${stop}<button class="btn sm danger" data-del="${esc(t.id)}" type="button">Delete${older.length ? ` all ${older.length + 1}` : ""}</button></div></div>`;
@@ -791,8 +815,9 @@
   }
   // the board and team panel redraw on every poll: keep what the owner is typing (and the cursor) across a redraw
   function keepTyping(p, draw) {
-    const ids = ["task-title", "reedit-text"], saved = ids.map((id) => { const x = p.querySelector("#" + id); return x && { id, v: x.value, focus: document.activeElement === x, a: x.selectionStart, b: x.selectionEnd }; }).filter(Boolean);
+    const ids = ["task-title", "reedit-text", "say-text"], saved = ids.map((id) => { const x = p.querySelector("#" + id); return x && { id, v: x.value, focus: document.activeElement === x, a: x.selectionStart, b: x.selectionEnd }; }).filter(Boolean);
     draw();
+    for (const m of p.querySelectorAll(".task-detail .msgs")) m.scrollTop = m.scrollHeight;   // a chat opens at its newest message
     for (const k of saved) { const x = p.querySelector("#" + k.id); if (!x) continue; x.value = k.v; if (k.focus) { x.focus(); try { x.setSelectionRange(k.a, k.b); } catch (e) { /* not a text field */ } } }
   }
   function renderBoard() { const p = $("#task-board"); keepTyping(p, drawBoard); }
@@ -810,7 +835,8 @@
       olderIds.add(t.t.id); (state.older[top.id] ||= []).push({ name: outOf(t.t), rev: +t.m[2], task: t.t.id });
     }
     const tasks = allTasks.filter(inChannel).filter((t) => !olderIds.has(t.id));
-    const doing = tasks.filter((t) => t.status === "doing"), review = tasks.filter((t) => t.status === "review"), todo = tasks.filter((t) => t.status === "todo");
+    const asked = (t) => t.asks && ["todo", "doing"].includes(t.status);       // the lead asked the owner something: it waits for you
+    const doing = tasks.filter((t) => t.status === "doing" && !asked(t)), review = tasks.filter((t) => t.status === "review" || asked(t)), todo = tasks.filter((t) => t.status === "todo" && !asked(t));
     // All shows what finished today; the Done tab shows the last 60 finished tasks, so older work can still be re-edited
     const doneAll = tasks.filter((t) => t.status === "done").sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
     const doneToday = doneAll.filter((t) => isToday(t.done_at)), done = state.filter === "done" ? doneAll.slice(0, 60) : doneToday;
@@ -849,7 +875,7 @@
     const folderTitle = (g) => (g.project ? `Sermon poster · ${g.project.slice(0, 8)}` : g.name.replace(/[-_]+/g, " "));
     const folderThumb = ({ name, info }) => {               // cover.jpg, else the first picture in the folder
       const pic = info.cover ? "cover.jpg" : (info.files || []).find((f) => /\.(jpe?g|png)$/i.test(f) && !f.startsWith("_"));
-      return pic ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/${encodeURIComponent(pic)}" alt="" loading="lazy">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
+      return pic ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/${encodeURIComponent(pic)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
     };
     const approvalRow = (g) => {
       const { name, info } = g, all = g.names.join("|"), key = "out:" + name, open = state.openDetail === key, fixed = name.startsWith("thumbnail-final-");
@@ -1092,13 +1118,14 @@
     if (other.length) query.set("instructions", other.join("\n").slice(0, 2000));
     return "/sermon-studio.html?" + query.toString();
   }
-  async function send(prompt) {                            // HQ.send(prompt): one message to the lead
+  async function send(prompt, task) {                      // HQ.send(prompt): one message to the lead (task: the board task it is about)
     prompt = String(prompt || "").trim(); if (!prompt) return null;
     const studio = sermonDesignRoute(prompt);
     if (studio) { window.location.assign(studio); return null; }
     try {
-      const r = await postJSON("/api/run", { prompt });
-      $("#lead-text").textContent = "Lead · working: " + shortTask(prompt, 60);
+      const r = await postJSON("/api/run", task ? { prompt, task } : { prompt });
+      $("#lead-text").textContent = (r.queued ? "Lead · next in line: " : "Lead · working: ") + shortTask(prompt, 60);
+      if (r.queued) toast("chief", "Chief of staff", "The lead finishes its current job first; this one starts right after.", { soft: true });
       attach(r.id, false); renderTopbar(); return r.id;
     } catch (e) { toast("chief", "Chief of staff", e.status === 409 ? "The lead is still working on the previous message." : e.message || "could not send", { bad: true }); return null; }
   }
@@ -1628,7 +1655,7 @@
   function reviewChanges(text) {
     const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
     const what = rv.folder ? rv.folder : `board task ${task ? task.id : ""}`;
-    send(`Changes requested by the owner on ${what}${task ? ` (board task ${task.id}: ${task.title})` : ""}: ${text}\nApply them, put the new version back in Waiting for my OK, and save what we learned with /retro.`);
+    send(`Changes requested by the owner on ${what}${task ? ` (board task ${task.id}: ${task.title})` : ""}: ${text}\nApply them, put the new version back in Waiting for my OK, and save what we learned with /retro.`, task ? task.id : null);
     if (task) taskAction({ action: "move", id: task.id, status: "doing" });
     toast("chief", "Sent to the team", shortTask(text, 70));
     closeReview();
@@ -1736,7 +1763,7 @@
       if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.editFootage) { taskAction({ action: "edit", id: d.editFootage }, "Editing started: the Creative team is on it. Nothing posts until you approve.").then((r) => { if (r) setLead(true); }); return; }
-      if (d.run) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.run); if (t) { send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); setLead(true); } return; }
+      if (d.run) { taskAction({ action: "run", id: d.run }).then((r) => { if (r && r.run) { attach(r.run.id, false); toast("chief", "Chief of staff", r.run.queued ? "Started again: it waits in line, the lead finishes its current job first." : "Started: the lead is on it."); } }); return; }
       if (d.board != null) { openPanel("tasks"); return; }
       if (d.cal != null) { openPanel("calendar"); return; }
       if (d.brief != null) { const t = teamByKey(state.panelTeam); pickAgent(t ? (headOf(t) || {}).name : null); focusAsk(); return; }
@@ -1750,11 +1777,17 @@
     document.addEventListener("click", (e) => { const z = e.target.closest(".drop"); if (z && !e.target.closest("button")) { const pk = $("#picker"); pk.onchange = () => { if (pk.files.length) upload(z.dataset.kind, Array.from(pk.files)); pk.value = ""; }; pk.value = ""; pk.click(); } });
     document.addEventListener("submit", (e) => {
       const f = e.target;
+      if (f.dataset && f.dataset.sayForm) {                    // the task's chat: the owner's message goes to the lead with the task
+        e.preventDefault(); const id = f.dataset.sayForm, box = $("#say-text"), text = box.value.trim(); if (!text) return;
+        box.value = ""; box.disabled = true;
+        taskAction({ action: "say", id, text }).then((r) => { if (r && r.run) attach(r.run.id, true); const b = $("#say-text"); if (b) { b.disabled = false; b.focus(); } });
+        return;
+      }
       if (f.dataset && f.dataset.reeditForm) {                // Re-edit: a new version from the approved one, back to the team
         e.preventDefault(); const id = f.dataset.reeditForm, text = $("#reedit-text").value.trim(); if (!text) return;
         const t = ((state.status && state.status.tasks) || []).find((x) => x.id === id);
         postJSON("/api/tasks", { action: "reedit", id }).then((r) => {
-          send(`Re-edit requested by the owner on board task ${id}${t ? ` (${t.title})` : ""}: ${text}\nThe approved version in ${r.from} stays untouched (it may be posted already). A copy is ready in ${r.folder}: make the changes there, then put the new version back in Waiting for my OK (node hq/tasks.js move ${id} review). Save what we learned with /retro.`);
+          send(`Re-edit requested by the owner on board task ${id}${t ? ` (${t.title})` : ""}: ${text}\nThe approved version in ${r.from} stays untouched (it may be posted already). A copy is ready in ${r.folder}: make the changes there, then put the new version back in Waiting for my OK (node hq/tasks.js move ${id} review). Save what we learned with /retro.`, id);
           state.reedit = null; state.openDetail = null; state.flash = id; if (state.filter === "done") state.filter = "all";
           toast("chief", "Sent to the team", `Re-edit: ${shortTask(text, 60)}`);
           return refresh();

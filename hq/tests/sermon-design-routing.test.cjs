@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'hud.js'), 'utf8');
-const implementation = source.slice(source.indexOf('  function sermonDesignRoute('), source.indexOf('  async function send(prompt)'));
+const implementation = source.slice(source.indexOf('  function sermonDesignRoute('), source.indexOf('  async function send(prompt'));
 const context = vm.createContext({URLSearchParams});
 vm.runInContext(implementation, context);
 vm.runInContext(source.slice(source.indexOf('  function reviewArtworkFiles('), source.indexOf('  function renderReview()')), context);
@@ -23,7 +23,7 @@ test('Creative selected agent and microphone send share the same route', () => {
   assert.match(route('Ask thumbnail-designer: Sermon Title 16:9\n中文：恩典\n英文：Grace'), /chinese=/);
   assert.match(route('XHS Sermon Recap Pro'), /mode=recap/);
   assert.match(source, /function sendVoice\(\)[^\n]+send\(text\)/);
-  const send = source.slice(source.indexOf('  async function send(prompt)'), source.indexOf('  // ---------- sub-agent progress'));
+  const send = source.slice(source.indexOf('  async function send(prompt'), source.indexOf('  // ---------- sub-agent progress'));
   assert.ok(send.indexOf('sermonDesignRoute(prompt)') < send.indexOf('postJSON("/api/run"'));
 });
 test('ordinary tasks, quotations and feedback keep the existing lead workflow', () => {

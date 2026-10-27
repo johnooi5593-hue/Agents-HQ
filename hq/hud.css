@@ -326,6 +326,25 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .btn.mng.on, .btn.mng:hover { background: #2a3142; color: #fff; }
 .btn.danger { background: #3a1f25; border-color: #6b2a34; color: #ffb5bf; }
 .btn.danger:hover { background: #55242e; color: #fff; }
+.btn.mng { position: relative; }
+.btn.mng .chat-n { position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #3b4560; color: #dfe5f2; font: 700 9.5px/16px var(--mono); font-style: normal; letter-spacing: 0; }
+.trow.asks { border-color: rgba(228, 200, 48, 0.55); box-shadow: inset 3px 0 0 #e4c830; }
+.trow.asks .btn.mng .chat-n { background: #e4c830; color: #1b1d22; }
+.ask-pill { border: 0; cursor: pointer; padding: 2px 8px; border-radius: 6px; background: #e4c830; color: #1b1d22; font: 700 10.5px/1.5 inherit; white-space: nowrap; }
+.trow.stopped .title { color: #c4c9d4; }
+.stop-g, .wait-g { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #2a2f3c; color: #9aa3b2; font-size: 9px; letter-spacing: -1px; }
+.wait-g { font-size: 13px; letter-spacing: 0; line-height: 1; }
+.task-detail .nt { overflow-wrap: anywhere; }                 /* long folder paths in a note wrap instead of widening the board */
+.task-detail .td-chat { display: grid; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+.task-detail .msgs { display: grid; gap: 6px; max-height: 300px; overflow-y: auto; padding-right: 2px; }
+.task-detail .msg { max-width: 88%; padding: 7px 10px; border-radius: 10px; background: #232a38; font-size: 12.5px; line-height: 1.45; }
+.task-detail .msg.me { justify-self: end; background: #2c3f6b; }
+.task-detail .msg.err { background: rgba(255, 77, 94, 0.14); }
+.task-detail .msg .who { font: 10px var(--mono); color: #8d93a1; margin-bottom: 2px; }
+.task-detail .msg .tx { white-space: pre-wrap; word-break: break-word; color: #dfe3ea; }
+.task-detail .hint.live { display: flex; align-items: center; gap: 8px; }
+.task-detail form.say { display: flex; gap: 8px; align-items: flex-end; }
+.task-detail form.say textarea { flex: 1; min-width: 0; resize: vertical; min-height: 40px; font: inherit; }
 .trow.cancelled { opacity: 0.72; }
 .trow.cancelled .title { text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.35); }
 .cx-g { color: #8a91a0; font-size: 13px; }

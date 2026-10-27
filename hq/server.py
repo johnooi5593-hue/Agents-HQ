@@ -485,6 +485,40 @@ def accounts_action(body, redirect):
     return 400, {"error": "unknown action"}
 
 
+CHAT_KEEP = 40                                       # messages kept per task
+ASKS = re.compile(r"[?？]|reply ok|your ok|approve|please (confirm|choose|decide)|let me know", re.I)
+
+
+def add_chat(task, who, text, error=False):
+    """One message in a task's chat: the owner's, or the lead's reply about that task."""
+    msg = {"from": who, "text": str(text)[:4000], "at": now_iso()}
+    if error:
+        msg["error"] = True
+    task["chat"] = (task.get("chat") or [])[-(CHAT_KEEP - 1):] + [msg]
+
+
+def after_run(run):
+    """The lead's reply lands in the chat of the board task(s) it worked on (up to three; more is office-wide work, like
+    a standup). A reply that asks the owner something, or waits for an OK, flags the task: the board puts it under
+    Waiting for you with "Lead asks you"."""
+    if not run.tasks or len(run.tasks) > 3:
+        return
+    res = next((e for e in reversed(run.events) if e.get("type") == "result"), None)
+    err = next((e for e in reversed(run.events) if e.get("type") == "error"), None)
+    text = (res or {}).get("text") or ("The lead stopped before it finished: " + err["text"][-400:] if err else "")
+    if not text.strip():
+        return
+    failed = not res or bool(res.get("is_error"))
+    with TASK_LOCK:
+        db = load_tasks()
+        for t in db["tasks"]:
+            if t.get("id") in run.tasks:
+                add_chat(t, "lead", text, error=failed)
+                t["asks"] = failed or bool(ASKS.search(text[-500:]))
+                t["updated"] = now_iso()
+        save_tasks(db)
+
+
 def task_action(body):
     """Use the same bridge→task lock order as thumbnail delivery callbacks."""
     bridge = globals().get("thumbnail_design")
@@ -616,11 +650,30 @@ def _task_action(body):
             got = task_footage(task) if task else None
             if not got:
                 return 404, {"error": "that video is no longer waiting in the inbox"}
-            run = desk.start(edit_prompt(*got, task["id"]))
-            if not run:
-                return 409, {"error": "the lead is still working on the previous message; try again when it is done"}
+            run = desk.start(edit_prompt(*got, task["id"]), tasks=[task["id"]])
             set_status(task, "doing"); save_tasks(db)
             return 202, {"editing": task, "run": run.summary()}
+        if action in ("run", "say"):                # Run / Run again, or the owner's message in the task's chat
+            if not task:
+                return 404, {"error": "no such task"}
+            text = str(body.get("text") or "").strip()[:2000]
+            if action == "say" and not text:
+                return 400, {"error": "empty message"}
+            ch = task_channel(task)
+            head = (f"board task {task['id']} ({task['title']}; team {task.get('team') or 'auto'}"
+                    f"{'; channel ' + channels.name(ch) if ch is not None else ''}; note: {task.get('note') or 'none'})")
+            keep = (f"Keep the board task moving: node hq/tasks.js move {task['id']} doing while it is worked on, review when it "
+                    f"waits for the owner. If you need the owner's decision, end your reply with one clear question.")
+            if action == "say":
+                add_chat(task, "owner", text); task["asks"] = False
+                prompt = f"The owner writes about {head}: {text} / Reply to the owner in a few short lines; if it needs work, route it to the right team. {keep}"
+            else:
+                again = "This task was started before and stopped before it was finished: check what is already done, then finish it. " if task["status"] == "doing" else ""
+                prompt = f"/brief {task['title']} ({head}). {again}{keep}"
+                set_status(task, "doing"); task["subtitle"], task["asks"] = "", False
+            run = desk.start(prompt, tasks=[task["id"]])
+            save_tasks(db)
+            return 202, {"run": run.summary(), "task": task}
         if action == "progress":
             if not task:
                 return 404, {"error": "no such task"}
@@ -785,7 +838,9 @@ def status_payload():
     for t in s["deleted"]:
         t["ch"] = task_channel(t)
     s["waiting_for_approval"] = [n for n in s["waiting_for_approval"] if n not in hidden]
+    live = desk.working_on()
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
+        t["live"] = live.get(t["id"])                       # the lead is on it right now ("working"), or it waits in line ("queued")
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
         t["ch"] = task_channel(t)                           # its channel (key, "" main) or None: the whole office
@@ -1142,15 +1197,38 @@ def model_for(prompt):
     return FABLE_MODEL if FABLE_ASK.search(prompt or "") else DEFAULT_MODEL
 
 
+TASK_REF = re.compile(r"hq/tasks\.js\"?\s+(?:move|progress|note|channel)\s+(t\d+)|\"added\":\s*\{\s*\"id\":\s*\"(t\d+)\"|\bboard task (t\d+)\b")
+
+
 class Run:
-    def __init__(self, prompt):
+    """One message to the lead. tasks: the board tasks it works on (the one it was started from, and any it adds or moves),
+    so the board shows which task is really being worked on and the lead's reply lands in that task's chat."""
+    def __init__(self, prompt, tasks=()):
         self.id, self.prompt, self.events, self.done, self.ok = uuid.uuid4().hex[:8], prompt, [], False, None
+        self.tasks, self.started = list(dict.fromkeys(tasks)), False
+        self._link(prompt)
+
+    def _link(self, text):
+        for m in TASK_REF.finditer(text or ""):
+            tid = next(g for g in m.groups() if g)
+            if tid not in self.tasks:
+                self.tasks.append(tid)
 
     def add(self, event):
         self.events.append(event)
+        if event.get("type") in ("tool", "tool_done"):
+            self._link(event.get("text") or "")
+
+    def last_step(self):
+        """What the lead is doing right now, in a few words (its last message or step)."""
+        for ev in reversed(self.events):
+            if ev.get("type") in ("text", "tool") and (ev.get("text") or ev.get("name")):
+                return re.sub(r"\s+", " ", str(ev.get("text") or ev.get("name")))[:120]
+        return "starting"
 
     def summary(self):
-        return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events)}
+        return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events),
+                "tasks": self.tasks, "queued": not self.started and not self.done}
 
 
 FRESH_AFTER_IDLE = float(os.environ.get("HQ_LEAD_IDLE_MIN", "30")) * 60    # Claude's cache is gone by then: resuming re-buys the history
@@ -1165,6 +1243,7 @@ class Desk:
     def __init__(self):
         self.session_id, self.resumable, self.runs, self.order, self.current = str(uuid.uuid4()), False, {}, [], None
         self.last_at, self.spent, self.context = 0.0, 0.0, 0
+        self.queue, self.on_done = [], None              # messages waiting for the lead to finish; on_done(run) after each
         self.lock = threading.Lock()
 
     def fresh_reason(self):
@@ -1182,17 +1261,50 @@ class Desk:
         self.spent += float(ev.get("cost_usd") or 0)
         self.context = max(self.context, int(ev.get("context") or 0))
 
-    def start(self, prompt):
+    def start(self, prompt, tasks=()):
+        """Start a message, or line it up behind the one the lead is working on (it starts by itself when that is done)."""
         with self.lock:
-            if self.current and not self.current.done:
-                return None
-            run = Run(prompt)
-            self.runs[run.id], self.current = run, run
+            run = Run(prompt, tasks)
+            self.runs[run.id] = run
             self.order.append(run.id)
+            if self.current and not self.current.done:
+                self.queue.append(run)
+                run.add({"type": "system", "text": f"waiting: the lead finishes the job before this one first ({len(self.queue)} in line)"})
+                return run
+            self.current, run.started = run, True
         threading.Thread(target=self._work, args=(run,), daemon=True).start()
         return run
 
     def _work(self, run):
+        try:
+            self._run(run)
+        finally:
+            if self.on_done:
+                try:
+                    self.on_done(run)
+                except Exception as e:                    # the board never stops the lead
+                    sys.stderr.write(f"after run {run.id}: {e}\n")
+            with self.lock:
+                nxt = self.queue.pop(0) if self.queue else None
+                if nxt:
+                    self.current, nxt.started = nxt, True
+            if nxt:
+                threading.Thread(target=self._work, args=(nxt,), daemon=True).start()
+
+    def working_on(self):
+        """{task id: "working" step text, or "queued"} for the lead's current and waiting messages."""
+        with self.lock:
+            cur, waiting = self.current, list(self.queue)
+        out = {}
+        for r in waiting:
+            for tid in r.tasks:
+                out[tid] = {"state": "queued"}
+        if cur and not cur.done:
+            for tid in cur.tasks:
+                out[tid] = {"state": "working", "step": cur.last_step()}
+        return out
+
+    def _run(self, run):
         why = self.fresh_reason()
         if why:
             self.session_id, self.resumable, self.spent, self.context = str(uuid.uuid4()), False, 0.0, 0
@@ -1247,11 +1359,12 @@ class Desk:
     def state(self):
         with self.lock:
             cur = self.current
-        return {"busy": bool(cur and not cur.done), "current": cur.id if cur else None,
+        return {"busy": bool(cur and not cur.done), "current": cur.id if cur else None, "queued": len(self.queue),
                 "runs": [self.runs[i].summary() for i in self.order[-20:]]}
 
 
 desk = Desk()
+desk.on_done = lambda run: (after_run(run), notifier.refresh())
 
 
 # after-approval follow-ups (hq/followups.py): approved/<name>/followups.json hands the work on to the chief of staff
@@ -1522,13 +1635,13 @@ class Handler(BaseHTTPRequestHandler):
         if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
         if path == "/api/run":
-            prompt = (self.read_json().get("prompt") or "")
+            body = self.read_json()
+            prompt = body.get("prompt") or ""
             prompt = prompt.strip() if isinstance(prompt, str) else ""
             if not prompt:
                 return self.send_json({"error": "empty message"}, 400)
-            run = desk.start(prompt)
-            if not run:
-                return self.send_json({"error": "the lead is still working on the previous message"}, 409)
+            task = body.get("task") if isinstance(body.get("task"), str) and re.match(r"^t\d+$", body.get("task")) else None
+            run = desk.start(prompt, tasks=[task] if task else ())   # waits in line if the lead is busy
             return self.send_json(run.summary(), 202)
         if path == "/api/tasks":
             code, payload = task_action(self.read_json())

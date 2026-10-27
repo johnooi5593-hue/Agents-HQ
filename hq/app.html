@@ -140,7 +140,9 @@
     if (s.childNodes.length < 3) { s.appendChild(document.createElement("br")); s.appendChild(document.createTextNode(msg)); }
   }
   window.addEventListener("error", function (e) {
-    if (e.target && e.target !== window && (e.target.src || e.target.href)) show("Could not load " + (e.target.src || e.target.href));
+    if (e.target && e.target !== window && (e.target.src || e.target.href)) {
+      if (/^(SCRIPT|LINK)$/.test(e.target.tagName)) show("Could not load " + (e.target.src || e.target.href));   // a work file's picture is not the office
+    }
     else if (e.message && !/ResizeObserver loop/.test(e.message)) show(e.message + (e.filename ? " (" + e.filename.replace(location.origin, "") + ":" + e.lineno + ")" : ""));
   }, true);
   window.addEventListener("unhandledrejection", function (e) { var r = e.reason; if (r && /^(\d{3}|Failed to fetch)/.test(String(r.message || r))) return; show("Unhandled: " + (r && (r.stack || r.message) || r)); });
