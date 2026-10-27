@@ -501,7 +501,8 @@ def _task_action(body):
         db = load_tasks()
         task = next((t for t in db["tasks"] if t.get("id") == body.get("id")), None)
         if action == "add" and isinstance(body.get("title"), str) and body["title"].strip():
-            nid = "t" + str(max([0] + [int(t["id"][1:]) for t in db["tasks"] if str(t.get("id", "t"))[1:].isdigit()]) + 1)
+            every = db["tasks"] + db.get("deleted", [])  # a deleted task keeps its id, so Restore never clashes
+            nid = "t" + str(max([0] + [int(t["id"][1:]) for t in every if str(t.get("id", "t"))[1:].isdigit()]) + 1)
             new = {"id": nid, "title": body["title"].strip()[:200], "team": str(body.get("team") or "")[:40], "agent": str(body.get("agent") or "")[:60],
                    "status": body.get("status") if body.get("status") in STATUSES else "todo", "kind": body.get("kind") if body.get("kind") in KINDS else "task",
                    "note": str(body.get("note") or "")[:500], "subtitle": str(body.get("subtitle") or "")[:200], "progress": clean_progress(body.get("progress")),
@@ -521,43 +522,64 @@ def _task_action(body):
                         return 409, {"error": reason or "Use the final approval control for this thumbnail package."}
             set_status(task, body["status"]); save_tasks(db)
             return 200, {"moved": task}
-        if action == "remove":                      # off the board; its work folder and files stay where they are
-            n = len(db["tasks"]); db["tasks"] = [t for t in db["tasks"] if t.get("id") != body.get("id")]; save_tasks(db)
-            return 200, {"removed": n - len(db["tasks"]), "task": task}
-        if action == "restore":                     # Undo right after a delete: the removed task comes back as it was
-            back = body.get("task")
-            if not (isinstance(back, dict) and re.match(r"^t\d+$", str(back.get("id") or ""))):
-                return 400, {"error": "nothing to restore"}
-            if any(t.get("id") == back["id"] for t in db["tasks"]):
-                return 409, {"error": "that task is already on the board"}
-            keep = {k: back[k] for k in ("id", "title", "status", "created", "updated", *TASK_DEFAULTS) if k in back}
-            if not isinstance(keep.get("title"), str) or not keep["title"].strip():
-                return 400, {"error": "nothing to restore"}
-            db["tasks"].append(normalize_task(keep)); save_tasks(db)
-            return 201, {"restored": keep}
+        if action == "remove":                      # into the Deleted tab (Restore brings it back); its files stay where they are
+            if not task:
+                return 404, {"error": "no such task"}
+            db["tasks"].remove(task)
+            db.setdefault("deleted", []).append({**task, "deleted_at": now_iso()}); save_tasks(db)
+            return 200, {"removed": 1, "task": task}
+        if action == "restore":                     # out of the Deleted tab, back on the board as it was
+            gone = next((t for t in db.get("deleted", []) if t.get("id") == body.get("id")), None)
+            if not gone:
+                return 404, {"error": "that task is not in Deleted"}
+            db["deleted"].remove(gone); gone.pop("deleted_at", None)
+            db["tasks"].append(normalize_task(gone)); save_tasks(db)
+            return 200, {"restored": gone}
+        if action == "reedit":                      # a finished task goes back to work: a copy of its approved folder becomes
+            if not task:                            # out/<name>-v2 (approved/ stays as it was, it may be posted already)
+                return 404, {"error": "no such task"}
+            m = re.search(r"out:([^\s,;]+)", task.get("note") or "")
+            name = m[1].strip("/").split("/")[0] if m else ""
+            src = safe_join(os.path.join(ROOT, "approved"), name) if name and SAFE_NAME.match(name) else None
+            if not src or not os.path.isdir(src):
+                return 409, {"error": "this task has no approved folder to start from"}
+            if name.startswith("thumbnail-final-"):
+                return 409, {"error": "a thumbnail package is re-made in Thumbnail Studio"}
+            base, n = re.sub(r"-v\d+$", "", name), 2
+            while any(os.path.exists(os.path.join(ROOT, area, f"{base}-v{n}")) for area in ("out", "approved")):
+                n += 1
+            new = f"{base}-v{n}"
+            shutil.copytree(src, os.path.join(ROOT, "out", new))
+            task["note"] = (task.get("note") or "").replace("out:" + m[1], "out:" + new, 1)
+            set_status(task, "doing"); task["subtitle"] = "Re-edit · waiting for the team"; save_tasks(db)
+            return 200, {"reedit": task, "from": "approved/" + name, "folder": "out/" + new}
         if action in ("folder-hide", "folder-show", "folder-channel"):
-            # a finished out/ folder without a task: the owner files it under a channel (its channel.txt, which the
-            # posting screen reads) or takes it off the board; its files always stay in out/
-            name = str(body.get("folder") or "").strip("/")
-            d = safe_join(os.path.join(ROOT, "out"), name) if SAFE_NAME.match(name) else None
+            # finished out/ folders without a task (one, or every version of one project): the owner files them under a
+            # channel (their channel.txt, which the posting screen reads) or moves them to the Deleted tab; files stay in out/
+            names = body.get("folders") if isinstance(body.get("folders"), list) else [body.get("folder")]
+            names = [str(n or "").strip("/") for n in names][:50]
+            dirs = [safe_join(os.path.join(ROOT, "out"), n) if SAFE_NAME.match(n) else None for n in names]
             hidden = db.setdefault("hidden_out", [])
+            if not names:
+                return 400, {"error": "no folder"}
             if action == "folder-show":
-                db["hidden_out"] = [n for n in hidden if n != name]; save_tasks(db)
-                return 200, {"shown": name}
-            if not d or not os.path.isdir(d):
+                db["hidden_out"] = [h for h in hidden if (h["name"] if isinstance(h, dict) else h) not in names]; save_tasks(db)
+                return 200, {"shown": names}
+            if not all(d and os.path.isdir(d) for d in dirs):
                 return 404, {"error": "no such folder in out/"}
             if action == "folder-hide":
-                if name not in hidden:
-                    hidden.append(name); save_tasks(db)
-                return 200, {"hidden": name}
+                have = {h["name"] if isinstance(h, dict) else h for h in hidden}
+                hidden += [{"name": n, "deleted_at": now_iso()} for n in names if n not in have]; save_tasks(db)
+                return 200, {"hidden": names}
             ch = body.get("channel")
             if not isinstance(ch, str) or not channels.get(ch):
                 return 400, {"error": "choose an existing channel"}
-            if name.startswith("thumbnail-final-"):
+            if any(n.startswith("thumbnail-final-") for n in names):
                 return 409, {"error": "a thumbnail package keeps the channel it was made for"}
-            with open(os.path.join(d, "channel.txt"), "w", encoding="utf-8") as f:
-                f.write(ch)
-            return 200, {"folder": name, "channel": ch}
+            for d in dirs:
+                with open(os.path.join(d, "channel.txt"), "w", encoding="utf-8") as f:
+                    f.write(ch)
+            return 200, {"folders": names, "channel": ch}
         if action == "channel":                     # the owner files a task under a channel (None: worked out again)
             if not task:
                 return 404, {"error": "no such task"}
@@ -751,11 +773,17 @@ def status_payload():
     s = collect()
     db = load_tasks()
     ag, running, tasks = agents()["agents"], events()["running"], db["tasks"]
-    hidden = set(db.get("hidden_out") or [])
-    for name, info in s["out"].items():                   # each finished folder: its channel, and whether the owner took it off the board
+    hidden = {h["name"]: h.get("deleted_at") for h in (db.get("hidden_out") or []) if isinstance(h, dict)}
+    hidden.update({h: None for h in (db.get("hidden_out") or []) if isinstance(h, str)})
+    for name, info in s["out"].items():                   # each finished folder: its channel, and whether the owner deleted it from the board
         if "edit" in info:
             info["ch"] = channels_mod.folder_channel(os.path.join(ROOT, "out", name))
             info["hidden"] = name in hidden
+            if name in hidden:
+                info["deleted_at"] = hidden[name]
+    s["deleted"] = sorted(db.get("deleted") or [], key=lambda t: t.get("deleted_at") or "", reverse=True)
+    for t in s["deleted"]:
+        t["ch"] = task_channel(t)
     s["waiting_for_approval"] = [n for n in s["waiting_for_approval"] if n not in hidden]
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
         t["final"] = task_final(t)

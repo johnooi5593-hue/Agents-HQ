@@ -8,7 +8,7 @@
 //        node hq/tasks.js channel <id> <key>|main|@office|auto     (file the task under a channel; auto: from its note/folder)
 //        node hq/tasks.js progress <id> <0..100> ["<subtitle>"]     (what the task is doing right now)
 //        node hq/tasks.js note <id> "<text>"                        (note "out:<name>" ties the task to out/<name>: Approve in the app moves it)
-//        node hq/tasks.js remove <id>
+//        node hq/tasks.js remove <id>                               (moves it to the Deleted tab in the app; Restore brings it back)
 // Task = { id, title, team, agent, status, kind, note, subtitle, progress, date, time, created, updated, done_at, channel }
 const fs = require("fs");
 const path = require("path");
@@ -52,7 +52,7 @@ const find = (id) => db.tasks.find((t) => t.id === id);
 
 if (cmd === "add") {
   const title = o._[0]; if (!title) { console.error("add needs a title"); process.exit(1); }
-  const id = "t" + (Math.max(0, ...db.tasks.map((t) => parseInt(String(t.id).slice(1), 10) || 0)) + 1);
+  const id = "t" + (Math.max(0, ...db.tasks.concat(db.deleted || []).map((t) => parseInt(String(t.id).slice(1), 10) || 0)) + 1);   // deleted tasks keep their ids for Restore
   const status = STATUSES.includes(o.status) ? o.status : "todo";
   const task = normalize({ id, title, team: o.team === true ? "" : o.team || "", agent: o.agent === true ? "" : o.agent || "", status,
     kind: KINDS.includes(o.kind) ? o.kind : "task", note: o.note === true ? "" : o.note || "", subtitle: o.subtitle === true ? "" : o.subtitle || "",
@@ -73,8 +73,9 @@ if (cmd === "add") {
   const t = find(o._[0]); const c = o._[1] === "auto" ? null : cleanChannel(o._[1]);
   if (!t || (o._[1] !== "auto" && c === null)) { console.error("channel <id> <key>|main|@office|auto"); process.exit(1); }
   t.channel = c; t.updated = now(); save(db); out({ channel: t });
-} else if (cmd === "remove") {
-  const n = db.tasks.length; db.tasks = db.tasks.filter((t) => t.id !== o._[0]); save(db); out({ removed: n - db.tasks.length });
+} else if (cmd === "remove") {                             // into the app's Deleted tab, where the owner can Restore it
+  const t = find(o._[0]); if (!t) { console.error("no such task"); process.exit(1); }
+  db.tasks = db.tasks.filter((x) => x !== t); (db.deleted = db.deleted || []).push({ ...t, deleted_at: now() }); save(db); out({ removed: 1 });
 } else {
   if ("json" in o || cmd === "json") out(db);
   else for (const st of STATUSES) {

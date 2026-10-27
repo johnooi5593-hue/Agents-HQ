@@ -25,7 +25,7 @@ class BoardTests(unittest.TestCase):
         body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME") for t in n.targets)]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
         self.db = {"tasks": []}
-        self.env = {"re": re, "os": os, "datetime": datetime, "ROOT": str(self.root), "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
+        self.env = {"re": re, "os": os, "datetime": datetime, "shutil": __import__("shutil"), "ROOT": str(self.root), "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
                     "load_tasks": lambda: self.db, "save_tasks": lambda db: None, "now_iso": lambda: "2026-10-27T00:00:00Z"}
         exec(compile(ast.Module(body=body, type_ignores=[]), "server-board-fixture", "exec"), self.env)
         self.act = self.env["_task_action"]
@@ -66,14 +66,32 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(self.db["tasks"], [])
         self.assertTrue((self.root / "out" / "somewhere").is_dir())           # deleting a task never touches its files
 
-    def test_undo_brings_a_deleted_task_back(self):
+    def test_deleted_tasks_wait_in_deleted_and_can_be_restored(self):
         t = self.add(title="Keep me", channel="pong-gospel")
-        removed = self.act({"action": "remove", "id": t["id"]})[1]["task"]
+        self.act({"action": "remove", "id": t["id"]})
         self.assertEqual(self.db["tasks"], [])
-        self.assertEqual(self.act({"action": "restore", "task": removed})[0], 201)
-        back = self.db["tasks"][0]
-        self.assertEqual((back["id"], back["title"], back["channel"]), (t["id"], "Keep me", "pong-gospel"))
-        self.assertEqual(self.act({"action": "restore", "task": removed})[0], 409)   # never twice
+        self.assertEqual(self.db["deleted"][0]["title"], "Keep me")
+        self.assertNotEqual(self.add()["id"], t["id"])                     # a deleted task keeps its id
+        self.assertEqual(self.act({"action": "restore", "id": t["id"]})[0], 200)
+        back = next(x for x in self.db["tasks"] if x["id"] == t["id"])
+        self.assertEqual((back["title"], back["channel"], "deleted_at" in back), ("Keep me", "pong-gospel", False))
+        self.assertEqual(self.db["deleted"], [])
+        self.assertEqual(self.act({"action": "restore", "id": t["id"]})[0], 404)    # never twice
+
+    def test_reedit_starts_a_new_version_and_keeps_the_approved_one(self):
+        old = self.root / "approved" / "clip-a"
+        old.mkdir(parents=True)
+        (old / "edit.mp4").write_bytes(b"v1")
+        (self.root / "out").mkdir()
+        t = self.add(status="done", note="out:clip-a channel:pong-gospel")
+        code, res = self.act({"action": "reedit", "id": t["id"]})
+        self.assertEqual((code, res["folder"]), (200, "out/clip-a-v2"))
+        self.assertEqual((self.root / "out" / "clip-a-v2" / "edit.mp4").read_bytes(), b"v1")
+        self.assertTrue((old / "edit.mp4").is_file())                         # the approved (maybe posted) version stays
+        self.assertEqual((t["status"], t["note"]), ("doing", "out:clip-a-v2 channel:pong-gospel"))
+        t2 = self.add(status="done", note="out:clip-a")
+        self.assertEqual(self.act({"action": "reedit", "id": t2["id"]})[1]["folder"], "out/clip-a-v3")
+        self.assertEqual(self.act({"action": "reedit", "id": self.add(status="done")["id"]})[0], 409)   # nothing approved
 
     def test_a_folder_without_a_task_can_be_filed_and_taken_off_the_board(self):
         clip = self.root / "out" / "clip-1"
@@ -85,10 +103,13 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(self.act({"action": "folder-channel", "folder": "../tasks", "channel": ""})[0], 404)
         (self.root / "out" / "thumbnail-final-abc").mkdir()
         self.assertEqual(self.act({"action": "folder-channel", "folder": "thumbnail-final-abc", "channel": ""})[0], 409)
-        self.act({"action": "folder-hide", "folder": "clip-1"})
-        self.assertEqual(self.db["hidden_out"], ["clip-1"])
+        (self.root / "out" / "clip-2").mkdir()
+        self.assertEqual(self.act({"action": "folder-channel", "folders": ["clip-1", "clip-2"], "channel": ""})[0], 200)
+        self.assertEqual((self.root / "out" / "clip-2" / "channel.txt").read_text(encoding="utf-8"), "")
+        self.act({"action": "folder-hide", "folders": ["clip-1", "clip-2"]})          # every version of one project at once
+        self.assertEqual([h["name"] for h in self.db["hidden_out"]], ["clip-1", "clip-2"])
         self.assertTrue((clip / "edit.mp4").is_file())                         # taking it off the board keeps its files
-        self.act({"action": "folder-show", "folder": "clip-1"})
+        self.act({"action": "folder-show", "folders": ["clip-1", "clip-2"]})
         self.assertEqual(self.db["hidden_out"], [])
 
 
