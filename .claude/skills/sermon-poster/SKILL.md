@@ -17,13 +17,19 @@ Visible text defaults to the supplied Chinese and English titles only, preservin
 
 ## Use the actual host and image capability
 
-The installed Claude office is **D:/Agents HQ**, Creative → **Sermon Title 16:9**, on its existing authenticated app origin. Read `D:/Agents HQ/docs/sermon-design-studio.md` and `D:/AI OFFICE/docs/SERMON-DESIGN-STUDIO.md` before operating it; they describe the current handoff, provider route and rendering limits. Do not substitute the older Codex dashboard or create duplicate manual board tasks for a native Studio export.
+The installed Claude office is **D:/Agents HQ**, Creative → **Sermon Title 16:9**, on its existing authenticated app origin. Read `D:/Agents HQ/docs/sermon-design-studio.md` and `D:/AI OFFICE/docs/SERMON-DESIGN-STUDIO.md` before operating it; they describe the current handoff, provider route and rendering limits. A configured Codex HQ may use the shared connection described below; do not use an independent local artwork store or create duplicate manual board tasks for a native Studio export.
 
 For automation, use the same authenticated HQ bridge under `/api/sermon-design/`; inspect the current documented API and capability response before constructing mutations. `GET /api/sermon-design/capabilities` describes available providers/formats. Project creation, owned uploads, saved revisions, generation, export and job polling use that bridge. Do not bypass it by writing task state or claiming that a Claude text response generated an image.
 
 Prefer the requested ChatGPT built-in image generation path **only when the current host exposes a verified working tool/handoff**. A Claude host does not inherit ChatGPT's `image_gen` tool. Read the maintained Studio documentation for the actual supported Codex CLI handoff, if present; an installed CLI, enabled feature or sign-in alone does not prove end-to-end image transport. Do not invent a CLI command or model name, or claim a successful provider result without returned artifacts and provenance. An actually available built-in route requires no separate API key. A separate API provider is optional and used when the user chooses it; never make purchasing or entering an API key the default requirement. A local procedural composition must be labelled honestly, and cannot be passed off as the requested AI-generated image.
 
 If the requested route is unavailable, preserve the draft and report the concrete capability gap. Independent layout preparation may continue; do not silently replace a requested generated original with procedural artwork. Do not start unrelated services, Pulse learning, model retries or held productions.
+
+## Shared Claude and Codex HQ entry points
+
+When Codex HQ reports `sharedHq.mode: claude-shared` in capabilities, its artwork routes forward to the same Claude HQ bridge and canonical image engine. Either entry can open/edit the same saved project; use **Shared projects** to inspect the original accepted job and native review status. Do not create a second project or run another generation merely because the user changes HQ. Reopen the current revision after a conflict; do not overwrite another window's changes. An unavailable shared office is an error, not permission to fall back to a second local writer.
+
+Final version-specific OK remains in Claude HQ. Use the shared hub's verified desktop/private-phone Claude review link; never send Claude `tN` task IDs to the unrelated Codex task board or use a phone-local `127.0.0.1` link. The hub is read-only and does not approve, publish, retry, or generate. A saved watch record only identifies which job to query; show progress from its actual job response, and report missing/interrupted jobs honestly. Unrelated task boards, brands, Brain records and paused productions are not merged by this connection. See `docs/SERMON-DESIGN-STUDIO.md` (Codex workspace) or `docs/sermon-design-studio.md` (Claude workspace) for the current host setup.
 
 ## Four separate editable designs
 
