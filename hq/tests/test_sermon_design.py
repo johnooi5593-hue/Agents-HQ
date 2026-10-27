@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sermon_design import BASE, DesignError, SermonDesignBridge, allowed, inside
+from sermon_design import BACK_TO_HQ_JS, BASE, HOLD_UNLOAD_JS, DesignError, SermonDesignBridge, allowed, inside
 
 
 class Handler:
@@ -76,6 +76,21 @@ class BridgeTests(unittest.TestCase):
             self.assertTrue(allowed(method, route))
         for method, route in [("POST", "/api/run"), ("GET", "/api/output"), ("GET", BASE + "/provider-config"), ("POST", BASE + "/projects/p1/approve"), ("DELETE", BASE + "/projects/p1"), ("GET", "http://evil.example/")]:
             self.assertFalse(allowed(method, route))
+    def test_studio_script_lets_back_to_hq_leave_a_busy_page(self):
+        # the studio holds the page with beforeunload while a job runs; the desktop app then never leaves. HQ's code goes
+        # before the studio's (to keep those handlers) and after it (Back to HQ asks, then leaves).
+        public = self.engine / "studio" / "public"
+        public.mkdir(parents=True)
+        (public / "sermon-studio.js").write_bytes(b"/* studio */ addEventListener('beforeunload', e => e.preventDefault());")
+        handler = Handler("/sermon-studio.js")
+        self.assertTrue(self.bridge.handle(handler))
+        served = handler.wfile.getvalue()
+        self.assertTrue(served.startswith(HOLD_UNLOAD_JS))
+        self.assertIn(b"/* studio */", served)
+        self.assertTrue(served.endswith(BACK_TO_HQ_JS))
+        self.assertNotIn(b"__LEAVE_MSG__", BACK_TO_HQ_JS)
+        self.assertIn(b"window.confirm(", BACK_TO_HQ_JS)
+
     def test_registration_copies_actual_files_once_and_keeps_approval(self):
         project = self.project()
         first = self.bridge.register(project)

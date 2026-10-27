@@ -32,7 +32,16 @@ BACK_TO_HQ_JS = b"""
   if (window.__hqBack) return; window.__hqBack = true;
   var top = window.top || window;
   function home() { var t = new URLSearchParams(location.search).get("task"); return "/" + (t ? "?task=" + encodeURIComponent(t) : ""); }
-  function go() { try { top.location.assign(home()); } catch (e) { location.assign(home()); } }
+  function wouldBlock() {                                  // ask the studio's own "don't leave" handlers (held by HOLD_UNLOAD_JS)
+    var stop = false, probe = { preventDefault: function () { stop = true; }, set returnValue(v) { stop = true; }, get returnValue() { return ""; } };
+    (window.__hqUnload || []).forEach(function (fn) { try { fn.call(window, probe); } catch (e) { /* a broken handler does not hold the page */ } });
+    return stop;
+  }
+  function go() {
+    if (wouldBlock() && !window.confirm(__LEAVE_MSG__)) return;
+    window.__hqLeaving = true;
+    try { top.location.assign(home()); } catch (e) { location.assign(home()); }
+  }
   function isBack(el) { var t = (el && el.textContent || "").replace(/\\s+/g, " ").trim(); return t.length < 40 && /^back to (?:claude |agents? |the )?hq\\b/i.test(t); }
   function backOf(node) { for (var el = node, i = 0; el && el.nodeType === 1 && i < 6; el = el.parentElement, i++) if (isBack(el)) return el; return null; }
   function fix() { document.querySelectorAll("a").forEach(function (a) { if (isBack(a)) { a.href = home(); a.removeAttribute("target"); } }); }
@@ -55,6 +64,27 @@ BACK_TO_HQ_JS = b"""
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready); else ready();
 })();
 """
+# While a design is generating (or has unsaved edits) the studio holds the page with a "beforeunload" handler. A browser
+# then asks "Leave site?", but the desktop app (Electron) asks nothing and just stays, so Back to HQ looked dead until the
+# job ended. An accepted job keeps running and comes back to HQ through the delivery watcher, so leaving is safe once
+# asked. This runs before the studio's code and keeps its beforeunload handlers: Back to HQ asks in words, then leaves.
+HOLD_UNLOAD_JS = b"""
+;(function () {
+  if (window.__hqUnload) return;
+  var held = window.__hqUnload = [], add = window.addEventListener;
+  window.addEventListener = function (type, fn, options) {
+    if (type === "beforeunload" && typeof fn === "function") {
+      var own = fn; held.push(own);
+      fn = function (e) { if (!window.__hqLeaving) return own.call(this, e); };
+    }
+    return add.call(this, type, fn, options);
+  };
+})();
+"""
+LEAVE_MSG = ("这个设计正在生成，或有未保存的修改。\n已经开始的生成会继续，完成后回到 Agents HQ 等你审核；这个页面上未保存的修改会丢失。\n\n"
+             "A design is generating or has unsaved changes. Generation that has started keeps running and comes back to "
+             "Agents HQ for your OK; unsaved changes on this page will be lost.\n\n现在回到 Agents HQ？ / Go back to Agents HQ now?")
+BACK_TO_HQ_JS = BACK_TO_HQ_JS.replace(b"__LEAVE_MSG__", json.dumps(LEAVE_MSG).encode())
 BACK_TO_HQ = b"<script>" + BACK_TO_HQ_JS + b"</script>"
 BASE = "/api/sermon-design"
 
@@ -578,7 +608,7 @@ class SermonDesignBridge:
                         handler.wfile.write(page)
                     return True
                 if path == "/sermon-studio.js":                   # the studio's own script: allowed even on a strict page
-                    page = file.read_bytes() + b"\n" + BACK_TO_HQ_JS
+                    page = HOLD_UNLOAD_JS + b"\n" + file.read_bytes() + b"\n" + BACK_TO_HQ_JS
                     handler.send_response(200)
                     handler.send_header("Content-Type", "text/javascript; charset=utf-8")
                     handler.send_header("Content-Length", str(len(page)))
