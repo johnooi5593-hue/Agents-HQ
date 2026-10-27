@@ -11,6 +11,8 @@ This workflow is for the installed Claude HQ at `D:\Agents HQ`. It uses the exis
 5. Open the returned **Final · …** task in **Waiting for your OK**. It contains the approved video, four thumbnails, provenance, and existing unambiguously associated captions/post copy where available. Select and inspect the intended cover; approve the final version in HQ.
 6. Use **修改 Codex 封面 / New version** to revise the thumbnail title, template or direction. Previous deliveries remain. A confirmed failed request can be deliberately retried. Duplicate clicks on the same accepted request do not launch another generation.
 
+This cover step applies only once the video's channel has a default template (or a cover was already requested for that folder). A channel without a template keeps the original **Approve** / **Approve & post**, with clip-editor's `cover.jpg`; the server's approval guard follows the same rule. Clip editing names its task **Review · …**, so a templated channel's only **Final · …** is the Codex delivery. The reference frame sent with the template is taken from the middle of the video, not second 0.
+
 The video approval starts the thumbnail stage; it does not approve the whole project or publish. A source task with several videos stays in review until all current videos have approved final packages. The existing posting interface remains a separate final action.
 
 ## Templates and fidelity
