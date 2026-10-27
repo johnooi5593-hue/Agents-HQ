@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>频道封面 · Agents HQ</title><link rel="stylesheet" href="/thumbnail-studio.css"></head>
+<body>
+<main>
+  <header><a class="back" href="/">← Agent HQ</a><span class="eyebrow">CREATIVE / CODEX</span><h1>每个频道，有自己的封面。</h1><p>保存品牌模板。视频批准后，Codex 按模板制作四张独立 thumbnail，回到 HQ 等你确认。</p></header>
+  <div id="notice" role="status" aria-live="polite">正在读取频道…</div>
+  <section class="panel"><div class="section-head"><h2>频道模板</h2><span class="badge">按品牌保存</span></div><label>频道<select id="channel"></select></label><div id="templates" class="templates"></div>
+  <details id="upload-details"><summary>＋ 上传这个频道的模板</summary><form id="template-form" class="form-grid">
+    <label>模板名称<input id="template-name" required maxlength="100" placeholder="例如：主讲人 · 大标题"></label>
+    <label>输出尺寸<select id="dimensions"><option value="1080x1920">竖版 9:16 · 1080 × 1920</option><option value="1920x1080">横版 16:9 · 1920 × 1080</option><option value="1080x1440">小红书 3:4 · 1080 × 1440</option></select></label>
+    <label class="wide">模板图片<input id="template-file" type="file" accept="image/png,image/jpeg,image/webp" required><small>PNG、JPG 或 WebP。用图片参考构图、颜色、字体感觉；不会读取 PSD / Canva 的原生图层。</small></label>
+    <label class="wide">模板使用说明<textarea id="template-instructions" rows="3" maxlength="2000" placeholder="例如：人物在右侧，标题在左侧，保留频道颜色；旧标题需要替换。"></textarea></label>
+    <label class="check wide"><input id="make-default" type="checkbox" checked>设为这个频道的默认模板</label>
+    <div class="wide"><button class="primary" type="submit">保存频道模板</button><small>保存模板不会开始生成。</small></div>
+  </form></details></section>
+  <section id="video-section" class="panel" hidden><div class="section-head"><h2>批准视频，制作封面</h2><span class="badge">第一步审核</span></div>
+    <p>先检查这个视频，再确认本次封面文字。生成后的完整版本会回到 HQ，等你最后一次 OK。</p>
+    <form id="video-form" class="form-grid">
+      <label class="wide">本次视频<select id="video"></select></label><video id="player" class="wide" controls playsinline preload="metadata"></video>
+      <label>封面标题<input id="title" required maxlength="180" placeholder="请输入这次封面使用的准确文字"></label>
+      <label>副标题（可选）<input id="subtitle" maxlength="180"></label>
+      <label class="wide">本次使用的模板<select id="video-template" required></select><small>预选本频道默认模板。本次更换不会修改频道默认值。</small></label>
+      <label class="wide">本次补充要求（可选）<textarea id="video-instructions" maxlength="2000" rows="2"></textarea></label>
+      <div class="wide"><button id="approve" class="primary" type="submit">批准这个视频，并用 Codex 生成 4 张封面</button></div>
+    </form><div id="jobs"></div>
+  </section>
+  <footer>最终文件在 Agent HQ 的「Waiting for your OK」审核。视频批准只启动封面制作；不会自动发布。</footer>
+</main><script src="/thumbnail-studio.js"></script></body></html>

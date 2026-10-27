@@ -36,6 +36,7 @@ import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
+from thumbnail_design import ThumbnailDesignBridge  # noqa: E402
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
 HOST = os.environ.get("HQ_HOST", "127.0.0.1")
@@ -57,7 +58,7 @@ EVENTS = os.path.join(HERE, "events.jsonl")
 TASKS = os.path.join(HERE, "tasks.json")
 TEAMS_FILE = os.path.join(HERE, "teams.json")
 MCP_FILE = os.path.join(ROOT, ".mcp.json")
-STATIC = {"/hud.js", "/hud.css", "/office3d.js"}
+STATIC = {"/hud.js", "/hud.css", "/office3d.js", "/thumbnail-studio.html", "/thumbnail-studio.js", "/thumbnail-studio.css"}
 STATUSES = ("todo", "doing", "review", "done")
 KINDS = ("task", "approval", "post", "meeting")
 SCHEDULED_KINDS = ("post", "meeting")
@@ -323,10 +324,23 @@ def set_status(t, status):
 
 
 def approve_folder(name):
+    """Serialize final approval against new thumbnail revisions."""
+    bridge = globals().get("thumbnail_design")
+    if bridge:
+        with bridge.lock:
+            return _approve_folder(name)
+    return _approve_folder(name)
+
+
+def _approve_folder(name):
     """Move out/<name> to approved/<name>. Returns (http code, payload)."""
     src = safe_join(os.path.join(ROOT, "out"), name) if name else None
     if not name or not SAFE_NAME.match(name) or not src or not os.path.isdir(src):
         return 404, {"error": "no such work folder"}
+    if "thumbnail_design" in globals():
+        error = thumbnail_design.guard_approval(name)
+        if error:
+            return 409, {"error": error, "thumbnailWorkflow": True}
     os.makedirs(os.path.join(ROOT, "approved"), exist_ok=True)
     dst = os.path.join(ROOT, "approved", name)
     if os.path.exists(dst):
@@ -442,6 +456,15 @@ def accounts_action(body, redirect):
 
 
 def task_action(body):
+    """Use the same bridge→task lock order as thumbnail delivery callbacks."""
+    bridge = globals().get("thumbnail_design")
+    if bridge:
+        with bridge.lock:
+            return _task_action(body)
+    return _task_action(body)
+
+
+def _task_action(body):
     """POST /api/tasks: add, move, remove, approve, progress. Returns (http code, payload)."""
     action = body.get("action")
     with TASK_LOCK:
@@ -457,6 +480,12 @@ def task_action(body):
             db["tasks"].append(normalize_task(new)); save_tasks(db)
             return 201, {"added": new}
         if action == "move" and task and body.get("status") in STATUSES:
+            if body.get("status") == "done":
+                match = re.search(r"out:([^\s,;]+)", task.get("note") or "")
+                if match and "thumbnail_design" in globals():
+                    reason = thumbnail_design.guard_approval(match[1])
+                    if reason or match[1].startswith("thumbnail-final-"):
+                        return 409, {"error": reason or "Use the final approval control for this thumbnail package."}
             set_status(task, body["status"]); save_tasks(db)
             return 200, {"moved": task}
         if action == "remove":
@@ -469,12 +498,19 @@ def task_action(body):
             m = re.search(r"out:([^\s,;]+)", task.get("note") or "")
             if m:                                   # the task waits on a work folder: approve that too
                 name = m[1].strip("/")
+                if name.startswith("thumbnail-final-") and task.get("status") == "done" and os.path.isdir(os.path.join(ROOT, "approved", name)):
+                    return 200, {"approved": task, "moved": name, "alreadyApproved": True}
                 code, res = approve_folder(name)
+                if res.get("thumbnailWorkflow") or (name.startswith("thumbnail-final-") and code != 200):
+                    return code, res
                 if code in (200, 409):
                     moved = name
                 else:
                     warning = f"{res['error']}: out/{name}"
-            set_status(task, "done"); save_tasks(db)
+            set_status(task, "done")
+            if moved and moved.startswith("thumbnail-final-"):
+                thumbnail_design.complete_source(task, db, set_status)
+            save_tasks(db)
             out = {"approved": task, "moved": moved}
             if warning:
                 out["warning"] = warning
@@ -1110,6 +1146,7 @@ desk = Desk()
 # after-approval follow-ups (hq/followups.py): approved/<name>/followups.json hands the work on to the chief of staff
 followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "add", **task})[1]["added"])
 sermon_design = SermonDesignBridge(ROOT, task_action, load_tasks, notify=lambda: notifier.refresh())
+thumbnail_design = ThumbnailDesignBridge(ROOT, sermon_design, channels, task_action, load_tasks, notify=lambda: notifier.refresh())
 
 
 def on_approved(name):
@@ -1297,7 +1334,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.guard():
             return
-        if sermon_design.handle(self):
+        if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
         if path == "/api/status":
             return self.send_json(status_payload())
@@ -1371,7 +1408,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/login", [self.cookie_header("", 0)])
         if not self.guard():
             return
-        if sermon_design.handle(self):
+        if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
         if path == "/api/run":
             prompt = (self.read_json().get("prompt") or "")
@@ -1409,7 +1446,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(payload, code)
         if path == "/api/approve":
             name = self.read_json().get("name") or ""
-            code, payload = approve_folder(name if isinstance(name, str) else "")
+            if isinstance(name, str) and name.startswith("thumbnail-final-"):
+                marker = "out:" + name
+                task = next((t for t in load_tasks().get("tasks", []) if marker in (t.get("note") or "").split()), None)
+                if not task:
+                    return self.send_json({"error": "The thumbnail final package has no native review task. Reopen its delivery status before approval."}, 409)
+                code, payload = task_action({"action": "approve", "id": task["id"]})
+            else:
+                code, payload = approve_folder(name if isinstance(name, str) else "")
             return self.send_json(payload, code)
         return self.send_json({"error": "not found"}, 404)
 
@@ -1417,7 +1461,7 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlparse(self.path).path)
         if not self.guard():
             return
-        if sermon_design.handle(self):
+        if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
         m = re.match(r"^/api/inbox/(clips|radar|stats|messages)/([^/]+)$", path)
         if not m:
@@ -1453,7 +1497,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         if not self.guard():
             return
-        if sermon_design.handle(self):
+        if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
         self.send_response(404)
         self.send_header("Content-Length", "0")
@@ -1480,6 +1524,7 @@ def main():
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         sermon_design.resume_pending()       # only read-only watches for previously accepted native jobs
+        thumbnail_design.resume_pending()    # only observes already approved thumbnail requests
     except Exception:
         print("Sermon delivery ledger needs attention; no generation was retried.", flush=True)
     followups.start()                    # also resends a follow-up queued before a restart

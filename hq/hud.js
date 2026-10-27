@@ -703,7 +703,7 @@
       const today = tasks.filter((x) => isToday(x.created) || isToday(x.updated) || isToday(x.done_at) || x.status === "doing" || x.status === "review").length;
       const tools = t.tools || [], live = tools.filter((x) => x.status === "connected").length;
       const skills = (t.skills || []).map((s) => ({ ...s, ...skillState(t, s, run) })), par = skills.filter((s) => s.on).length;
-      const designTools = t.key === "creative" ? `<div class="sec"><span>Design Studio / 设计</span><span class="cnt">4 separate options</span></div><div class="hint">中文 + English titles, add a reference, then generate four designs. Finished files return here for your OK.</div><div class="row" style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px"><button class="btn blue" type="button" data-sermon-studio="title">✦ Create sermon poster / 讲道海报</button><button class="btn" type="button" data-sermon-studio="xhs">XHS Sermon Recap Pro</button></div>` : "";
+      const designTools = t.key === "creative" ? `<div class="sec"><span>Design Studio / 设计</span><span class="cnt">4 separate options</span></div><div class="hint">中文 + English titles, add a reference, then generate four designs. Finished files return here for your OK.</div><div class="row" style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px"><button class="btn blue" type="button" data-sermon-studio="title">✦ Create sermon poster / 讲道海报</button><button class="btn" type="button" data-sermon-studio="xhs">XHS Sermon Recap Pro</button><a class="btn" href="/thumbnail-studio.html">Channel thumbnails / 频道封面</a></div>` : "";
       body = designTools + `<div class="tiles">
           <div class="tile"><div class="k">Tasks today</div><div class="v">${today}</div>${sparkline(series(t.key, "up", today), "#7d7dbd")}</div>
           <div class="tile"><div class="k">Running</div><div class="v">${runningN}</div>${sparkline(series(t.key, "flat", runningN), "#349282")}</div>
@@ -753,7 +753,7 @@
     for (const task of tasks) {
       if (task.status !== "review") continue;
       for (const match of String(task.note || "").matchAll(/(?:^|[\s,;])out:([^\s,;]+)/g)) {
-        if (/^sermon-studio-[A-Za-z0-9][A-Za-z0-9_-]{0,99}-r\d+-a\d+$/.test(match[1])) linked.add(match[1]);
+        if (/^(?:sermon-studio-[A-Za-z0-9][A-Za-z0-9_-]{0,99}-r\d+-a\d+|thumbnail-final-[A-Za-z0-9_-]+)$/.test(match[1])) linked.add(match[1]);
       }
     }
     return Array.from(names).filter(name => !linked.has(name));
@@ -1272,7 +1272,7 @@
         <div class="pub-h">Raw footage folder <span>${cur.drive ? (cur.drive_ok ? "watching: new videos show up as New footage" : "this computer can't find that folder right now") : "not set"}</span></div>
         <input class="pub-in" id="ch-drive" placeholder="G:\\My Drive\\${esc(name(cur))} raw" value="${esc(cur.drive || "")}" autocomplete="off">
         <div class="acc-row"><button class="btn primary" data-chan-save="update" type="button">${busy("ch-update")}Save</button>${cur.drive ? `<button class="btn" data-chan-save="scan" type="button">${busy("ch-scan")}Check now</button>` : ""}</div>
-        <details class="acc-help"><summary>How to use Google Drive for raw footage</summary><ol>
+        <div class="acc-row"><a class="btn" href="/thumbnail-studio.html?channel=${encodeURIComponent(rv.ch)}">频道默认封面模板 / Thumbnail templates</a></div><details class="acc-help"><summary>How to use Google Drive for raw footage</summary><ol>
           <li>On this computer install <b>Google Drive for desktop</b> (google.com/drive/download) and sign in with the Google account that has the footage.</li>
           <li>In Google Drive make a folder for this channel's raw videos, for example <b>${esc(name(cur))} raw</b>.</li>
           <li>Open File Explorer → <b>Google Drive (G:)</b> → My Drive → that folder. Click the address bar, copy the path, paste it above and press Save.</li>
@@ -1432,8 +1432,12 @@
     const others = files.filter((f) => !vids.includes(f) && !imgs.includes(f) && !shown.has(f.path));
     const area = rv.folder ? rv.folder.split("/")[0] : "", canApprove = area === "out" || (task && task.status === "review");
     const studioProject = /^(?:out|approved)\/sermon-studio-([A-Za-z0-9][A-Za-z0-9_-]{0,99})-r\d+-a\d+$/.exec(rv.folder || "");
+    const thumbnailRequest = /^out\/thumbnail-final-([a-zA-Z0-9_-]+)$/.exec(rv.folder || "");
+    const thumbnailEdit = thumbnailRequest ? `<a class="btn" href="/thumbnail-studio.html?job=${encodeURIComponent(thumbnailRequest[1])}">修改 Codex 封面 / New version</a>` : "";
     const studioEdit = studioProject ? `<a class="btn" href="/sermon-studio.html?project=${encodeURIComponent(studioProject[1])}">Edit artwork in Design Studio ↗</a>` : "";
     const v = vids[rv.vid] || vids[0], poster = imgs.find((i) => /cover/i.test(i.name)) || imgs[0];
+    const thumbnailStage = area === "out" && vids.length > 0 && !/^out\/thumbnail-final-/.test(rv.folder || "");
+    const thumbnailLink = "/thumbnail-studio.html?" + new URLSearchParams({ folder: rv.folder || "", taskId: rv.taskId || "" });
     let html = `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
         <div class="rv-title"><div class="t">${esc(title)}</div><div class="s">${tagPill(task ? task.team : "Creative")}<span>${area === "approved" ? "approved" : task && task.status !== "review" ? esc(task.status) : "waiting for your OK"}${files.length ? ` · ${files.length} file${files.length === 1 ? "" : "s"}` : ""}</span></div></div></div>
@@ -1452,7 +1456,7 @@
       return `<div><button class="rv-img" style="width:100%" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="${esc(prettyName(i.path))}" style="aspect-ratio:${ratio};object-fit:contain" loading="lazy"><span>${esc(prettyName(i.path))}</span></button><div style="display:flex;flex-wrap:wrap;gap:12px;padding:2px 4px">${options.map(file => `<a class="rv-dl" href="${esc(file.url)}" download="${esc(file.name)}">↓ ${/\.png$/i.test(file.path) ? "PNG" : "JPG"}</a>`).join("")}</div></div>`;
     }).join("")}</div></div>`;
     else if (artwork.native && !loading && files.length) html += '<div class="rv-sec"><div class="rv-empty">No finished artwork was found in this delivery. Supporting files are available below.</div></div>';
-    html += pubSection();
+    if (!thumbnailStage) html += pubSection();
     if (post) {
       // with the posting overview above, only what you post by hand is left here (TikTok, the pinned comment)
       const secs = postSections(post.text).map((x, i) => ({ ...x, i })).filter((x) => !/^plan\b/i.test(x.title) && !(rv.pub && /^(captions?|options?|youtube|instagram|facebook)\b/i.test(x.title)));
@@ -1472,10 +1476,11 @@
     if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence" required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
     else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
     else {
-      const n = rv.ready === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
+      const n = thumbnailStage || rv.ready === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
       const verb = rv.whenOn ? "schedule" : "post";
       const postBtn = n ? `<button class="btn primary" data-rv-approve="post" type="button">${area === "approved" ? (rv.whenOn ? "Schedule" : "Post now") : `Approve &amp; ${verb}`} (${n})</button>` : "";
-      html += `<div class="rv-actions">${canApprove ? `${studioEdit || '<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button>'}<button class="btn ${n ? "" : "primary"}" data-rv-approve type="button">Approve${n ? " only" : ""}</button>${postBtn}`
+      if (thumbnailStage) html += `<div class="rv-actions"><button class="btn" data-rv-mode="changes" type="button">Ask for video changes</button><a class="btn primary" href="${esc(thumbnailLink)}">批准视频 → Codex 封面</a></div>`;
+      else html += `<div class="rv-actions">${canApprove ? `${thumbnailEdit || studioEdit || '<button class="btn" data-rv-mode="changes" type="button">Ask for changes</button>'}<button class="btn ${n ? "" : "primary"}" data-rv-approve type="button">Approve${n ? " only" : ""}</button>${postBtn}`
         : area === "approved" && rv.pub ? `<button class="btn" data-rv-close type="button">Close</button>${busyPub ? '<button class="btn" disabled type="button"><span class="spin"></span> Posting…</button>' : postBtn}` : `<button class="btn" data-rv-close type="button">Close</button>`}</div>`;
     }
     html += "</div>";
