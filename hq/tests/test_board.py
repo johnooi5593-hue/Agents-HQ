@@ -215,5 +215,34 @@ class BoardTests(unittest.TestCase):
         self.assertTrue(all(r.id in desks.runs for r in (a, b, same, c, lead)))
 
 
+    def test_the_phone_hears_about_questions_and_work_ready_for_ok(self):
+        tree = ast.parse(SERVER.read_text(encoding="utf-8"))
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Notifier")
+        sent = []
+        env = {**self.env, "agents": lambda: {"agents": []}, "events": lambda: {"events": [], "total": 0}, "iso_ms": lambda s: 0,
+               "is_today": lambda s: False, "SCHEDULED_KINDS": ("post", "meeting"), "team_key": lambda team: str(team).lower(),
+               "push": type("P", (), {"send_later": staticmethod(lambda *a: sent.append(a))})()}
+        exec(compile(ast.Module(body=[cls], type_ignores=[]), "notifier", "exec"), env)
+        n = env["Notifier"]()
+        old = self.add(title="Old review", status="review")
+        n.refresh()
+        self.assertEqual(sent, [])                                              # HQ starting: no old news on the phone
+        old["status"] = "done"
+        t = self.add(title="Subtitle fix", status="doing")
+        n.refresh()
+        t["status"] = "review"
+        n.refresh()
+        self.assertEqual(sent[-1][0], "Ready for your OK")
+        self.assertEqual(sent[-1][2], f"/?task={t['id']}")
+        q = self.add(title="Audio fix", status="doing")
+        n.refresh()
+        q["asks"], q["chat"] = True, [{"from": "lead", "text": "Should I also fix clip 2?"}]
+        n.refresh()
+        self.assertEqual((sent[-1][0], sent[-1][1]), ("Lead asks you · Audio fix", "Should I also fix clip 2?"))
+        count = len(sent)
+        n.refresh()
+        self.assertEqual(len(sent), count)                                      # once, not every refresh
+
+
 if __name__ == "__main__":
     unittest.main()

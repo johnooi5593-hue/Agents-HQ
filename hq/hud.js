@@ -1717,6 +1717,7 @@
       if (b.id === "user-btn") { const m = $("#user-dropdown"); const was = m.hidden; closeMenus(); m.hidden = !was; return; }
       if (b.id === "menu-overview") { openPanel("office"); goOverview(); return; }
       if (b.id === "menu-accounts") { openReview({ accounts: true }); return; }
+      if (b.id === "menu-push") { phoneNotifications(); return; }
       if (b.id === "menu-lead") { setLead(true); $("#lead-input").focus(); return; }
       if (b.id === "menu-life") { setLife(!state.life); return; }
       if (b.id === "bell") { const was = $("#notif-list").hidden; closeMenus(); toggleBell(was); return; }
@@ -1842,6 +1843,32 @@
     wireMinimap();
   }
 
+  // ---------- the phone app: the worker (the "can't reach your PC" page, notifications) and turning notifications on ----------
+  function registerApp() {
+    if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => { /* a plain http address: no app extras */ });
+  }
+  const standalone = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+  const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const keyBytes = (b64) => { const s = atob(b64.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (b64.length % 4)) % 4)); return Uint8Array.from(s, (c) => c.charCodeAt(0)); };
+  async function phoneNotifications() {
+    const say = (body, bad) => toast("chief", "Phone notifications", body, { bad: !!bad });
+    if (!window.isSecureContext) return say("Notifications need the secure link. On the PC: Agents HQ tray icon → Phone access → turn on Secure link (https). Then open the https address it shows on this phone, add it to the home screen, and tap this again.", true);
+    if (isIOS() && !standalone()) return say("On iPhone, first add Agents HQ to the home screen (Share → Add to Home Screen), open it from that icon, then tap this again.", true);
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return say("This browser can't show notifications. On iPhone use Safari (iOS 16.4 or newer); on Android use Chrome.", true);
+    const allowed = await Notification.requestPermission();      // first, while the tap still counts (iPhone needs that)
+    if (allowed !== "granted") return say("Notifications are blocked for Agents HQ. Allow them in the phone's Settings → Notifications → Agents HQ (Android: Chrome → site settings), then tap this again.", true);
+    try {
+      const info = await getJSON("/api/push");
+      if (!info.available || !info.key) return say("The PC can't send notifications: its Python is missing the 'cryptography' package.", true);
+      const reg = await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(info.key) });
+      await postJSON("/api/push", { action: "subscribe", subscription: sub.toJSON(), device: (isIOS() ? "iPhone" : /Android/.test(navigator.userAgent) ? "Android" : "Browser") });
+      const test = await postJSON("/api/push", { action: "test" }).catch(() => null);
+      say(test && test.sent ? "On for this phone. A test notification is on its way. You'll get one when the Lead asks you something or work is ready for your OK." : "On for this phone, but the test didn't arrive. Check that the PC is online, then tap this again.", !(test && test.sent));
+    } catch (e) { say("Couldn't turn notifications on: " + (e.message || e), true); }
+  }
+
   // ---------- init ----------
   function init() {
     $("#user-name").textContent = "Owner"; $("#hud").dataset.view = "office";
@@ -1850,8 +1877,12 @@
     refresh().then(() => {
       pollNotifs();
       const requestedTask = new URLSearchParams(window.location.search).get("task");
-      if (requestedTask && (state.status?.tasks || []).some(t => t.id === requestedTask)) { openPanel("tasks"); openReview({ taskId: requestedTask }); }
+      const asked = (state.status?.tasks || []).find((t) => t.id === requestedTask);
+      if (asked && (asked.asks || !folderOfTask(asked))) { openPanel("tasks"); state.openDetail = asked.id; renderBoard(); }   // a question from the lead: open its chat
+      else if (asked) { openPanel("tasks"); openReview({ taskId: requestedTask }); }
+      if (requestedTask) history.replaceState(null, "", "/");                        // a reload doesn't open it again
     }); loadBrain();
+    registerApp();
     setInterval(refresh, 4000);
     setInterval(pollNotifs, 5000);
     setInterval(pollEvents, 2000);

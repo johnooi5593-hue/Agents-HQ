@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -285,7 +286,8 @@ class ThumbnailTests(unittest.TestCase):
                "TASK_LOCK": threading.Lock(), "load_tasks": lambda: {"tasks": self.tasks}, "save_tasks": lambda db: None,
                "set_status": lambda task, status: task.update(status=status), "thumbnail_design": self.bridge,
                "sermon_design": mock.Mock(handle=lambda h: False), "on_approved": lambda name: None,
-               "safe_join": lambda base, name: os.path.join(base, name), "STATUSES": ("todo", "doing", "review", "done")}
+               "safe_join": lambda base, name: os.path.join(base, name), "STATUSES": ("todo", "doing", "review", "done"),
+               "time": time, "LAST_ACTION": [0]}
         exec(compile(ast.Module(body=funcs, type_ignores=[]), "server-approval-fixture", "exec"), env)
         return env
 

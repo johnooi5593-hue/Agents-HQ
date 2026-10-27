@@ -35,6 +35,7 @@ from status import CLIP_EXT, brain_entities, brain_notes, collect, files  # noqa
 import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
+import webpush  # noqa: E402  (phone notifications for the installed app)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
 from thumbnail_design import ThumbnailDesignBridge  # noqa: E402
 
@@ -59,6 +60,10 @@ TASKS = os.path.join(HERE, "tasks.json")
 TEAMS_FILE = os.path.join(HERE, "teams.json")
 MCP_FILE = os.path.join(ROOT, ".mcp.json")
 STATIC = {"/hud.js", "/hud.css", "/office3d.js", "/thumbnail-studio.html", "/thumbnail-studio.js", "/thumbnail-studio.css"}
+PWA_FILES = {"/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
+             "/offline.html": ("offline.html", "text/html; charset=utf-8"), "/icons/icon-192.png": ("icon-192.png", "image/png"),
+             "/icons/icon-512.png": ("icon-512.png", "image/png"), "/icons/icon-maskable-512.png": ("icon-maskable-512.png", "image/png"),
+             "/icons/apple-touch-icon.png": ("apple-touch-icon.png", "image/png")}
 STATUSES = ("todo", "doing", "review", "done", "cancelled")   # cancelled: dropped by the owner, kept so it can come back
 KINDS = ("task", "approval", "post", "meeting")
 SCHEDULED_KINDS = ("post", "meeting")
@@ -919,6 +924,7 @@ class Notifier:
         self.offset, self.last_ts = 0, 0        # how far into events.jsonl we have read, and the newest ts seen
         self.bursts = {}                         # team -> {"last": ts, "agents": [names]} of starts not yet reported
         self.board = {}                          # task id -> (status, kind, date, time) last seen
+        self.asked = {}                          # task id -> the lead was waiting on the owner's answer, last seen
 
     def _item(self, fresh, team, body, kind, ts, **extra):
         team = team or "Office"
@@ -960,7 +966,8 @@ class Notifier:
                 if now - b["last"] > self.GAP_MS:
                     self._close(team, b, fresh); del self.bursts[team]
             # the board
-            today, seen = datetime.date.today().isoformat(), set()
+            today, seen, phone = datetime.date.today().isoformat(), set(), []     # phone: what also goes to the owner's phone
+            seeded = self.seeded
             for t in load_tasks()["tasks"]:
                 tid = t.get("id"); seen.add(tid)
                 cur, prev = (t["status"], t["kind"], t.get("date"), t.get("time")), self.board.get(tid)
@@ -968,6 +975,7 @@ class Notifier:
                 team, title = t.get("team") or "Office", t.get("title", "")
                 when = t["time"] or t["date"]
                 if not self.seeded:                  # what is still worth a bell when the server starts
+                    self.asked[tid] = bool(t.get("asks"))
                     if cur[0] == "review":
                         self._item(fresh, team, f"{title} ready for your OK", "waiting", iso_ms(t.get("updated")), task=tid)
                     elif cur[0] == "done" and is_today(t.get("done_at")):
@@ -975,9 +983,16 @@ class Notifier:
                     if cur[1] in SCHEDULED_KINDS and cur[2] and cur[2] >= today and cur[0] != "cancelled":
                         self._item(fresh, team, f"{title} scheduled · {when}", "scheduled", iso_ms(t.get("updated")), task=tid)
                     continue
+                asks, was = bool(t.get("asks")) and cur[0] in ("todo", "doing", "review"), self.asked.get(tid)
+                self.asked[tid] = asks
+                if asks and not was:
+                    last = next((m.get("text") for m in reversed(t.get("chat") or []) if m.get("from") == "lead"), "")
+                    phone.append(("Lead asks you · " + title[:60], re.sub(r"\s+", " ", last or "Open the task to answer.")[:200], tid))
                 if prev is None or prev[0] != cur[0]:
                     if cur[0] == "review":
                         self._item(fresh, team, f"{title} ready for your OK", "waiting", iso_ms(t.get("updated")), task=tid)
+                        if not asks:
+                            phone.append(("Ready for your OK", f"{title} · {team}", tid))
                     elif cur[0] == "done":
                         self._item(fresh, team, f"{title} done", "done", iso_ms(t.get("done_at") or t.get("updated")), task=tid)
                 if (prev is None or prev[1:] != cur[1:]) and cur[1] in SCHEDULED_KINDS and cur[2] and cur[0] != "cancelled":
@@ -988,7 +1003,11 @@ class Notifier:
                 fresh.sort(key=lambda i: i["ts"]); self.seeded = True
             for i in fresh:
                 i["id"] = len(self.items) + 1; self.items.append(i)
-            return len(self.items)
+            total = len(self.items)
+        if seeded:                                   # never a burst of old news when HQ starts
+            for title, body, tid in phone:
+                push.send_later(title, body, f"/?task={tid}", f"task-{tid}")
+        return total
 
     def payload(self, after=0):
         total = self.refresh()
@@ -996,6 +1015,7 @@ class Notifier:
             return {"items": self.items[after:], "offset": after, "total": total}
 
 
+push = webpush.Push(ROOT)
 notifier = Notifier()
 
 
@@ -1093,7 +1113,7 @@ def auto_update():
     now = int(time.time())
     if os.environ.get("HQ_UPDATE_NOTE"):                  # restarted into the version just pulled: keep that result
         try:
-            UPDATE.update(json.loads(os.environ["HQ_UPDATE_NOTE"]), changed=False)
+            UPDATE.update(json.loads(os.environ.pop("HQ_UPDATE_NOTE")), changed=False)
             return
         except ValueError:
             pass
@@ -1644,6 +1664,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 left -= len(chunk)
 
+    def send_typed(self, full, ctype):
+        """A small public file with its exact type (the app's worker must be served as JavaScript)."""
+        with open(full, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_static(self, full):
         return self.send_file(full) if full and os.path.isfile(full) else self.send_json({"error": "not found"}, 404)
 
@@ -1653,6 +1684,9 @@ class Handler(BaseHTTPRequestHandler):
         path, qs = unquote(url.path), parse_qs(url.query)
         if path == "/login":
             return self.redirect("/") if not PASSWORD or self.authed() else self.send_file(os.path.join(HERE, "login.html"))
+        if path in PWA_FILES:                              # the phone app's description, icons, offline page and worker:
+            name, ctype = PWA_FILES[path]                  # public, since a phone fetches them before it logs in
+            return self.send_typed(os.path.join(HERE, "pwa", name), ctype)
         if path in ("/", "/index.html"):
             return self.guard(page=True) and self.send_file(os.path.join(HERE, "app.html"))
         if path == "/oauth/youtube":                       # Google sends the browser back here; the one-time state is the check
@@ -1688,6 +1722,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(load_tasks())
         if path == "/api/notifications":
             return self.send_json(notifier.payload(qs_int(qs, "after")))
+        if path == "/api/push":                            # the office's public key, for a phone to subscribe
+            return self.send_json({"available": webpush.AVAILABLE, "key": push.public_key(), "phones": push.count()})
         if path == "/api/calendar":
             cal = calendar_payload(qs.get("month", [""])[0])
             return self.send_json(cal) if cal else self.send_json({"error": "month must be YYYY-MM"}, 400)
@@ -1748,6 +1784,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/login", [self.cookie_header("", 0)])
         if not self.guard():
             return
+        LAST_ACTION[0] = time.time()                       # the owner is using HQ: an update restart waits
         if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
         if path == "/api/run":
@@ -1764,6 +1801,20 @@ class Handler(BaseHTTPRequestHandler):
             if code < 400:
                 notifier.refresh()               # so the bell rings on the next poll, not the one after
             return self.send_json(payload, code)
+        if path == "/api/push":                  # this phone turns notifications on or off, or asks for a test
+            body = self.read_json()
+            try:
+                if body.get("action") == "subscribe":
+                    return self.send_json({"phones": push.subscribe(body.get("subscription"), body.get("device"))})
+                if body.get("action") == "unsubscribe":
+                    push.unsubscribe(str((body.get("subscription") or {}).get("endpoint") or ""))
+                    return self.send_json({"phones": push.count()})
+                if body.get("action") == "test":
+                    sent = push.send("Agents HQ", "Notifications work. You'll hear from the office here when something needs you.", "/", "hq-test")
+                    return self.send_json({"sent": sent}, 200 if sent else 502)
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            return self.send_json({"error": "action: subscribe, unsubscribe or test"}, 400)
         if path == "/api/accounts":
             code, payload = accounts_action(self.read_json(), f"http://127.0.0.1:{self.server.server_address[1]}/oauth/youtube")
             return self.send_json(payload, code)
@@ -1844,21 +1895,87 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def restart_into_update():
-    """The update changed the code on disk, but this process already loaded the old server: start the new one. On
-    Windows the new engine runs as this one's child (the desktop app stops the whole tree); elsewhere it replaces it."""
-    env = dict(os.environ, HQ_UPDATE_NOTE=json.dumps({k: v for k, v in UPDATE.items() if k != "changed"}))
-    args = [sys.executable] + sys.argv
-    print("Agents HQ: starting the updated version", flush=True)
-    if os.name == "nt":
-        sys.exit(subprocess.call(args, env=env))
-    os.execve(sys.executable, args, env)
+RESTART_CODE = 75                                 # the office's exit code for "a newer version is in: start me again"
+UPDATE_EVERY = float(os.environ.get("HQ_UPDATE_EVERY_MIN", "60")) * 60   # how often a running HQ looks for a newer version
+QUIET_FOR = float(os.environ.get("HQ_QUIET_SEC", "120"))   # seconds without a click or message from the owner before it restarts
+RESTART = threading.Event()
+LAST_ACTION = [time.time()]                       # the owner's last POST (a click, a message): never restart under them
+
+
+def supervise():
+    """The process the desktop app (or Open Agents HQ) starts: it updates the folder from GitHub, then runs the office as
+    its child, and starts it again whenever the office exits with RESTART_CODE (a newer version arrived while it was
+    quiet). The office's own threads (posting schedule, Drive watcher, follow-ups) live and die with the child, so an
+    update never leaves an old copy of them running. The cookie secret is kept, so phones stay logged in."""
+    first = True
+    while True:
+        auto_update()
+        env = dict(os.environ, HQ_CHILD="1", HQ_SECRET=SECRET.decode(),
+                   HQ_UPDATE_NOTE=json.dumps({k: v for k, v in UPDATE.items() if k != "changed"}))
+        if not first:
+            env["HQ_RESTARTED"] = "1"                 # no second browser tab on a restart
+            print("Agents HQ: starting the updated version", flush=True)
+        try:
+            code = subprocess.call([sys.executable] + sys.argv, env=env)
+        except KeyboardInterrupt:
+            print("\nAgents HQ closed.")
+            return 0
+        if code != RESTART_CODE:
+            return code
+        first = False
+
+
+def office_quiet():
+    """No lead job running or waiting, nothing being posted, and the owner hasn't clicked anything for a while."""
+    return not desk.state()["busy"] and not publisher.busy and time.time() - LAST_ACTION[0] > QUIET_FOR
+
+
+def newer_version_waiting():
+    if git("fetch", "--quiet").returncode != 0 or git("rev-parse", "--abbrev-ref", "@{u}").returncode != 0:
+        return False
+    return git("merge-base", "--is-ancestor", "@{u}", "HEAD").returncode != 0
+
+
+def watch_for_updates(httpd):
+    """While HQ runs: look for a newer version on GitHub every UPDATE_EVERY; when there is one, wait for a quiet moment
+    (checked every 2 minutes), then stop serving: the office exits with RESTART_CODE and supervise() updates and starts
+    it again. Phones show "can't reach your PC" for a few seconds and come back by themselves."""
+    if os.environ.get("HQ_NO_UPDATE") or not os.environ.get("HQ_CHILD"):
+        return
+
+    def loop():
+        time.sleep(min(600, UPDATE_EVERY))
+        while True:
+            waiting = False
+            try:
+                waiting = newer_version_waiting()
+                if waiting and office_quiet():
+                    print("Agents HQ: a newer version is ready and the office is quiet, restarting into it", flush=True)
+                    RESTART.set()
+                    httpd.shutdown()
+                    return
+            except Exception as e:                    # no internet, git busy: try again later
+                sys.stderr.write(f"update check: {e}" + chr(10))
+            time.sleep(120 if waiting else UPDATE_EVERY)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def keep_notifying():
+    """Phone notifications go out even when no screen is open (the bell is normally refreshed by the app's polls)."""
+    def loop():
+        while True:
+            time.sleep(20)
+            try:
+                notifier.refresh()
+            except Exception as e:
+                sys.stderr.write(f"notifications: {e}" + chr(10))
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def main():
-    auto_update()
-    if UPDATE.get("changed"):
-        restart_into_update()
+    if not os.environ.get("HQ_CHILD"):
+        sys.exit(supervise())
+    auto_update()                                     # in the office: only reads the launcher's result (HQ_UPDATE_NOTE)
     if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
@@ -1872,12 +1989,18 @@ def main():
     channels.run_watcher()               # new videos in each channel's Google Drive folder become "New footage" tasks
     url = f"http://localhost:{PORT}"
     print(f"Agents HQ is open at {url}   (Ctrl+C to close)" + ("   login required" if PASSWORD else ""))
-    if "--no-browser" not in sys.argv:
+    if "--no-browser" not in sys.argv and not os.environ.get("HQ_RESTARTED"):
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()
+    watch_for_updates(httpd)
+    keep_notifying()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nAgents HQ closed.")
+        return
+    httpd.server_close()
+    if RESTART.is_set():
+        sys.exit(RESTART_CODE)
 
 
 if __name__ == "__main__":
