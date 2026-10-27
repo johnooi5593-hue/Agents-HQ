@@ -649,7 +649,7 @@
   // A task whose video, thumbnail and caption are all ready reads "Final · <clip>" (the server checks the folder).
   function taskTitle(t) {
     if (!t) return "";
-    return t.final ? "Final · " + String(t.title).replace(/^(final|thumbnails?|covers?|captions?|post copy|copy|edit|video|clip|posting)\s*[·:\-–|]\s*/i, "") : t.title;
+    return t.final ? "Final · " + String(t.title).replace(/^(final|review|thumbnails?|covers?|captions?|post copy|copy|edit|video|clip|posting)\s*[·:\-–|]\s*/i, "") : t.title;
   }
   function taskRow(t) {                                    // one board row; the section decides glyph and control
     let glyph, meta, act, cls = "";

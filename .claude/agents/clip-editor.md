@@ -30,6 +30,8 @@ Follow the **reel** skill step by step for the edit, then the **pixel** skill fo
 
 **One of each.** Deliver one finished captioned video and one `cover.jpg` per clip (per topic for a long talk), in one caption style: the one the brand rules or the request name. Do not render the same clip in a second caption style or make extra covers "to choose from" unless the lead says the owner asked for options. After the delivery checklist passes, move working files the owner doesn't post (the clean vertical clip, previews) into a `work/` folder next to them (`out/<name>/work/`, or `out/<name>/<topic>/work/` for a topic), so each folder the owner reviews holds just the video, the cover and the notes.
 
+**Cover from Codex.** When your prompt says "Cover: Codex makes it", skip the **pixel** cover: deliver the video and notes with no `cover.jpg`, and write "Cover: Codex, after the owner approves the video" in `notes.md`. That channel's four covers are made from its template after the owner's OK and come back as a separate Final task.
+
 When you fix a flagged clip, run only the steps the fix needs, then look at the result again.
 
 Report to the lead in three short lines: the folder, the edit length, the title. Never upload, post or delete anything.
