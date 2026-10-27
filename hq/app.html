@@ -121,6 +121,31 @@
   <input type="file" id="picker" multiple hidden>
 </div>
 
+<script>
+/* If the office page breaks while it starts (a script that did not load, an error in the first seconds), say so on
+   screen with what went wrong and a Reload button, instead of leaving a page that looks open but does nothing. */
+(function () {
+  var shown = null, t0 = Date.now();
+  function show(msg) {
+    if (Date.now() - t0 > 20000) return;                       // later errors are not a broken start
+    msg = String(msg || "unknown error").slice(0, 300);
+    if (!shown) {
+      shown = document.createElement("div");
+      shown.setAttribute("role", "alert");
+      shown.setAttribute("style", "position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:2147483647;max-width:min(560px,calc(100vw - 32px));padding:14px 16px;border-radius:12px;background:#2a1418;border:1px solid #6b2a34;color:#ffd9de;font:13px/1.45 Inter,system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.5)");
+      shown.innerHTML = '<b>The office did not finish loading.</b> <span></span><div style="margin-top:10px;display:flex;gap:8px"><button type="button" onclick="location.reload()" style="padding:6px 14px;border-radius:8px;border:0;background:#f5b82e;color:#1a1300;font-weight:700;cursor:pointer">Reload</button><button type="button" onclick="this.closest(\'[role=alert]\').remove()" style="padding:6px 12px;border-radius:8px;border:1px solid #6b2a34;background:transparent;color:#ffd9de;cursor:pointer">Hide</button></div>';
+      (document.body || document.documentElement).appendChild(shown);
+    }
+    var s = shown.querySelector("span");
+    if (s.childNodes.length < 3) { s.appendChild(document.createElement("br")); s.appendChild(document.createTextNode(msg)); }
+  }
+  window.addEventListener("error", function (e) {
+    if (e.target && e.target !== window && (e.target.src || e.target.href)) show("Could not load " + (e.target.src || e.target.href));
+    else if (e.message && !/ResizeObserver loop/.test(e.message)) show(e.message + (e.filename ? " (" + e.filename.replace(location.origin, "") + ":" + e.lineno + ")" : ""));
+  }, true);
+  window.addEventListener("unhandledrejection", function (e) { var r = e.reason; if (r && /^(\d{3}|Failed to fetch)/.test(String(r.message || r))) return; show("Unhandled: " + (r && (r.stack || r.message) || r)); });
+})();
+</script>
 <script src="/vendor/three.min.js"></script>
 <script src="/vendor/three-examples/CopyShader.js"></script>
 <script src="/vendor/three-examples/LuminosityHighPassShader.js"></script>

@@ -2037,7 +2037,7 @@
   function isVisible() { return !document.hidden && host.offsetWidth > 0 && host.offsetHeight > 0 && host.getClientRects().length > 0; }
   function frame() {
     requestAnimationFrame(frame);
-    if (!state.built || state.paused || !isVisible()) return;
+    if (!state.built || state.paused || state.gfxLost || !isVisible()) return;
     const now = performance.now(), t = clock.getElapsedTime(), dt = Math.min(0.1, t - lastT); lastT = t;
     if (state.phone && !state.lowFx && !FX) watchFrameRate(now);
     if (host.clientWidth !== state.size.w || host.clientHeight !== state.size.h) resize();
@@ -2165,9 +2165,44 @@
   if (!('onBrainClick' in api)) api.onBrainClick = null;
   if (!('onLife' in api)) api.onLife = null;
 
-  ensureExamples(() => {
-    setupRenderer();
+  // The graphics can fail to start, most often right after coming back from another page (Thumbnail Studio, Design
+  // Studio) while the GPU is still releasing that page, or on a computer whose driver blocked WebGL. Try again a few
+  // times, then say so in the office area with a Reload button; the HUD around it keeps working either way.
+  function gfxNotice(text) {
+    let n = document.getElementById('office-gfx-note');
+    if (!text) { if (n) n.remove(); return; }
+    if (!n) {
+      n = document.createElement('div'); n.id = 'office-gfx-note';
+      n.setAttribute('style', 'position:absolute;inset:0;display:grid;place-items:center;z-index:1;pointer-events:none');
+      host.appendChild(n);
+    }
+    n.innerHTML = '<div style="pointer-events:auto;max-width:420px;margin:16px;padding:18px 20px;border-radius:14px;background:#1b1f2b;border:1px solid #2c3242;color:#e8e8ea;font:14px Inter,system-ui,sans-serif;text-align:center;line-height:1.5">' +
+      text + '<div style="margin-top:12px"><button type="button" style="padding:8px 16px;border-radius:9px;border:0;background:#f5b82e;color:#1a1300;font-weight:700;cursor:pointer" onclick="location.reload()">Reload the office</button></div></div>';
+  }
+  function startGraphics(attempt) {
+    try { setupRenderer(); }
+    catch (e) {
+      console.warn('office3d: graphics did not start (try ' + (attempt + 1) + ')', e);
+      if (renderer && renderer.domElement && renderer.domElement.parentNode) renderer.domElement.remove();
+      renderer = null;
+      if (attempt < 4) { setTimeout(() => startGraphics(attempt + 1), 600 * (attempt + 1)); return; }
+      gfxNotice('The 3D office could not start its graphics on this computer just now. Everything else (tasks, review, posting) still works.');
+      return;
+    }
+    gfxNotice('');
+    const canvas = renderer.domElement;
+    canvas.addEventListener('webglcontextlost', (e) => {     // let the browser give it back; if it doesn't, offer a reload
+      e.preventDefault(); state.gfxLost = true;
+      setTimeout(() => { if (state.gfxLost && renderer && renderer.getContext().isContextLost()) gfxNotice('The 3D office lost its graphics (the graphics driver reset).'); }, 3000);
+    });
+    canvas.addEventListener('webglcontextrestored', () => { state.gfxLost = false; gfxNotice(''); });
+    // leaving the page (to a studio): give the GPU back now, so the office starts cleanly when you come back
+    window.addEventListener('pagehide', () => { try { if (composer && composer.dispose) composer.dispose(); renderer.dispose(); } catch (err) { /* leaving anyway */ } });
     requestAnimationFrame(frame);
+    loadOffice();
+  }
+  ensureExamples(() => startGraphics(0));
+  function loadOffice() {
     Promise.all([
       getJSON('/api/teams').then((d) => (d.teams && d.teams.length ? d.teams : FALLBACK_TEAMS)).catch(() => FALLBACK_TEAMS),
       getJSON('/api/agents').then((d) => d.agents || []).catch(() => []),
@@ -2176,5 +2211,5 @@
       build(teams, agents);
       pollFallback(); setInterval(pollFallback, 6000);
     }).catch((e) => { console.error('office3d: could not build the office', e); });
-  });
+  }
 })();
