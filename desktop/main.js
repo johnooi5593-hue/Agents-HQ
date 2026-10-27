@@ -18,7 +18,8 @@
  *
  * Secure link (phone.html, "Secure link (https)"): `tailscale serve --bg --https=443 http://127.0.0.1:<port>` gives the
  * office an https://<computer>.<tailnet>.ts.net/ address inside the owner's tailnet, so the iPhone shows no warning and the
- * microphone works. Tailscale relays it from 127.0.0.1, and hq/server.py makes every relayed request log in with the
+ * microphone works. When another app (AI OFFICE) already serves 443, the office uses https://...ts.net:8443/ (or :10000)
+ * and leaves that app's link alone: only links that relay to our engine are ever turned off. Tailscale relays it from 127.0.0.1, and hq/server.py makes every relayed request log in with the
  * phone password even with HQ_LOCAL_TRUST=1. The link only stays on while our engine runs with the password: it is turned
  * off before an engine without phone access starts, when phone access is turned off and when the app quits, and turned on
  * again (on the new port, if it changed) whenever the engine comes up with phone access and settings.secureLink is true.
@@ -67,8 +68,8 @@ let hiddenByUser = false;     // the user closed the window to the tray; it does
 let logStream = null;
 let phone = { password: "", secret: "" };   // decrypted phone password and cookie secret, in memory only
 let enginePhone = false;                     // the running engine was started with phone access on
-// the secure link (tailscale serve): applied = 443 relays to `port` as far as we know; maybe = it may still be on from earlier
-const secure = { applied: false, maybe: false, port: 0, url: "", busy: false, problem: null, funnel: false, checked: false };
+// the secure link (tailscale serve): applied = https port `httpsPort` relays to `port` as far as we know; maybe = it may still be on from earlier
+const secure = { applied: false, maybe: false, port: 0, httpsPort: 0, url: "", busy: false, problem: null, funnel: false, checked: false };
 // every log line (the setup screen, engine.log) has the phone password and the secret blanked out
 const log = new lib.RingLog(500, { redact: (line) => lib.redact(line, [phone.password, phone.secret]) });
 
@@ -989,7 +990,7 @@ function secureState() {
   return {
     want: !!(settings && settings.secureLink),
     on: secure.applied && secure.port === state.port && active,
-    url: secure.url, busy: secure.busy, problem: secure.problem, funnel: secure.funnel, checked: secure.checked,
+    url: secure.url, httpsPort: secure.httpsPort, busy: secure.busy, problem: secure.problem, funnel: secure.funnel, checked: secure.checked,
   };
 }
 
@@ -1012,8 +1013,8 @@ async function applySecure(port, why) {
   const r = await lib.enableSecureLink(port);
   logSteps(r.steps);
   if (r.ok) {
-    Object.assign(secure, { applied: true, maybe: true, port, url: r.url, problem: null, funnel: !!r.funnel });
-    say(`Secure link on: ${r.url} relays to http://127.0.0.1:${port}; phones log in with the phone password.` + (r.verified ? "" : " (Tailscale's serve status did not confirm it; the address may take a few seconds.)"));
+    Object.assign(secure, { applied: true, maybe: true, port, httpsPort: r.httpsPort, url: r.url, problem: null, funnel: !!r.funnel });
+    say(`Secure link on: ${r.url} relays to http://127.0.0.1:${port}; phones log in with the phone password.` + (r.httpsPort !== 443 ? ` (Port 443 is used by another app, so the office uses ${r.httpsPort} and leaves it alone.)` : "") + (r.verified ? "" : " (Tailscale's serve status did not confirm it; the address may take a few seconds.)"));
     if (r.funnel) say("Warning: Tailscale Funnel is on for this address, so it is open to the whole internet, not only your devices. Turn Funnel off in Tailscale unless you meant that.");
   } else {
     Object.assign(secure, { applied: false, maybe: true, problem: r.problem });     // maybe: serve may have half changed
@@ -1025,10 +1026,11 @@ async function applySecure(port, why) {
 async function removeSecure(why) {
   say(`Secure link: turning it off (${why}).`);
   if (IS_WIN) await lib.refreshPath(process.env);
-  const r = await lib.disableSecureLink();
+  // only links that relay to our engine (the port the link was made for, and the engine's port now) are turned off
+  const r = await lib.disableSecureLink([...new Set([secure.port, state.port].filter(Boolean))], { httpsPort: secure.httpsPort });
   logSteps(r.steps);
-  if (r.ok) Object.assign(secure, { applied: false, maybe: false, funnel: false });
-  else say("The secure link could not be turned off: " + (r.problem ? r.problem.message : "Tailscale did not answer.") + " Run this in a terminal: tailscale serve --https=443 off");
+  if (r.ok) Object.assign(secure, { applied: false, maybe: false, httpsPort: 0, funnel: false });
+  else say("The secure link could not be turned off: " + (r.problem ? r.problem.message : "Tailscale did not answer.") + ` Run this in a terminal: tailscale serve --https=${secure.httpsPort || 443} off`);
   return r;
 }
 
@@ -1052,7 +1054,7 @@ function syncSecure(why) {
   });
 }
 
-/** phone:secure-get: what Tailscale says now (the https address, whether 443 relays to our port). */
+/** phone:secure-get: what Tailscale says now (the https address, whether a link relays to our port, and on which https port). */
 function secureGet() {
   return secureTask(async () => {
     if (IS_WIN) await lib.refreshPath(process.env);
@@ -1065,7 +1067,7 @@ function secureGet() {
       // relaying to an engine without the phone password: never leave that on
       await removeSecure("the engine on this port has no phone password right now");
     } else if (info.on) {
-      Object.assign(secure, { applied: true, maybe: true, port: state.port, problem: null });
+      Object.assign(secure, { applied: true, maybe: true, port: state.port, httpsPort: info.httpsPort, problem: null });
       if (!settings.secureLink) { settings.secureLink = true; saveSettings(); }      // keep it on this port when the port changes
     } else if (info.ok) {
       secure.applied = false;

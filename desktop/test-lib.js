@@ -507,12 +507,15 @@ const TS = {
   serveJson: (proxy, extra = {}) => JSON.stringify({ TCP: { 443: { HTTPS: true } }, Web: { "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: proxy } } } }, ...extra }, null, 2),
 };
 
-test("secure link commands: serve on, off, reset, status", () => {
+test("secure link commands: serve on, off, status", () => {
   assert.deepStrictEqual(lib.serveOnArgs(7331), ["serve", "--bg", "--https=443", "http://127.0.0.1:7331"]);
   assert.deepStrictEqual(lib.serveOnArgs(7335), ["serve", "--bg", "--https=443", "http://127.0.0.1:7335"]);
+  assert.deepStrictEqual(lib.serveOnArgs(7331, 8443), ["serve", "--bg", "--https=8443", "http://127.0.0.1:7331"]);
+  assert.deepStrictEqual(lib.serveOnArgs(7331, 22), ["serve", "--bg", "--https=443", "http://127.0.0.1:7331"], "only 443, 8443 or 10000");
   assert.deepStrictEqual(lib.serveOnArgs("x"), ["serve", "--bg", "--https=443", "http://127.0.0.1:7331"], "a broken port falls back to 7331");
   assert.deepStrictEqual(lib.serveOffArgs(), ["serve", "--https=443", "off"]);
-  assert.deepStrictEqual(lib.serveResetArgs(), ["serve", "reset"]);
+  assert.deepStrictEqual(lib.serveOffArgs(8443), ["serve", "--https=8443", "off"]);
+  assert.strictEqual(lib.serveResetArgs, undefined, "no reset: it would remove other apps' links too");
   assert.deepStrictEqual(lib.serveStatusArgs(), ["serve", "status", "--json"]);
   assert.deepStrictEqual(lib.serveStatusArgs(false), ["serve", "status"]);
   assert.deepStrictEqual(lib.statusJsonArgs(), ["status", "--json"]);
@@ -532,12 +535,14 @@ test("parseStatusJson: Self.DNSName with and without the trailing dot, MagicDNS,
   assert.strictEqual(lib.parseStatusJson(TS.status("evil.ts.net/<script>")).dnsName, "", "only plain host names");
   for (const bad of ["", "not json", "[1,2]", "{ broken", null, undefined]) assert.deepStrictEqual(lib.parseStatusJson(bad), { dnsName: "", magicDns: null, certDomains: [], backend: "" }, String(bad));
   assert.strictEqual(lib.secureUrl("desk-pc.tail1234.ts.net."), "https://desk-pc.tail1234.ts.net/");
+  assert.strictEqual(lib.secureUrl("desk-pc.tail1234.ts.net.", 443), "https://desk-pc.tail1234.ts.net/");
+  assert.strictEqual(lib.secureUrl("desk-pc.tail1234.ts.net.", 8443), "https://desk-pc.tail1234.ts.net:8443/");
   assert.strictEqual(lib.secureUrl(""), "");
 });
 
 test("isSecureUrl (the QR whitelist) and isTailscaleAdminLink (the browser button)", () => {
-  for (const u of ["https://desk-pc.tail1234.ts.net/", "https://desk-pc.tail1234.ts.net", "https://a.b.ts.net/"]) assert.strictEqual(lib.isSecureUrl(u), true, u);
-  for (const u of ["http://desk-pc.tail1234.ts.net/", "https://desk-pc.tail1234.ts.net/x", "https://evil.com/.ts.net/", "https://ts.net/", "https://x.ts.net.evil.com/", "javascript:alert(1)", "", null, "https://x.ts.net:8443/"]) assert.strictEqual(lib.isSecureUrl(u), false, String(u));
+  for (const u of ["https://desk-pc.tail1234.ts.net/", "https://desk-pc.tail1234.ts.net", "https://a.b.ts.net/", "https://x.ts.net:8443/", "https://x.ts.net:10000"]) assert.strictEqual(lib.isSecureUrl(u), true, u);
+  for (const u of ["http://desk-pc.tail1234.ts.net/", "https://desk-pc.tail1234.ts.net/x", "https://evil.com/.ts.net/", "https://ts.net/", "https://x.ts.net.evil.com/", "javascript:alert(1)", "", null, "https://x.ts.net:8444/", "https://x.ts.net:8443.evil.com/"]) assert.strictEqual(lib.isSecureUrl(u), false, String(u));
   assert.strictEqual(lib.isTailscaleAdminLink("https://login.tailscale.com/f/serve?node=nAbC123"), true);
   assert.strictEqual(lib.isTailscaleAdminLink("https://login.tailscale.com/admin/dns"), true);
   for (const u of ["http://login.tailscale.com/admin", "https://login.tailscale.com.evil.com/", "https://evil.com/login.tailscale.com/", "https://login.tailscale.com", "file:///c:/x", "https://login.tailscale.com/a b", 7, null]) assert.strictEqual(lib.isTailscaleAdminLink(u), false, String(u));
@@ -545,21 +550,39 @@ test("isSecureUrl (the QR whitelist) and isTailscaleAdminLink (the browser butto
 
 test("parseServeStatus: JSON and plain text, our port or another, nothing configured, Funnel", () => {
   const on = lib.parseServeStatus(TS.serveJson("http://127.0.0.1:7331"), 7331);
-  assert.deepStrictEqual(on, { on: true, proxy: "http://127.0.0.1:7331", host: "desk-pc.tail1234.ts.net", funnel: false });
+  assert.deepStrictEqual(on, { on: true, httpsPort: 443, proxy: "http://127.0.0.1:7331", host: "desk-pc.tail1234.ts.net", funnel: false,
+    links: [{ httpsPort: 443, host: "desk-pc.tail1234.ts.net", proxy: "http://127.0.0.1:7331", funnel: false }] });
   assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://127.0.0.1:7331"), 7332).on, false, "443 relays to another port");
   assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://localhost:7333"), 7333).on, true, "localhost counts");
   assert.strictEqual(lib.parseServeStatus(TS.serveJson("7334"), 7334).on, true, "a bare port counts");
   assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://192.168.1.5:7331"), 7331).on, false, "another machine does not count");
   assert.strictEqual(lib.parseServeStatus(TS.serveJson("http://127.0.0.1:7331", { AllowFunnel: { "desk-pc.tail1234.ts.net:443": true } }), 7331).funnel, true);
   const other = JSON.stringify({ Web: { "desk-pc.tail1234.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } });
-  assert.strictEqual(lib.parseServeStatus(other, 7331).on, false, "only port 443 counts");
+  assert.deepStrictEqual([lib.parseServeStatus(other, 7331).on, lib.parseServeStatus(other, 7331).httpsPort], [true, 8443], "a link on 8443 counts");
   const fg = JSON.stringify({ Foreground: { abc: { Web: { "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } } } });
   assert.strictEqual(lib.parseServeStatus(fg, 7331).on, true, "a foreground serve counts too");
-  for (const none of ["{}", "", "No serve config\n", "not json at all"]) assert.deepStrictEqual(lib.parseServeStatus(none, 7331), { on: false, proxy: "", host: "", funnel: false }, JSON.stringify(none));
+  for (const none of ["{}", "", "No serve config\n", "not json at all"]) assert.deepStrictEqual(lib.parseServeStatus(none, 7331), { on: false, httpsPort: 0, proxy: "", host: "", funnel: false, links: [] }, JSON.stringify(none));
   const plain = "\nhttps://desk-pc.tail1234.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n\n";
-  assert.deepStrictEqual(lib.parseServeStatus(plain, 7331), { on: true, proxy: "http://127.0.0.1:7331", host: "desk-pc.tail1234.ts.net", funnel: false }, "plain text");
+  assert.deepStrictEqual(lib.parseServeStatus(plain, 7331), { on: true, httpsPort: 443, proxy: "http://127.0.0.1:7331", host: "desk-pc.tail1234.ts.net", funnel: false,
+    links: [{ httpsPort: 443, host: "desk-pc.tail1234.ts.net", proxy: "http://127.0.0.1:7331", funnel: false }] }, "plain text");
   assert.strictEqual(lib.parseServeStatus("https://desk-pc.tail1234.ts.net (Funnel on)\n|-- / proxy http://127.0.0.1:7331\n", 7331).funnel, true);
-  assert.strictEqual(lib.parseServeStatus("https://desk-pc.tail1234.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n", 7331).on, false, "plain text: only 443");
+  assert.strictEqual(lib.parseServeStatus("https://desk-pc.tail1234.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n", 7331).httpsPort, 8443, "plain text: 8443");
+  assert.strictEqual(lib.parseServeStatus("http://desk-pc.tail1234.ts.net:80 (tailnet only)\n|-- / proxy http://127.0.0.1:7331\n", 7331).on, false, "plain text: an http serve is not the secure link");
+  const httpOnly = JSON.stringify({ TCP: { 80: { HTTP: true } }, Web: { "desk-pc.tail1234.ts.net:80": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } });
+  assert.strictEqual(lib.parseServeStatus(httpOnly, 7331).on, false, "JSON: an http serve is not the secure link");
+  // this computer: AI OFFICE on 443, the office on 8443
+  const shared = JSON.stringify({ TCP: { 443: { HTTPS: true }, 8443: { HTTPS: true } }, Web: {
+    "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4320" } } },
+    "desk-pc.tail1234.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } });
+  const s = lib.parseServeStatus(shared, 7331);
+  assert.deepStrictEqual([s.on, s.httpsPort, s.proxy, s.links.length], [true, 8443, "http://127.0.0.1:7331", 2]);
+  const notOurs = lib.parseServeStatus(shared, 7332);
+  assert.deepStrictEqual([notOurs.on, notOurs.httpsPort, notOurs.proxy], [false, 0, "http://127.0.0.1:4320"], "not ours: what 443 relays to");
+  assert.strictEqual(lib.secureHttpsPort(s.links, 7331), 8443, "the link we have");
+  assert.strictEqual(lib.secureHttpsPort(lib.parseServeStatus(TS.serveJson("http://127.0.0.1:4320"), 7331).links, 7331), 8443, "443 taken: the next free port");
+  assert.strictEqual(lib.secureHttpsPort(notOurs.links, 7332), 10000, "443 and 8443 taken");
+  assert.strictEqual(lib.secureHttpsPort([], 7331), 443);
+  assert.strictEqual(lib.secureHttpsPort([443, 8443, 10000].map((p) => ({ httpsPort: p, proxy: "http://127.0.0.1:1" })), 7331), 0, "all taken");
   assert.strictEqual(lib.proxyPort("http://127.0.0.1:7331/"), 7331);
   assert.strictEqual(lib.proxyPort("https+insecure://127.0.0.1:7331"), 0);
 });
@@ -591,12 +614,13 @@ test("serveProblem: HTTPS / Serve not enabled gives the admin link, MagicDNS off
   assert.strictEqual(lib.serveProblem(null).kind, "missing");
 });
 
-/** A fake tailscale runner: answers by the arguments, records every call. */
+/** A fake tailscale runner: answers by the arguments (a list: one answer per call, the last one repeats), records every call. */
 function fakeTailscale(answers) {
   const calls = [];
   const runner = async (cmd, args, opts) => {
     calls.push({ cmd, args: args.join(" "), timeoutMs: opts && opts.timeoutMs });
-    const a = answers[args.join(" ")];
+    let a = answers[args.join(" ")];
+    if (Array.isArray(a)) a = a.length > 1 ? a.shift() : a[0];
     const r = typeof a === "function" ? a(cmd) : a || { code: 1, stderr: "unexpected: " + args.join(" ") };
     return { line: lib.cmdline(cmd, args), code: r.code === undefined ? 0 : r.code, stdout: r.stdout || "", stderr: r.stderr || "", error: r.error || null, timedOut: !!r.timedOut };
   };
@@ -607,32 +631,65 @@ test("enableSecureLink: on, then the https address from tailscale status", async
   const { runner, calls } = fakeTailscale({
     "serve --bg --https=443 http://127.0.0.1:7332": { stdout: TS.serveOk.replace("7331", "7332") },
     "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") },
-    "serve status --json": { stdout: TS.serveJson("http://127.0.0.1:7332") },
+    "serve status --json": [{ stdout: "{}" }, { stdout: TS.serveJson("http://127.0.0.1:7332") }],
   });
   const r = await lib.enableSecureLink(7332, { run: runner, isWin: false });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.url, "https://desk-pc.tail1234.ts.net/");
+  assert.strictEqual(r.httpsPort, 443);
   assert.strictEqual(r.verified, true);
   assert.strictEqual(r.funnel, false);
-  assert.deepStrictEqual(calls.map((c) => c.args), ["serve --bg --https=443 http://127.0.0.1:7332", "status --json", "serve status --json"]);
+  assert.deepStrictEqual(calls.map((c) => c.args), ["serve status --json", "serve --bg --https=443 http://127.0.0.1:7332", "status --json", "serve status --json"], "first what is served already");
   assert.ok(calls.every((c) => c.timeoutMs === 20000), "20 s for every tailscale command");
-  assert.strictEqual(r.steps.length, 3);
-  assert.strictEqual(r.steps[0].line, "tailscale serve --bg --https=443 http://127.0.0.1:7332");
-  assert.ok(r.steps[0].output.includes("https://desk-pc.tail1234.ts.net/"), "the log gets what tailscale printed");
+  assert.strictEqual(r.steps.length, 4);
+  assert.strictEqual(r.steps[1].line, "tailscale serve --bg --https=443 http://127.0.0.1:7332");
+  assert.ok(r.steps[1].output.includes("https://desk-pc.tail1234.ts.net/"), "the log gets what tailscale printed");
+});
+
+test("enableSecureLink: another app on 443 keeps it, the office gets 8443; a link we have stays; all ports taken", async () => {
+  const theirs = TS.serveJson("http://127.0.0.1:4320");
+  const both = JSON.stringify({ TCP: { 443: { HTTPS: true }, 8443: { HTTPS: true } }, Web: {
+    "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4320" } } },
+    "desk-pc.tail1234.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } });
+  const t = fakeTailscale({
+    "serve status --json": [{ stdout: theirs }, { stdout: both }],
+    "serve --bg --https=8443 http://127.0.0.1:7331": { stdout: "Available within your tailnet:\n\nhttps://desk-pc.tail1234.ts.net:8443/\n|-- proxy http://127.0.0.1:7331\n" },
+    "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") },
+  });
+  const r = await lib.enableSecureLink(7331, { run: t.runner, isWin: false });
+  assert.deepStrictEqual([r.ok, r.url, r.httpsPort, r.verified], [true, "https://desk-pc.tail1234.ts.net:8443/", 8443, true]);
+  assert.ok(!t.calls.some((c) => /--https=443/.test(c.args)), "443 (the other app's link) is never touched");
+
+  const have = fakeTailscale({ "serve status --json": { stdout: both }, "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") } });
+  const kept = await lib.enableSecureLink(7331, { run: have.runner, isWin: false });
+  assert.deepStrictEqual([kept.ok, kept.url, kept.verified], [true, "https://desk-pc.tail1234.ts.net:8443/", true]);
+  assert.deepStrictEqual(have.calls.map((c) => c.args), ["serve status --json", "status --json"], "already on: nothing changes");
+
+  const info = await lib.secureLinkInfo(7331, { run: fakeTailscale({ "serve status --json": { stdout: both }, "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") } }).runner, isWin: false });
+  assert.deepStrictEqual([info.on, info.httpsPort, info.url], [true, 8443, "https://desk-pc.tail1234.ts.net:8443/"], "Phone access shows the 8443 link");
+  const would = await lib.secureLinkInfo(7331, { run: fakeTailscale({ "serve status --json": { stdout: theirs }, "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.") } }).runner, isWin: false });
+  assert.deepStrictEqual([would.on, would.url, would.proxy], [false, "https://desk-pc.tail1234.ts.net:8443/", "http://127.0.0.1:4320"], "off: the address it would get");
+
+  const full = JSON.stringify({ Web: Object.fromEntries([443, 8443, 10000].map((p) => [`desk-pc.tail1234.ts.net:${p}`, { Handlers: { "/": { Proxy: "http://127.0.0.1:4320" } } }])) });
+  const none = fakeTailscale({ "serve status --json": { stdout: full } });
+  const no = await lib.enableSecureLink(7331, { run: none.runner, isWin: false });
+  assert.deepStrictEqual([no.ok, no.problem.kind], [false, "ports-taken"]);
+  assert.deepStrictEqual(none.calls.map((c) => c.args), ["serve status --json"], "nothing is changed");
 });
 
 test("enableSecureLink: HTTPS not enabled gives the admin link and does not read further", async () => {
-  const { runner, calls } = fakeTailscale({ "serve --bg --https=443 http://127.0.0.1:7331": { code: null, timedOut: true, error: "timed out after 20 s", stdout: TS.serveNotEnabled } });
+  const { runner, calls } = fakeTailscale({ "serve status --json": { stdout: "{}" }, "serve --bg --https=443 http://127.0.0.1:7331": { code: null, timedOut: true, error: "timed out after 20 s", stdout: TS.serveNotEnabled } });
   const r = await lib.enableSecureLink(7331, { run: runner, isWin: false });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.problem.kind, "https-off");
   assert.strictEqual(r.problem.link, "https://login.tailscale.com/f/serve?node=nAbCdEf123CNTRL");
-  assert.strictEqual(calls.length, 1);
-  assert.strictEqual(r.steps[0].timedOut, true);
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(r.steps[1].timedOut, true);
 });
 
 test("enableSecureLink and secureLinkInfo: MagicDNS off, signed out, Windows Program Files fallback, a runner that throws", async () => {
   const mdns = fakeTailscale({
+    "serve status --json": { stdout: "{}" },
     "serve --bg --https=443 http://127.0.0.1:7331": { stdout: TS.serveOk },
     "status --json": { stdout: TS.status("desk-pc.tail1234.ts.net.", { CurrentTailnet: { MagicDNSEnabled: false } }) },
   });
@@ -677,27 +734,41 @@ test("readServeStatus falls back to plain `tailscale serve status` on versions w
   assert.deepStrictEqual(calls.map((c) => c.args), ["serve status --json", "serve status"]);
 });
 
-test("disableSecureLink: off, nothing to turn off, the reset fallback, no Tailscale", async () => {
-  const ok = fakeTailscale({ "serve --https=443 off": { stdout: "" } });
-  assert.strictEqual((await lib.disableSecureLink({ run: ok.runner, isWin: false })).ok, true);
-  assert.deepStrictEqual(ok.calls.map((c) => c.args), ["serve --https=443 off"]);
+test("disableSecureLink: only links to our engine go, never another app's, never a reset", async () => {
+  const ok = fakeTailscale({ "serve status --json": { stdout: TS.serveJson("http://127.0.0.1:7331") }, "serve --https=443 off": { stdout: "" } });
+  assert.strictEqual((await lib.disableSecureLink(7331, { run: ok.runner, isWin: false })).ok, true);
+  assert.deepStrictEqual(ok.calls.map((c) => c.args), ["serve status --json", "serve --https=443 off"]);
 
-  const none = fakeTailscale({ "serve --https=443 off": { code: 1, stderr: "error: port 443 is not being served" } });
-  assert.strictEqual((await lib.disableSecureLink({ run: none.runner, isWin: false })).ok, true, "nothing to turn off is fine");
-  assert.strictEqual(none.calls.length, 1, "no reset for that");
+  const shared = JSON.stringify({ Web: {
+    "desk-pc.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4320" } } },
+    "desk-pc.tail1234.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:7331" } } } } });
+  const mine = fakeTailscale({ "serve status --json": { stdout: shared }, "serve --https=8443 off": { stdout: "" } });
+  assert.strictEqual((await lib.disableSecureLink(7331, { run: mine.runner, isWin: false })).ok, true);
+  assert.deepStrictEqual(mine.calls.map((c) => c.args), ["serve status --json", "serve --https=8443 off"], "AI OFFICE's 443 stays");
 
-  const fb = fakeTailscale({ "serve --https=443 off": { code: 2, stderr: "flag provided but not defined: -https" }, "serve reset": { stdout: "" } });
-  const r = await lib.disableSecureLink({ run: fb.runner, isWin: false });
-  assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(fb.calls.map((c) => c.args), ["serve --https=443 off", "serve reset"], "reset when off fails");
-  assert.strictEqual(r.steps.length, 2);
+  const theirs = fakeTailscale({ "serve status --json": { stdout: TS.serveJson("http://127.0.0.1:4320") } });
+  assert.strictEqual((await lib.disableSecureLink(7331, { run: theirs.runner, isWin: false })).ok, true, "nothing of ours: fine");
+  assert.deepStrictEqual(theirs.calls.map((c) => c.args), ["serve status --json"], "the other app's link is not turned off");
 
-  const both = fakeTailscale({ "serve --https=443 off": { code: 1, stderr: "failed to connect to local tailscaled" }, "serve reset": { code: 1, stderr: "failed to connect to local tailscaled" } });
-  const r2 = await lib.disableSecureLink({ run: both.runner, isWin: false });
+  const moved = fakeTailscale({ "serve status --json": { stdout: TS.serveJson("http://127.0.0.1:7335") }, "serve --https=443 off": { stdout: "" } });
+  await lib.disableSecureLink([7331, 7335], { run: moved.runner, isWin: false });
+  assert.deepStrictEqual(moved.calls.map((c) => c.args), ["serve status --json", "serve --https=443 off"], "the engine's old port counts too");
+
+  const gone = fakeTailscale({ "serve status --json": { stdout: TS.serveJson("http://127.0.0.1:7331") }, "serve --https=443 off": { code: 1, stderr: "error: port 443 is not being served" } });
+  assert.strictEqual((await lib.disableSecureLink(7331, { run: gone.runner, isWin: false })).ok, true, "nothing to turn off is fine");
+
+  const down = { "serve status --json": { code: 1, stderr: "failed to connect to local tailscaled" }, "serve --https=8443 off": { code: 1, stderr: "failed to connect to local tailscaled" } };
+  const known = fakeTailscale(down);
+  const r2 = await lib.disableSecureLink(7331, { run: known.runner, isWin: false, httpsPort: 8443 });
   assert.deepStrictEqual([r2.ok, r2.problem.kind], [false, "not-running"]);
+  assert.deepStrictEqual(known.calls.map((c) => c.args), ["serve status --json", "serve --https=8443 off"], "status unreadable: only the port this app turned on");
+  const blind = fakeTailscale(down);
+  const r3 = await lib.disableSecureLink(7331, { run: blind.runner, isWin: false });
+  assert.strictEqual(r3.ok, false);
+  assert.deepStrictEqual(blind.calls.map((c) => c.args), ["serve status --json"], "status unreadable and no known port: nothing is guessed");
 
-  const missing = fakeTailscale({ "serve --https=443 off": { code: 127, stderr: "sh: 1: tailscale: not found" } });
-  assert.strictEqual((await lib.disableSecureLink({ run: missing.runner, isWin: false })).ok, true, "no Tailscale: nothing is relayed");
+  const missing = fakeTailscale({ "serve status --json": { code: 127, stderr: "sh: 1: tailscale: not found" } });
+  assert.strictEqual((await lib.disableSecureLink(7331, { run: missing.runner, isWin: false })).ok, true, "no Tailscale: nothing is relayed");
 });
 
 test("the secure link helpers against a real process (a fake tailscale on the PATH)", async () => {
@@ -729,7 +800,7 @@ test("the secure link helpers against a real process (a fake tailscale on the PA
     const info = await lib.secureLinkInfo(7339);
     assert.deepStrictEqual([info.on, info.proxy], [true, "http://127.0.0.1:7339"]);
     assert.strictEqual((await lib.secureLinkInfo(7331)).on, false, "relays to 7339, not 7331");
-    const off = await lib.disableSecureLink();
+    const off = await lib.disableSecureLink(7339);
     assert.strictEqual(off.ok, true);
     assert.ok(!fs.existsSync(state));
     assert.strictEqual((await lib.secureLinkInfo(7339)).on, false);
@@ -740,8 +811,9 @@ test("the secure link helpers against a real process (a fake tailscale on the PA
     assert.ok(Date.now() - t0 < 6000, "the time limit ends the wait");
     assert.deepStrictEqual([blocked.ok, blocked.problem.kind, blocked.problem.link], [false, "https-off", "https://login.tailscale.com/f/serve?node=nFAKE42"]);
     const log = fs.readFileSync(path.join(dir, "calls.log"), "utf8").trim().split("\n");
-    assert.deepStrictEqual(log, ["serve --bg --https=443 http://127.0.0.1:7339", "status --json", "serve status --json", "status --json", "serve status --json",
-      "status --json", "serve status --json", "serve --https=443 off", "status --json", "serve status --json", "serve --bg --https=443 http://127.0.0.1:7339"]);
+    assert.deepStrictEqual(log, ["serve status --json", "serve --bg --https=443 http://127.0.0.1:7339", "status --json", "serve status --json", "status --json", "serve status --json",
+      "status --json", "serve status --json", "serve status --json", "serve --https=443 off", "status --json", "serve status --json",
+      "serve status --json", "serve --bg --https=443 http://127.0.0.1:7339"]);
   } finally {
     process.env.PATH = saved.PATH;
     if (saved.mode === undefined) delete process.env.TS_FAKE_MODE; else process.env.TS_FAKE_MODE = saved.mode;

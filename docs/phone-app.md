@@ -14,6 +14,8 @@ Notifications and the full app need the secure (https) address that Tailscale gi
 2. Phone access must be on (with its password).
 3. Turn on **Secure link (https)**. It shows an address like `https://your-pc.your-tailnet.ts.net`.
    If Tailscale says HTTPS certificates are off: open the Tailscale admin page → **DNS** → turn on **HTTPS Certificates**, then try again.
+   If another app on the PC (AI OFFICE) already uses that address, the office leaves it alone and gets its own port:
+   `https://your-pc.your-tailnet.ts.net:8443`. Keep the `:8443` when you type it on the phone.
 
 ## On the phone
 

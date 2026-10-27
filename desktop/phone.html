@@ -172,6 +172,7 @@
           <div class="url" id="secure-url"></div>
           <div class="tag">Recommended · no warning on iPhone · microphone works</div>
           <p class="muted small">Works on your devices that have Tailscale switched on, from anywhere.</p>
+          <p class="small hidden" id="secure-port-note"></p>
           <div class="row"><button class="small" id="btn-secure-copy">Copy address</button><button class="small danger" id="btn-secure-off">Turn off secure link</button></div>
         </div>
       </div>
@@ -293,6 +294,9 @@
       });
     }
     if (!on) $("secure-url").textContent = "";
+    var otherPort = on && sec.httpsPort && sec.httpsPort !== 443;
+    $("secure-port-note").classList.toggle("hidden", !otherPort);
+    $("secure-port-note").textContent = otherPort ? "Keep the :" + sec.httpsPort + " at the end. Another app on this computer uses the address without it." : "";
     var p = !on && sec.problem;
     $("secure-fix").classList.toggle("hidden", !p);
     if (p) {
@@ -307,7 +311,7 @@
     return api.phoneSecureGet().then(function (r) {
       secureProxy = (r && r.proxy) || "";
       if (st) { st.secure = r; render(st); }
-      if (secureProxy && !(r && r.on)) note("secure-note", "This computer's Tailscale https address already relays to " + secureProxy + ". Turn on secure link points it to the office instead.");
+      if (secureProxy && !(r && r.on)) note("secure-note", "Another app on this computer already uses the https address (it relays to " + secureProxy + "). Turn on secure link leaves it alone and gives the office its own port: " + ((r && r.url) || "the address with :8443") + ".");
     }).catch(function () { /* the card keeps what it had */ });
   }
 

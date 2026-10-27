@@ -570,23 +570,23 @@ function tailscaleInstallLines() {
 // office page is a secure context (microphone, clipboard). It is tailnet only: Funnel (the public internet) is never used.
 // The relayed requests reach the engine from 127.0.0.1 but carry X-Forwarded-* and Tailscale-User-* headers, and
 // hq/server.py makes every relayed request log in with the phone password, even with HQ_LOCAL_TRUST=1.
+// Another app on this computer (AI OFFICE) may already serve its own https link on 443: the office then uses 8443 (or
+// 10000) and never changes, turns off or resets a link that relays somewhere else.
 
 const TAILSCALE_TIMEOUT_MS = 20000;
 const TAILSCALE_ADMIN_DNS = "https://login.tailscale.com/admin/dns";
+const SECURE_PORTS = [443, 8443, 10000];       // the https ports the secure link may use, in this order
 
-/** `tailscale serve --bg --https=443 http://127.0.0.1:<port>`: the secure link on, kept by Tailscale in the background. */
-function serveOnArgs(port) {
-  return ["serve", "--bg", "--https=443", `http://127.0.0.1:${Number(port) || DEFAULT_PORT}`];
+/** `tailscale serve --bg --https=<httpsPort> http://127.0.0.1:<port>`: the secure link on, kept by Tailscale in the background. */
+function serveOnArgs(port, httpsPort = 443) {
+  const hp = SECURE_PORTS.includes(Number(httpsPort)) ? Number(httpsPort) : 443;
+  return ["serve", "--bg", `--https=${hp}`, `http://127.0.0.1:${Number(port) || DEFAULT_PORT}`];
 }
 
-/** `tailscale serve --https=443 off`: only the https link this app made goes away. */
-function serveOffArgs() {
-  return ["serve", "--https=443", "off"];
-}
-
-/** `tailscale serve reset`: every serve setting goes away (the fallback when the off command fails). */
-function serveResetArgs() {
-  return ["serve", "reset"];
+/** `tailscale serve --https=<httpsPort> off`: only the https link on that port goes away. */
+function serveOffArgs(httpsPort = 443) {
+  const hp = SECURE_PORTS.includes(Number(httpsPort)) ? Number(httpsPort) : 443;
+  return ["serve", `--https=${hp}`, "off"];
 }
 
 /** `tailscale serve status --json`, or with `json` false the plain text form (older versions without --json). */
@@ -635,15 +635,16 @@ function parseStatusJson(text) {
   };
 }
 
-/** https://<dnsname>/ for a tailnet name, or "". */
-function secureUrl(dnsName) {
+/** https://<dnsname>/ for a tailnet name (https://<dnsname>:8443/ on another https port), or "". */
+function secureUrl(dnsName, httpsPort = 443) {
   const d = cleanDnsName(dnsName);
-  return d ? `https://${d}/` : "";
+  const hp = Number(httpsPort) || 443;
+  return d ? `https://${d}${hp === 443 ? "" : ":" + hp}/` : "";
 }
 
-/** True for a secure link address: https://<name>.ts.net/ (what phone:qr may turn into a QR code). */
+/** True for a secure link address: https://<name>.ts.net/ or :8443 / :10000 (what phone:qr may turn into a QR code). */
 function isSecureUrl(url) {
-  return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.ts\.net\/?$/.test(String(url || ""));
+  return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.ts\.net(:(8443|10000))?\/?$/.test(String(url || ""));
 }
 
 /** True for a link the app may open in the system browser from the secure link card: https://login.tailscale.com/... only. */
@@ -658,41 +659,53 @@ function proxyPort(target) {
 }
 
 /**
- * Does port 443 of the secure link relay to our engine? Reads `tailscale serve status --json` (the ServeConfig:
- * Web["<host>:443"].Handlers["/"].Proxy, also inside Foreground sessions) or, for older versions, the plain text form
- * ("https://<host> (tailnet only)" then "|-- / proxy http://127.0.0.1:7331").
- * Returns { on (443 relays to `port`), proxy (what 443 relays to, or ""), host, funnel (443 is open to the internet) }.
+ * Which https links Tailscale serves, and does one of them relay to our engine? Reads `tailscale serve status --json`
+ * (the ServeConfig: Web["<host>:<https port>"].Handlers["/"].Proxy, also inside Foreground sessions) or, for older
+ * versions, the plain text form ("https://<host>:8443 (tailnet only)" then "|-- / proxy http://127.0.0.1:7331").
+ * Returns { on (a link relays to `port`), httpsPort (that link's port, else 0), proxy, host, funnel (of that link, else
+ * of the 443 link: what 443 relays to), links: [{ httpsPort, host, proxy, funnel }] (every https link, ours or not) }.
  */
 function parseServeStatus(text, port) {
-  const found = { proxy: "", host: "", funnel: false };
+  const links = [];
+  const add = (httpsPort, host, proxy, funnel) => {
+    if (proxy && httpsPort && !links.some((l) => l.httpsPort === httpsPort)) links.push({ httpsPort, host: cleanDnsName(host), proxy, funnel: !!funnel });
+  };
   const obj = parseJsonOutput(text);
   if (obj) {
     const configs = [obj];
     if (obj.Foreground && typeof obj.Foreground === "object") for (const c of Object.values(obj.Foreground)) if (c && typeof c === "object") configs.push(c);
     for (const sc of configs) {
       const web = sc.Web && typeof sc.Web === "object" ? sc.Web : {};
+      const tcp = sc.TCP && typeof sc.TCP === "object" ? sc.TCP : null;
       for (const [hostPort, cfg] of Object.entries(web)) {
-        const m = /^(.+):443$/.exec(hostPort);
+        const m = /^(.+):(\d{1,5})$/.exec(hostPort);
         if (!m || !cfg || typeof cfg.Handlers !== "object" || !cfg.Handlers) continue;
+        if (tcp && tcp[m[2]] && !tcp[m[2]].HTTPS) continue;                      // a plain http serve (--http=80)
         const root = cfg.Handlers["/"];
-        const proxy = root && typeof root.Proxy === "string" ? root.Proxy : "";
-        if (!proxy || found.proxy) continue;
-        found.proxy = proxy;
-        found.host = cleanDnsName(m[1]);
-        found.funnel = !!(sc.AllowFunnel && sc.AllowFunnel[hostPort]);
+        add(+m[2], m[1], root && typeof root.Proxy === "string" ? root.Proxy : "", sc.AllowFunnel && sc.AllowFunnel[hostPort]);
       }
     }
   } else {
-    let host = "", funnel = false;
+    let host = "", hp = 0, funnel = false;
     for (const raw of String(text || "").replace(/\r/g, "").split("\n")) {
       const line = raw.trim();
-      const h = /^https:\/\/([^\s/:]+)(:\d+)?\/?(\s|$)/.exec(line);
-      if (h) { host = h[2] && h[2] !== ":443" ? "" : h[1]; funnel = /funnel on/i.test(line); continue; }
+      const h = /^(https?):\/\/([^\s/:]+)(?::(\d+))?\/?(\s|$)/.exec(line);
+      if (h) { host = h[1] === "https" ? h[2] : ""; hp = h[3] ? +h[3] : 443; funnel = /funnel on/i.test(line); continue; }
       const p = /^\|--\s+\/\s+proxy\s+(\S+)/.exec(line);
-      if (p && host && !found.proxy) { found.proxy = p[1]; found.host = cleanDnsName(host); found.funnel = funnel; }
+      if (p && host) add(hp, host, p[1], funnel);
     }
   }
-  return { on: !!found.proxy && proxyPort(found.proxy) === Number(port), ...found };
+  const mine = links.filter((l) => proxyPort(l.proxy) === Number(port));
+  const ours = mine.find((l) => l.httpsPort === 443) || mine[0];
+  const shown = ours || links.find((l) => l.httpsPort === 443);
+  return { on: !!ours, httpsPort: ours ? ours.httpsPort : 0, proxy: shown ? shown.proxy : "", host: shown ? shown.host : "", funnel: !!(shown && shown.funnel), links };
+}
+
+/** The https port the secure link would use for `port`: the one already relaying to it, else the first free one, else 0. */
+function secureHttpsPort(links, port) {
+  const mine = (links || []).filter((l) => proxyPort(l.proxy) === Number(port)).map((l) => l.httpsPort);
+  if (mine.length) return mine.includes(443) ? 443 : mine[0];
+  return SECURE_PORTS.find((p) => !(links || []).some((l) => l.httpsPort === p)) || 0;
 }
 
 /**
@@ -782,65 +795,99 @@ async function readSecureName(opts = {}) {
   return { ok: true, dnsName: st.dnsName, url: secureUrl(st.dnsName), magicDns: st.magicDns, certDomains: st.certDomains, problem: null, steps };
 }
 
-/** Does the secure link relay to `port` right now? `tailscale serve status --json`, then the plain form. { on, proxy, host, funnel, steps }. */
+/**
+ * Which https links relay where right now? `tailscale serve status --json`, then the plain form.
+ * { on, httpsPort, proxy, host, funnel, links, readable (Tailscale answered), missing (no tailscale command), steps }
+ * (see parseServeStatus).
+ */
 async function readServeStatus(port, opts = {}) {
-  const say = (s) => "443 relays to " + (s.proxy || "nothing") + (s.funnel ? " (Funnel on: open to the internet)" : "");
+  const say = (s) => (s.links.length ? s.links.map((l) => l.httpsPort + " relays to " + l.proxy + (l.funnel ? " (Funnel on: open to the internet)" : "")).join(", ") : "no https link");
+  const none = { on: false, httpsPort: 0, proxy: "", host: "", funnel: false, links: [] };
   let res = await runTailscale(serveStatusArgs(true), opts);
-  let s = res.code === 0 ? parseServeStatus(res.stdout, port) : { on: false, proxy: "", host: "", funnel: false };
+  let s = res.code === 0 ? parseServeStatus(res.stdout, port) : none;
+  let readable = res.code === 0;
   const steps = [stepOf(res, say(s))];
   if (res.code !== 0 && /flag provided but not defined|unknown flag/i.test(resultText(res))) {
     res = await runTailscale(serveStatusArgs(false), opts);
     s = res.code === 0 ? parseServeStatus(res.stdout, port) : s;
+    readable = res.code === 0;
     steps.push(stepOf(res, say(s)));
   }
-  return { ...s, steps };
+  return { ...s, readable, missing: !readable && commandMissing(res), steps };
 }
 
+const PORTS_TAKEN = { kind: "ports-taken", link: "", message: "Tailscale's https ports 443, 8443 and 10000 on this computer are all used by other apps, so the secure link has no port to use. Free one of them in Tailscale, then press Turn on again." };
+
 /**
- * The secure link as it is: { ok, on (443 relays to `port`), url, dnsName, proxy, funnel, problem, steps }.
- * `url` is https://<dnsname>/ whenever Tailscale says the name, also while the link is off.
+ * The secure link as it is: { ok, on (a link relays to `port`), httpsPort, url, dnsName, proxy, funnel, problem, steps }.
+ * `url` is the address whenever Tailscale says the name, also while the link is off (then on the port it would use).
  */
 async function secureLinkInfo(port, opts = {}) {
   const name = await readSecureName(opts);
-  if (!name.dnsName) return { ok: false, on: false, url: "", dnsName: "", proxy: "", funnel: false, problem: name.problem, steps: name.steps };
+  if (!name.dnsName) return { ok: false, on: false, httpsPort: 0, url: "", dnsName: "", proxy: "", funnel: false, problem: name.problem, steps: name.steps };
   const s = await readServeStatus(port, opts);
-  return { ok: true, on: s.on, url: name.url, dnsName: name.dnsName, proxy: s.proxy, funnel: s.funnel, problem: s.on ? null : name.problem, steps: [...name.steps, ...s.steps] };
+  const hp = s.on ? s.httpsPort : secureHttpsPort(s.links, port);
+  const problem = s.on ? null : name.problem || (hp ? null : PORTS_TAKEN);
+  return { ok: true, on: s.on, httpsPort: s.httpsPort, url: secureUrl(name.dnsName, hp || 443), dnsName: name.dnsName, proxy: s.proxy, funnel: s.funnel, problem, steps: [...name.steps, ...s.steps] };
 }
 
 /**
- * Turn the secure link on for the engine on `port`: tailscale serve --bg --https=443 http://127.0.0.1:<port>, then read
- * the https address and what 443 relays to. { ok, url, dnsName, verified (443 relays to `port`), funnel, problem, steps }. When HTTPS is not enabled on the tailnet, problem.kind is
- * "https-off" with the admin link that enables it.
+ * Turn the secure link on for the engine on `port`: tailscale serve --bg --https=<p> http://127.0.0.1:<port>, where p is
+ * 443, or 8443 / 10000 when another app already serves that port (its link is left alone). A link already relaying to
+ * `port` is kept as it is. Then read the https address and what relays where.
+ * { ok, url, dnsName, httpsPort, verified (that port relays to `port`), funnel, problem, steps }. When HTTPS is not enabled
+ * on the tailnet, problem.kind is "https-off" with the admin link that enables it.
  */
 async function enableSecureLink(port, opts = {}) {
-  const res = await runTailscale(serveOnArgs(port), opts);
-  const steps = [stepOf(res)];
-  const problem = serveProblem(res);
-  if (problem) return { ok: false, url: "", dnsName: "", problem, steps };
+  const before = await readServeStatus(port, opts);
+  const steps = [...before.steps];
+  const hp = secureHttpsPort(before.links, port);
+  if (!hp) return { ok: false, url: "", dnsName: "", httpsPort: 0, problem: PORTS_TAKEN, steps };
+  let res = null;
+  if (!before.on) {
+    res = await runTailscale(serveOnArgs(port, hp), opts);
+    steps.push(stepOf(res));
+    const problem = serveProblem(res);
+    if (problem) return { ok: false, url: "", dnsName: "", httpsPort: hp, problem, steps };
+  }
   const name = await readSecureName(opts);
   steps.push(...name.steps);
   // serve is on, but without MagicDNS the phone cannot find the name: the owner has to turn it on first
-  if (name.problem && name.problem.kind === "magicdns-off") return { ok: false, url: name.url, dnsName: name.dnsName, problem: name.problem, steps };
-  const fromOutput = (/https:\/\/([a-z0-9.-]+\.ts\.net)\/?/i.exec(res.stdout || "") || [])[1] || "";
+  if (name.problem && name.problem.kind === "magicdns-off") return { ok: false, url: name.url, dnsName: name.dnsName, httpsPort: hp, problem: name.problem, steps };
+  const fromOutput = (/https:\/\/([a-z0-9.-]+\.ts\.net)(:\d+)?\/?/i.exec((res && res.stdout) || "") || [])[1] || "";
   const dnsName = name.dnsName || cleanDnsName(fromOutput);
-  if (!dnsName) return { ok: false, url: "", dnsName: "", problem: name.problem, steps };
-  // check what 443 relays to now (informational: a format this version cannot read does not fail the call)
-  const s = await readServeStatus(port, opts);
-  steps.push(...s.steps);
-  return { ok: true, url: secureUrl(dnsName), dnsName, verified: s.on, funnel: s.funnel, problem: null, steps };
+  if (!dnsName) return { ok: false, url: "", dnsName: "", httpsPort: hp, problem: name.problem, steps };
+  // check what relays where now (informational: a format this version cannot read does not fail the call)
+  const s = before.on ? before : await readServeStatus(port, opts);
+  if (!before.on) steps.push(...s.steps);
+  return { ok: true, url: secureUrl(dnsName, hp), dnsName, httpsPort: hp, verified: s.on && s.httpsPort === hp, funnel: s.funnel, problem: null, steps };
 }
 
-/** Turn the secure link off: tailscale serve --https=443 off, and `tailscale serve reset` when that fails. { ok, problem, steps }. */
-async function disableSecureLink(opts = {}) {
-  const res = await runTailscale(serveOffArgs(), opts);
-  const steps = [stepOf(res)];
-  // "off" for a port that serves nothing is an error in some versions: nothing to turn off is fine
-  if (res.code === 0 || /not (being )?served|nothing to (remove|turn off)|no serve config|does not exist/i.test(resultText(res))) return { ok: true, problem: null, steps };
-  if (commandMissing(res)) return { ok: true, problem: null, steps };              // no Tailscale, no secure link
-  const reset = await runTailscale(serveResetArgs(), opts);
-  steps.push(stepOf(reset));
-  if (reset.code === 0) return { ok: true, problem: null, steps };
-  return { ok: false, problem: serveProblem(reset) || serveProblem(res), steps };
+/**
+ * Turn the secure link off: `tailscale serve --https=<p> off` for every https link that relays to the engine on `port`
+ * (a port or a list of them: the engine's old and new port). Links of other apps stay, and there is no `serve reset` (it
+ * would remove them too). When Tailscale's status cannot be read, only `opts.httpsPort` (the port this app turned on) is
+ * turned off. { ok, problem, steps }.
+ */
+async function disableSecureLink(port, opts = {}) {
+  const engines = (Array.isArray(port) ? port : [port]).map(Number).filter(Boolean);
+  const s = await readServeStatus(engines[0], opts);
+  const steps = [...s.steps];
+  if (s.missing) return { ok: true, problem: null, steps };                       // no Tailscale, no secure link
+  const known = SECURE_PORTS.includes(Number(opts.httpsPort)) ? [Number(opts.httpsPort)] : [];
+  const ports = s.readable ? s.links.filter((l) => engines.includes(proxyPort(l.proxy))).map((l) => l.httpsPort) : known;
+  if (!s.readable && !ports.length) {
+    return { ok: false, steps, problem: { kind: "failed", link: "", message: "Tailscale did not say which https link relays to the office, so nothing was turned off. Check that Tailscale is running, then try again." } };
+  }
+  let problem = null;
+  for (const hp of ports) {
+    const res = await runTailscale(serveOffArgs(hp), opts);
+    steps.push(stepOf(res));
+    // "off" for a port that serves nothing is an error in some versions: nothing to turn off is fine
+    if (res.code === 0 || commandMissing(res) || /not (being )?served|nothing to (remove|turn off)|no serve config|does not exist/i.test(resultText(res))) continue;
+    problem = problem || serveProblem(res);
+  }
+  return { ok: !problem, problem, steps };
 }
 
 // ---------------------------------------------------------------- the log ring buffer
@@ -891,8 +938,8 @@ module.exports = {
   PHONE_ENV_KEYS, PHONE_MIN_PASSWORD, PASSWORD_WORDS, TAILSCALE_WIN_EXE,
   isTailscaleIp, phoneAddresses, generatePassword, passwordProblem, buildEngineEnv, redact,
   parseTailscaleIp, tailscaleState, checkTailscale, tailscaleInstallLines, commandMissing,
-  TAILSCALE_TIMEOUT_MS, TAILSCALE_ADMIN_DNS, serveOnArgs, serveOffArgs, serveResetArgs, serveStatusArgs, statusJsonArgs,
-  parseJsonOutput, cleanDnsName, parseStatusJson, secureUrl, isSecureUrl, isTailscaleAdminLink, proxyPort, parseServeStatus,
+  TAILSCALE_TIMEOUT_MS, TAILSCALE_ADMIN_DNS, SECURE_PORTS, serveOnArgs, serveOffArgs, serveStatusArgs, statusJsonArgs,
+  parseJsonOutput, cleanDnsName, parseStatusJson, secureUrl, isSecureUrl, isTailscaleAdminLink, proxyPort, parseServeStatus, secureHttpsPort,
   serveProblem, runTailscale, readSecureName, readServeStatus, secureLinkInfo, enableSecureLink, disableSecureLink,
   RingLog,
 };
