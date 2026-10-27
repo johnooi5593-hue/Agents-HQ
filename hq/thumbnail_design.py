@@ -139,7 +139,7 @@ class ThumbnailDesignBridge:
             raise DesignError("The review video folder is no longer available.", 404)
         return result
 
-    def _source(self, folder, task_id=None):
+    def _source(self, folder, task_id=None, list_videos=True):
         base = self._folder(folder)
         if base.name.startswith(("thumbnail-final-", "sermon-studio-")):
             raise DesignError("This is a final artwork delivery, not a new video approval.", 409)
@@ -165,7 +165,7 @@ class ThumbnailDesignBridge:
             key, known = match[1], True
         self._channel(key)
         videos = []
-        for file in sorted(base.rglob("*")):
+        for file in sorted(base.rglob("*")) if list_videos else ():
             if file.suffix.lower() in VIDEOS and file.is_file():
                 inside(base, file)
                 if len(file.relative_to(base).parts) <= 3:
@@ -461,9 +461,20 @@ class ThumbnailDesignBridge:
             videos = any(p.is_file() and p.suffix.lower() in VIDEOS for p in base.rglob("*"))
         except DesignError:
             return None
-        if videos:
-            return "Use Approve video & create thumbnails first, then approve the returned final package."
-        return None
+        if not videos:
+            return None
+        # A channel without a default template keeps the plain approval (and Approve & post). Once it has one, or this
+        # folder already went to Codex, the cover comes first. A folder whose channel cannot be read stays guarded.
+        try:
+            key = self._source("out/" + name, list_videos=False)[2]
+        except DesignError:
+            key = None
+        with self.lock:
+            data = self._load()
+            started = any(j["folder"] == "out/" + name for j in data["jobs"].values())
+            if key is not None and not data["defaults"].get(key) and not started:
+                return None
+        return "Use Approve video & create thumbnails first, then approve the returned final package."
 
     def complete_source(self, final_task, db, set_status):
         """Within the existing TASK_LOCK, after the final folder was actually moved."""

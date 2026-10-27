@@ -1096,7 +1096,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {} });
+      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1105,8 +1105,22 @@
       catch (e) { rv.data = { error: e.message || "could not open this folder", files: [] }; }
       if (rv.open) renderReview();
       loadPub();
+      loadCoverStep();
     }
     if (rv.accounts) loadAccounts();
+  }
+  // A video waiting in out/ goes to the Codex cover step only when its channel has a default template (or a cover was
+  // already requested for it); a channel without one keeps Approve & post. The server's approval guard uses the same rule.
+  async function loadCoverStep() {
+    const folder = rv.folder || "";
+    if (!/^out\//.test(folder) || /^out\/(thumbnail-final|sermon-studio)-/.test(folder)) return;
+    let cover = true;                                       // unknown: stay on the cover step, as the server does
+    try {
+      const q = new URLSearchParams({ folder }); if (rv.taskId) q.set("taskId", rv.taskId);
+      const c = await getJSON("/api/thumbnail-design/context?" + q);
+      cover = !!c.enabled;
+    } catch (e) { /* keep the cover step */ }
+    if (rv.open && rv.folder === folder) { rv.cover = cover; renderReview(); }
   }
   // ---- posting: the overview of what goes where, and the owner's Approve & post (the only thing that posts)
   const PUB = [["facebook", "Facebook"], ["instagram", "Instagram"], ["youtube", "YouTube Shorts"]];
@@ -1436,7 +1450,7 @@
     const thumbnailEdit = thumbnailRequest ? `<a class="btn" href="/thumbnail-studio.html?job=${encodeURIComponent(thumbnailRequest[1])}">修改 Codex 封面 / New version</a>` : "";
     const studioEdit = studioProject ? `<a class="btn" href="/sermon-studio.html?project=${encodeURIComponent(studioProject[1])}">Edit artwork in Design Studio ↗</a>` : "";
     const v = vids[rv.vid] || vids[0], poster = imgs.find((i) => /cover/i.test(i.name)) || imgs[0];
-    const thumbnailStage = area === "out" && vids.length > 0 && !/^out\/thumbnail-final-/.test(rv.folder || "");
+    const thumbnailStage = area === "out" && vids.length > 0 && !/^out\/thumbnail-final-/.test(rv.folder || "") && rv.cover !== false;
     const thumbnailLink = "/thumbnail-studio.html?" + new URLSearchParams({ folder: rv.folder || "", taskId: rv.taskId || "" });
     let html = `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>

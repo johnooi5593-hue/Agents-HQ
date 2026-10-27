@@ -202,8 +202,20 @@ class ThumbnailTests(unittest.TestCase):
         self.assertEqual(handler.code, 200)
         self.assertEqual(handler.payload["channels"][1]["name"], "Pong+Gospel")
 
-    def test_generic_source_guard_without_template_or_review_status(self):
+    def test_channel_without_template_keeps_plain_approval(self):
+        self.assertIsNone(self.bridge.guard_approval("video-one"))
+        self.template("pong-gospel")                       # another brand's template does not change this channel
+        self.assertIsNone(self.bridge.guard_approval("video-one"))
+        (self.folder / "channel.txt").write_text("pong-gospel", encoding="utf-8")
+        self.assertIn("Approve video", self.bridge.guard_approval("video-one"))
+
+    def test_generic_source_guard_with_template_without_review_status(self):
+        self.template()
         self.tasks[0]["status"] = "doing"
+        self.assertIn("Approve video", self.bridge.guard_approval("video-one"))
+
+    def test_unreadable_channel_stays_guarded(self):
+        (self.folder / "channel.txt").write_text("no-such-channel", encoding="utf-8")
         self.assertIn("Approve video", self.bridge.guard_approval("video-one"))
 
     def test_manifest_rewrite_cannot_approve_changed_images(self):
