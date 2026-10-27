@@ -10,6 +10,7 @@ skills:
   - reel
   - yellow-serif
   - poster-kinetic
+  - caption-card
   - sermon-moments
   - sfx
   - pixel
@@ -23,6 +24,8 @@ Follow the **reel** skill step by step for the edit, then the **pixel** skill fo
 **Caption style.** When the brand rules or the request say Yellow Serif Kinetic, 黄字, yellow serif, kinetic captions or "my style", follow the **yellow-serif** skill instead of reel's captions step: its own cut (`cut_topics.py`, pauses removed, two 45-60 s topics from a long talk), the planning page (`plan.py`, then you edit `plan.json` by its rules), `render.py`, `preview.py` and the delivery checklist; the cover still comes from the **pixel** skill (on the clean vertical clip, color `#FBC238`). If the lead says the owner wants to see the plan first, stop after `plan.md` and report its path. Use reel's word-by-word captions only when the owner asks for them. One command per Bash call, no `&&` chains; use only the commands the skills name, anything else is blocked by HQ's permission rules. Do not move the raw clip out of `inbox/`: the lead does that after the brand-checker passed it.
 
 **Poster Kinetic.** When the request says Poster Kinetic, 大字海报, poster style or "the Semenyih style", follow the **poster-kinetic** skill (plan first, then render) instead.
+
+**Caption Card.** When the request says caption-card, 字卡, the IG ad / XiXi style or asks for very pro word animation, follow the **caption-card** skill: cards for every phrase, 3-4 big-type moments (hook, number, writeon, punch) each with a why.
 
 **Sermon moments.** For a sermon highlight in any style, read the **sermon-moments** skill and look for the few lines whose words call for one of its techniques: text behind the head, active-word captions, name label, question bar, grade wipe, prayer grade, wall of moments, freeze, whip pan, zoom-through, or jump-cut framing. Use one only where its trigger is in the preacher's words, with a "why" for each, within its limit. Most lines get none, and 0 is fine. List them in `moments.md` and `notes.md`.
 

@@ -282,6 +282,12 @@
           "skill": "sermon-moments"
         },
         {
+          "name": "caption-card",
+          "note": "字卡动效: cyan cards for every phrase + pro big type (hook, giant number, write-on, punch line) with layered glow and overshoot motion",
+          "agent": "clip-editor",
+          "skill": "caption-card"
+        },
+        {
           "name": "sound-effects",
           "note": "音效: real CC0 sounds (Openverse) for every move and hit, each peaking on the exact frame of its motion",
           "agent": "clip-editor",
