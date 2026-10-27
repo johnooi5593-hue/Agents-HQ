@@ -15,6 +15,12 @@ The connection setup and local read-only status API are documented in `D:/AI OFF
 4. Finished versions also appear in this Claude HQ's **Creative → Waiting for
    your OK**. Review and approve the concrete version there.
 
+## Default reference-first service poster behavior
+
+When the user uploads or selects a poster reference, it is the **primary design authority**, not optional inspiration. The poster must closely preserve that reference's style, color, textures, lighting, typography feeling and visual hierarchy. Blend original speaker photographs, exact Chinese/English titles and speaker names, service, date, time and venue (when supplied) into the same design language. Literal content is locked, while photo layout, text placement, compositing and depth remain flexible. Never silently substitute a previous service's approved artwork; reuse is explicit opt-in. A service edition requesting **one finished picture** outputs one 3840 x 2160 image, not four alternative looks. Four-option Sermon Title requests retain four separate options, with reference-faithful variations when a reference exists.
+
+The *actual Codex image engine and UI* must implement this default; updating Claude instructions alone does not change the engine. The concrete implementation and end-to-end QA contract is in [reference-first-sermon-design-fix.md](reference-first-sermon-design-fix.md). Do not claim the live app is corrected until a real job with the owner's reference has been visually verified.
+
 For typed or microphone commands, start with an exact first line:
 `Sermon Poster`, `Create sermon poster`, `制作讲道海报`, or `Sermon Title 16:9`.
 Follow it with `Chinese:` / `中文：` and `English:` / `英文：` title lines. This
