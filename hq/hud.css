@@ -596,8 +596,8 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   :root {
     --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
     --safe-l: env(safe-area-inset-left, 0px); --safe-r: env(safe-area-inset-right, 0px);
-    --bar-h: calc(50px + var(--safe-t));
-    --tab-h: calc(58px + var(--safe-b));
+    --bar-h: calc(46px + var(--safe-t));
+    --tab-h: calc(52px + var(--safe-b));
     --gut-l: max(12px, var(--safe-l)); --gut-r: max(12px, var(--safe-r));
     --sheet: #0f121b;
     --panel-w: 100vw; --board-w: 100vw;
@@ -606,27 +606,27 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   body { font-size: 14px; overscroll-behavior: none; }
   #hud { -webkit-tap-highlight-color: transparent; }
   #hud input, #hud select, #hud textarea { font-size: 16px; }
-  /* the office fills the space between the two bars */
-  #office3d { top: var(--bar-h); bottom: var(--tab-h); }
+  /* the office fills the whole screen; the two bars sit over it, see-through, so the building gets every pixel */
+  #office3d { top: 0; bottom: 0; }
 
   /* ---- compact top bar: logo · ask · agents pill · bell · avatar ---- */
   #topbar {
     display: flex; justify-content: space-between; gap: 6px; height: var(--bar-h);
     padding: var(--safe-t) var(--gut-r) 0 max(8px, var(--safe-l));
-    background: rgba(20, 23, 32, 0.97); backdrop-filter: none; -webkit-backdrop-filter: none;   /* no blur here: its fixed children (tab bar, sheets) sit against the viewport */
+    background: linear-gradient(rgba(14, 16, 23, 0.9), rgba(14, 16, 23, 0.62)); backdrop-filter: none; -webkit-backdrop-filter: none;   /* no blur here: its fixed children (tab bar, sheets) sit against the viewport */
   }
   .tb-left { flex: none; gap: 0; }
   .tb-right { flex: 1; gap: 4px; justify-content: flex-end; }
-  #brand { width: 44px; height: 44px; justify-content: center; }
+  #brand { width: 42px; height: 42px; justify-content: center; }
   #brand .logo { width: 28px; height: 28px; border-radius: 8px; }
   #brand .wordmark, .user-btn { display: none; }
   .ask { display: none; }
-  #ask-open, .bell { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: #aeb4c0; font-size: 20px; }
+  #ask-open, .bell { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: #aeb4c0; font-size: 20px; }
   #ask-open:active, .bell:active { background: rgba(255, 255, 255, 0.08); }
   .bell-badge { top: 6px; right: 6px; }
   .agents-pill { height: 30px; min-width: 0; padding: 0 11px 0 10px; font-size: 12.5px; margin: 0 2px; }
   #agents-pill-text { overflow: hidden; text-overflow: ellipsis; }
-  #avatar { width: 44px; height: 44px; padding: 6px; background-clip: content-box; box-shadow: none; font-size: 13px; }
+  #avatar { width: 42px; height: 42px; padding: 6px; background-clip: content-box; box-shadow: none; font-size: 13px; }
   #user-dropdown { position: fixed; top: calc(var(--bar-h) + 6px); right: var(--gut-r); left: auto; width: min(320px, calc(100vw - 24px)); min-width: 0; z-index: 61; }
   .menu-item { padding: 13px 12px; font-size: 15px; }
 
@@ -634,11 +634,11 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   #tabs {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; height: var(--tab-h); margin: 0;
     display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: start; gap: 2px;
-    padding: 5px max(6px, var(--safe-r)) var(--safe-b) max(6px, var(--safe-l)); border-radius: 0;
-    background: rgba(20, 23, 32, 0.97); border-top: 1px solid #2a2f3a;
+    padding: 4px max(6px, var(--safe-r)) var(--safe-b) max(6px, var(--safe-l)); border-radius: 0;
+    background: rgba(16, 19, 27, 0.84); border-top: 1px solid rgba(255, 255, 255, 0.07);
   }
-  #tabs .tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; height: 48px; padding: 0; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: 0.01em; color: #7b8190; background: none; }
-  #tabs .tab .tab-ic { display: block; font-size: 22px; stroke-width: 1.9; }
+  #tabs .tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; height: 44px; padding: 0; border-radius: 12px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.01em; color: #7b8190; background: none; }
+  #tabs .tab .tab-ic { display: block; font-size: 20px; stroke-width: 1.9; }
   #tabs .tab-lead { display: flex; }
   #tabs .tab .badge { position: absolute; top: 2px; left: calc(50% + 7px); min-width: 18px; height: 17px; padding: 0 5px; border-radius: 9px; font-size: 10.5px; line-height: 17px; }
   #tabs .tab .badge.zero { display: none; }
@@ -716,8 +716,14 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   .brain-label .t1 { font-size: 10px; letter-spacing: 0.2em; }
   .brain-label .t2 { font-size: 9.5px; }
   #status-chips, #minimap { display: none; }
-  #floor-ctl { right: 10px; bottom: auto; top: 50%; transform: translateY(-50%); padding: 5px; }
-  #floor-ctl button { min-width: 44px; height: 44px; }
+  /* floors: one button (the floor on show) above the voice orb; tap it to pick another floor */
+  #floor-ctl { right: var(--gut-r); bottom: calc(var(--tab-h) + 72px); padding: 4px; gap: 4px; background: rgba(22, 26, 36, 0.82); }
+  #floor-ctl button { min-width: 42px; height: 40px; }
+  #floor-ctl:not(.open) button:not(.on) { display: none; }
+  /* no 3D yet (still loading, or the graphics failed): the team chips in one row that scrolls, above the tab bar */
+  #team-cards.strip { left: var(--gut-l); right: 64px; bottom: calc(var(--tab-h) + 12px); flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; pointer-events: auto; }
+  #team-cards.strip::-webkit-scrollbar { display: none; }
+  #team-cards.strip .team-card { flex: none; }
   /* a sheet covers the office: its billboards stay hidden (the scene pauses too) */
   #hud.panel-open #team-cards, #hud.panel-open #agent-pills, #hud.panel-open #brain-label, #hud.panel-open #subagent-cards, #hud.panel-open #floor-ctl,
   #hud.lead-open #team-cards, #hud.lead-open #agent-pills, #hud.lead-open #brain-label, #hud.lead-open #room-label,
@@ -866,8 +872,8 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   #lead-log form button { height: 48px; padding: 0 18px; border-radius: 12px; font-size: 15px; }
 
   /* voice: the orb is a floating button above the tab bar; open, the overlay covers the screen */
-  #voice-orb.mini { left: auto; right: var(--gut-r); bottom: calc(var(--tab-h) + 14px); width: 52px; height: 52px; z-index: 26; }
-  #voice-orb.mini .orb { width: 52px; height: 52px; }
+  #voice-orb.mini { left: auto; right: var(--gut-r); bottom: calc(var(--tab-h) + 14px); width: 46px; height: 46px; z-index: 26; }
+  #voice-orb.mini .orb { width: 46px; height: 46px; }
   #voice-orb.open {
     position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: auto; z-index: 70; border: 0; border-radius: 0;
     padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l); background: rgba(10, 12, 18, 0.975); animation: sheet-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);

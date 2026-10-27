@@ -575,6 +575,8 @@
     host.innerHTML = floors.slice().reverse().map((f) => `<button type="button" data-floor="${f.floor}" title="${title(f)}">${short(f)}</button>`).join("") + '<button type="button" data-floor="all" class="on" title="The whole building">All</button>';
     host.hidden = false;
     for (const b of $$("#floor-ctl button")) b.addEventListener("click", () => {
+      if (isPhone() && !host.classList.contains("open")) { host.classList.add("open"); return; }   // a phone shows one button: open the list first
+      host.classList.remove("open");
       state.focused = null; callScene("showFloor", b.dataset.floor === "all" ? null : +b.dataset.floor); renderAll();
       syncFloors(callScene("minimapState"));
     });

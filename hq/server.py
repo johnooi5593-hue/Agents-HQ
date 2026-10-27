@@ -21,7 +21,7 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
   HQ_LOCAL_TRUST=1  phone access from the desktop app: requests from this computer itself need no login, every other
                     device (a phone on Wi-Fi or Tailscale) does. Never combine with HQ_TRUST_PROXY.
 """
-import datetime, hashlib, hmac, html, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+import datetime, gzip, hashlib, hmac, html, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from followups import FollowUps
 from http import cookies
@@ -60,6 +60,7 @@ TASKS = os.path.join(HERE, "tasks.json")
 TEAMS_FILE = os.path.join(HERE, "teams.json")
 MCP_FILE = os.path.join(ROOT, ".mcp.json")
 STATIC = {"/hud.js", "/hud.css", "/office3d.js", "/thumbnail-studio.html", "/thumbnail-studio.js", "/thumbnail-studio.css"}
+APP_GZ, APP_GZ_LOCK = {}, threading.Lock()                 # gzipped app files, by path: (etag, bytes)
 PWA_FILES = {"/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
              "/offline.html": ("offline.html", "text/html; charset=utf-8"), "/icons/icon-192.png": ("icon-192.png", "image/png"),
              "/icons/icon-512.png": ("icon-512.png", "image/png"), "/icons/icon-maskable-512.png": ("icon-maskable-512.png", "image/png"),
@@ -1678,6 +1679,44 @@ class Handler(BaseHTTPRequestHandler):
     def send_static(self, full):
         return self.send_file(full) if full and os.path.isfile(full) else self.send_json({"error": "not found"}, 404)
 
+    def send_app_file(self, full):
+        """The office's own scripts and styles: gzipped (about a quarter of the size, so a phone over Tailscale gets them
+        quickly) and revalidated each time, so a phone keeps what it already has until the file changes (an update)."""
+        if not (full and os.path.isfile(full)):
+            return self.send_json({"error": "not found"}, 404)
+        st = os.stat(full)
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if etag in (self.headers.get("If-None-Match") or ""):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        zipped = "gzip" in (self.headers.get("Accept-Encoding") or "") and re.match(r"^(text/|application/(javascript|json))", ctype)
+        body = None
+        if zipped:
+            with APP_GZ_LOCK:
+                hit = APP_GZ.get(full)
+            body = hit[1] if hit and hit[0] == etag else None
+        if body is None:
+            with open(full, "rb") as f:
+                body = f.read()
+            if zipped:
+                body = gzip.compress(body, 6)
+                with APP_GZ_LOCK:
+                    APP_GZ[full] = (etag, body)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype + ("; charset=utf-8" if ctype.startswith("text/") else ""))
+        self.send_header("Content-Length", str(len(body)))
+        if zipped:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
     # routes
     def do_GET(self):
         url = urlparse(self.path)
@@ -1759,10 +1798,10 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             return self.send_static(safe_join(os.path.join(ROOT, m[1]), m[2]))
         if path in STATIC:
-            return self.send_static(os.path.join(HERE, path.lstrip("/")))
+            return self.send_app_file(os.path.join(HERE, path.lstrip("/")))
         m = re.match(r"^/vendor/(.+)$", path)
         if m:
-            return self.send_static(safe_join(os.path.join(HERE, "vendor"), m[1]))
+            return self.send_app_file(safe_join(os.path.join(HERE, "vendor"), m[1]))
         return self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):

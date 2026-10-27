@@ -357,7 +357,7 @@
     const hfov = 2 * Math.atan(Math.tan(camera.fov * DEG / 2) * camera.aspect);
     const tanH = Math.tan(hfov / 2), tanV = Math.tan(camera.fov * DEG / 2), H = FLOORS * FLOOR_H;
     const dh = (WX + 12) / tanH, dv = (H * 0.5 + 14) / tanV;
-    OVERVIEW.dist = portrait ? Math.max(dv, (WX * 0.62) / tanH) : Math.max(dh, dv);
+    OVERVIEW.dist = portrait ? Math.max(dv, (WX * 0.8) / tanH) : Math.max(dh, dv);
     OVERVIEW.target.set(0, H * 0.43, DZ);
     state.fit = portrait ? Math.max(1, (S * 0.8) / tanH / ROOM_VIEW.dist) : 1;
     state.fitBrain = portrait ? Math.max(1, (PLATFORM_R + 6) / tanH / 62) : 1;
