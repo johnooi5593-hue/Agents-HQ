@@ -521,9 +521,43 @@ def _task_action(body):
                         return 409, {"error": reason or "Use the final approval control for this thumbnail package."}
             set_status(task, body["status"]); save_tasks(db)
             return 200, {"moved": task}
-        if action == "remove":                      # off the board for good; its work folder and files stay where they are
+        if action == "remove":                      # off the board; its work folder and files stay where they are
             n = len(db["tasks"]); db["tasks"] = [t for t in db["tasks"] if t.get("id") != body.get("id")]; save_tasks(db)
-            return 200, {"removed": n - len(db["tasks"])}
+            return 200, {"removed": n - len(db["tasks"]), "task": task}
+        if action == "restore":                     # Undo right after a delete: the removed task comes back as it was
+            back = body.get("task")
+            if not (isinstance(back, dict) and re.match(r"^t\d+$", str(back.get("id") or ""))):
+                return 400, {"error": "nothing to restore"}
+            if any(t.get("id") == back["id"] for t in db["tasks"]):
+                return 409, {"error": "that task is already on the board"}
+            keep = {k: back[k] for k in ("id", "title", "status", "created", "updated", *TASK_DEFAULTS) if k in back}
+            if not isinstance(keep.get("title"), str) or not keep["title"].strip():
+                return 400, {"error": "nothing to restore"}
+            db["tasks"].append(normalize_task(keep)); save_tasks(db)
+            return 201, {"restored": keep}
+        if action in ("folder-hide", "folder-show", "folder-channel"):
+            # a finished out/ folder without a task: the owner files it under a channel (its channel.txt, which the
+            # posting screen reads) or takes it off the board; its files always stay in out/
+            name = str(body.get("folder") or "").strip("/")
+            d = safe_join(os.path.join(ROOT, "out"), name) if SAFE_NAME.match(name) else None
+            hidden = db.setdefault("hidden_out", [])
+            if action == "folder-show":
+                db["hidden_out"] = [n for n in hidden if n != name]; save_tasks(db)
+                return 200, {"shown": name}
+            if not d or not os.path.isdir(d):
+                return 404, {"error": "no such folder in out/"}
+            if action == "folder-hide":
+                if name not in hidden:
+                    hidden.append(name); save_tasks(db)
+                return 200, {"hidden": name}
+            ch = body.get("channel")
+            if not isinstance(ch, str) or not channels.get(ch):
+                return 400, {"error": "choose an existing channel"}
+            if name.startswith("thumbnail-final-"):
+                return 409, {"error": "a thumbnail package keeps the channel it was made for"}
+            with open(os.path.join(d, "channel.txt"), "w", encoding="utf-8") as f:
+                f.write(ch)
+            return 200, {"folder": name, "channel": ch}
         if action == "channel":                     # the owner files a task under a channel (None: worked out again)
             if not task:
                 return 404, {"error": "no such task"}
@@ -715,7 +749,14 @@ def task_final(task):
 def status_payload():
     ensure_coffee_chat()
     s = collect()
-    ag, running, tasks = agents()["agents"], events()["running"], load_tasks()["tasks"]
+    db = load_tasks()
+    ag, running, tasks = agents()["agents"], events()["running"], db["tasks"]
+    hidden = set(db.get("hidden_out") or [])
+    for name, info in s["out"].items():                   # each finished folder: its channel, and whether the owner took it off the board
+        if "edit" in info:
+            info["ch"] = channels_mod.folder_channel(os.path.join(ROOT, "out", name))
+            info["hidden"] = name in hidden
+    s["waiting_for_approval"] = [n for n in s["waiting_for_approval"] if n not in hidden]
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button

@@ -22,7 +22,7 @@ class BoardTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         tree = ast.parse(SERVER.read_text(encoding="utf-8"))
         names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action"}
-        body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE") for t in n.targets)]
+        body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME") for t in n.targets)]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
         self.db = {"tasks": []}
         self.env = {"re": re, "os": os, "datetime": datetime, "ROOT": str(self.root), "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
@@ -65,6 +65,31 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(self.act({"action": "remove", "id": t["id"]})[1]["removed"], 1)
         self.assertEqual(self.db["tasks"], [])
         self.assertTrue((self.root / "out" / "somewhere").is_dir())           # deleting a task never touches its files
+
+    def test_undo_brings_a_deleted_task_back(self):
+        t = self.add(title="Keep me", channel="pong-gospel")
+        removed = self.act({"action": "remove", "id": t["id"]})[1]["task"]
+        self.assertEqual(self.db["tasks"], [])
+        self.assertEqual(self.act({"action": "restore", "task": removed})[0], 201)
+        back = self.db["tasks"][0]
+        self.assertEqual((back["id"], back["title"], back["channel"]), (t["id"], "Keep me", "pong-gospel"))
+        self.assertEqual(self.act({"action": "restore", "task": removed})[0], 409)   # never twice
+
+    def test_a_folder_without_a_task_can_be_filed_and_taken_off_the_board(self):
+        clip = self.root / "out" / "clip-1"
+        clip.mkdir(parents=True)
+        (clip / "edit.mp4").write_bytes(b"x")
+        self.assertEqual(self.act({"action": "folder-channel", "folder": "clip-1", "channel": "pong-gospel"})[0], 200)
+        self.assertEqual((clip / "channel.txt").read_text(encoding="utf-8"), "pong-gospel")
+        self.assertEqual(self.act({"action": "folder-channel", "folder": "clip-1", "channel": "no-such"})[0], 400)
+        self.assertEqual(self.act({"action": "folder-channel", "folder": "../tasks", "channel": ""})[0], 404)
+        (self.root / "out" / "thumbnail-final-abc").mkdir()
+        self.assertEqual(self.act({"action": "folder-channel", "folder": "thumbnail-final-abc", "channel": ""})[0], 409)
+        self.act({"action": "folder-hide", "folder": "clip-1"})
+        self.assertEqual(self.db["hidden_out"], ["clip-1"])
+        self.assertTrue((clip / "edit.mp4").is_file())                         # taking it off the board keeps its files
+        self.act({"action": "folder-show", "folder": "clip-1"})
+        self.assertEqual(self.db["hidden_out"], [])
 
 
 if __name__ == "__main__":

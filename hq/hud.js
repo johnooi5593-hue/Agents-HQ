@@ -279,6 +279,14 @@
     const key = t ? t.key : /chief|lead|office/i.test(String(team)) ? "chief" : /brain/i.test(String(team)) ? "brain" : String(team || "office").toLowerCase();
     addNotif({ id: "l" + Date.now(), ts: Date.now(), team: t ? t.name : String(team || "Office"), teamKey: key, title: title || (t ? t.name : String(team || "Agents HQ")), body: body || "", kind: opt.kind || "info", bad: !!opt.bad }, true);
   }
+  function undoToast(body, undo) {                         // a board delete: the toast offers Undo for a few seconds
+    const node = el(`<div class="toast undo">${iconTile("chief")}<div><div class="title">Board</div><div class="body">${esc(body)}</div></div><button class="btn sm" type="button">Undo</button></div>`), host = $("#toasts");
+    host.prepend(node);
+    while (host.children.length > (isPhone() ? 2 : 3)) host.lastElementChild.remove();
+    const gone = () => { node.classList.add("fade"); setTimeout(() => node.remove(), 650); };
+    node.querySelector("button").addEventListener("click", (e) => { e.stopPropagation(); undo(); node.remove(); });
+    setTimeout(gone, 10000);
+  }
   function iconTile(teamKey, extraClass = "") {            // the rounded team icon square (also "brain" and "chief")
     const t = teamByKey(teamKey) || teamByName(teamKey);
     if (t) return `<span class="ticon ${extraClass}" style="background:${accent(t)}">${teamGlyph(t)}</span>`;
@@ -785,13 +793,23 @@
     for (const [name, info] of Object.entries(st.out || {})) if (!SPECIAL_OUT.includes(name) && info && (info.files || []).length) outNames.add(name);
     // Native Studio deliveries already have a real review task. Keep that task
     // as the single approval entry, without changing ordinary out/ cards.
-    // a folder without a task has no channel of its own here: it shows under All channels
-    const outWaiting = state.chFilter === "all" ? uncoveredSermonOutFolders(outNames, review).sort().map((name) => ({ name, info: (st.out || {})[name] || {} })) : [];
+    // a folder without a task: its channel is its channel.txt (none: the main channel); Delete takes it off the board
+    const folderIn = (info) => !info.hidden && (state.chFilter === "all" || info.ch === state.chFilter);
+    const outAll = uncoveredSermonOutFolders(outNames, allTasks.filter((t) => t.status === "review")).sort().map((name) => ({ name, info: (st.out || {})[name] || {} })).filter(({ info }) => !info.hidden);
+    const outWaiting = outAll.filter(({ info }) => folderIn(info));
     const counts = { all: doing.length + review.length + todo.length + done.length + outWaiting.length, running: doing.length, waiting: review.length + outWaiting.length, done: done.length, cancelled: cancelled.length };
     if (state.filter === "cancelled" && !cancelled.length && !allTasks.some((t) => t.status === "cancelled")) state.filter = "all";
     const f = state.filter, show = (k) => f === "all" || f === k;
     const sec = (title, dot, n) => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span></div>`;
-    const approvalRow = ({ name, info }) => `<div class="trow approval hot ia" data-out="${esc(name)}" data-rv-folder="out/${esc(name)}"><span class="g">${info.cover ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/cover.jpg" alt="">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`}</span><div class="tt"><div class="title">${esc(name.replace(/[-_]+/g, " "))}</div><div class="meta">${tagPill("Creative")}<span>${info.edit ? "edit ready" : `${(info.files || []).length} file${(info.files || []).length === 1 ? "" : "s"}`} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div></div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button></div></div>`;
+    const approvalRow = ({ name, info }) => {
+      const key = "out:" + name, open = state.openDetail === key, fixed = name.startsWith("thumbnail-final-");
+      const chOpts = chList().map((c) => `<option value="${esc(c.key)}" ${c.key === (info.ch || "") ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+      const detail = open ? `<div class="task-detail"><div><b>out/${esc(name)}</b> <span class="hint">· ${(info.files || []).length} files · no task on the board</span></div>
+        <div class="td-grid"><span class="td-l">Channel</span><select class="field td-ch" data-out-ch="${esc(name)}" aria-label="Channel of this folder" ${fixed ? "disabled" : ""}>${chOpts}</select></div>
+        <div class="hint" style="margin-top:6px">${fixed ? "A thumbnail package keeps the channel it was made for." : "The channel also picks the accounts on the posting screen."} Delete takes it off the board; its files stay in out/.</div>
+        <div class="td-end"><button class="btn sm danger" data-del-out="${esc(name)}" type="button">Delete</button></div></div>` : "";
+      return `<div class="trow approval hot" data-out="${esc(name)}"><span class="g ia" data-rv-folder="out/${esc(name)}">${info.cover ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/cover.jpg" alt="">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`}</span><div class="tt ia" data-rv-folder="out/${esc(name)}"><div class="title">${esc(name.replace(/[-_]+/g, " "))}</div><div class="meta">${chPill(info.ch || "")}${tagPill("Creative")}<span>${info.edit ? "edit ready" : `${(info.files || []).length} file${(info.files || []).length === 1 ? "" : "s"}`} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div></div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button><button class="btn sm mng ${open ? "on" : ""}" data-manage="${esc(key)}" type="button" title="Manage: channel, delete" aria-label="Manage this folder" aria-expanded="${open}">⋯</button></div></div>${detail}`;
+    };
     const scrollTop = p.querySelector(".pbody") ? p.querySelector(".pbody").scrollTop : 0;
     const teamOpts = state.teams.map((t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
     let body = "";
@@ -802,8 +820,8 @@
     if (show("done")) body += sec("Done today", "#4cceac", done.length) + (done.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing finished yet today.</div>');
     if (f === "cancelled") body = sec("Cancelled", "#6b7280", cancelled.length) + (cancelled.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing cancelled here.</div>') + '<div class="hint" style="margin:6px 0">Restore puts a task back in To do. Delete (under ⋯) removes it from the board for good; its files stay.</div>';
     // channel chips: open work per channel (cancelled and finished tasks are not counted)
-    const open = (t) => ["todo", "doing", "review"].includes(t.status), nOpen = (pred) => allTasks.filter((t) => open(t) && pred(t)).length;
-    const chips = [["all", "All channels", nOpen(() => true)], ...chList().map((c) => [c.key, c.name, nOpen((t) => t.ch === c.key)]), ["@office", "Whole office", nOpen((t) => t.ch == null)]];
+    const open = (t) => ["todo", "doing", "review"].includes(t.status), nOpen = (pred, ch) => allTasks.filter((t) => open(t) && pred(t)).length + outAll.filter(({ info }) => ch === undefined || (info.ch || "") === ch).length;
+    const chips = [["all", "All channels", nOpen(() => true)], ...chList().map((c) => [c.key, c.name, nOpen((t) => t.ch === c.key, c.key)]), ["@office", "Whole office", nOpen((t) => t.ch == null, null)]];
     const chRow = `<div class="chrow" role="group" aria-label="Show tasks for">${chips.map(([k, l, n]) => `<button class="chchip ${state.chFilter === k ? "active" : ""}" data-chf="${esc(k)}" type="button" style="--chc:${k === "all" ? "#7b6cf6" : k === "@office" ? "#4a5060" : hashColor("channel:" + k)}"><i></i>${esc(l)} <b>${n}</b></button>`).join("")}</div>`;
     const addCh = state.chFilter === "all" ? "auto" : state.chFilter === "@office" ? "@office" : "ch:" + state.chFilter;
     const chOpts = [["auto", "Channel: auto"], ...chList().map((c) => ["ch:" + c.key, c.name]), ["@office", "Whole office"]].map(([v, l]) => `<option value="${esc(v)}" ${v === addCh ? "selected" : ""}>${esc(l)}</option>`).join("");
@@ -1629,11 +1647,15 @@
       if (d.chf != null) { state.chFilter = d.chf; state.openDetail = null; renderBoard(); return; }
       if (d.manage) { state.openDetail = state.openDetail === d.manage ? null : d.manage; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is under Cancelled if you want it back."); return; }
-      if (d.del) {
-        const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.del);
-        if (!t || !window.confirm(`Delete "${shortTask(t.title, 60)}" from the board for good?\n\nIts files stay where they are (out/, approved/). This cannot be undone; use Cancel task if you may want it back.`)) return;
-        if (state.openDetail === t.id) state.openDetail = null;
-        taskAction({ action: "remove", id: t.id }, "Task deleted from the board. Its files were not touched."); return;
+      if (d.del) {                                         // no "are you sure": the toast has Undo instead
+        if (state.openDetail === d.del) state.openDetail = null;
+        taskAction({ action: "remove", id: d.del }).then((r) => { if (r && r.task) undoToast(`Deleted "${shortTask(r.task.title, 50)}". Its files were not touched.`, () => taskAction({ action: "restore", task: r.task }, "Task is back on the board.")); });
+        return;
+      }
+      if (d.delOut) {
+        const name = d.delOut; if (state.openDetail === "out:" + name) state.openDetail = null;
+        taskAction({ action: "folder-hide", folder: name }).then((r) => { if (r) undoToast(`Removed "${shortTask(name.replace(/[-_]+/g, " "), 50)}" from the board. Its files stay in out/.`, () => taskAction({ action: "folder-show", folder: name }, "It is back on the board.")); });
+        return;
       }
       if (d.approve) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.approve); if (t && folderOfTask(t)) { openReview({ taskId: t.id }); return; } taskAction({ action: "approve", id: d.approve }, "Approved. The owner publishes; nothing is posted by the office."); return; }
       if (d.approveOut) { openReview({ folder: "out/" + d.approveOut }); return; }   // look before you approve
@@ -1674,6 +1696,8 @@
       if (e.target && e.target.id === "drop-ch") state.dropCh = e.target.value;
       const id = e.target && e.target.dataset && e.target.dataset.taskCh, v = id && e.target.value;
       if (id) taskAction({ action: "channel", id, channel: v === "auto" ? null : v === "@office" ? "@office" : v.slice(3) }, "Channel updated.");
+      const folder = e.target && e.target.dataset && e.target.dataset.outCh;
+      if (folder != null) taskAction({ action: "folder-channel", folder, channel: e.target.value }, `Filed under ${chName(e.target.value)}.`);
     });
     document.addEventListener("drop", (e) => { const z = e.target.closest(".drop"); if (!z) return; e.preventDefault(); z.classList.remove("over"); if (e.dataTransfer.files.length) upload(z.dataset.kind, Array.from(e.dataTransfer.files)); });
     // ask box
