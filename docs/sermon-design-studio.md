@@ -1,5 +1,13 @@
 # Sermon Design Studio in Creative
 
+## Shared with Codex HQ
+
+Both HQ entries can use the same sermon-poster/XHS projects. In Codex HQ, the saved shared-artwork connection forwards only the bounded artwork routes to this Claude HQ bridge; the existing image engine remains the only project writer. In either Studio, **Shared projects** opens the common list and actual accepted-job progress. Open the same project to continue editing; changing HQ is not a reason to generate again. Version conflicts require reopening the latest revision.
+
+Final OK stays here in Claude HQ. The shared hub links to this native review task and has no approval or generation action. Its phone review link uses a separately verified private HTTPS address, never phone-local127.0.0.1. Existing tasks, login, pairing, other brands, frozen attempts and paused productions remain separate and unchanged. An unavailable connection reports an error rather than silently creating an independent local project.
+
+The connection setup and local read-only status API are documented in `D:/AI OFFICE/docs/SERMON-DESIGN-STUDIO.md`. These are user-requested workflow changes; they do not resume paused Pulse learning.
+
 1. Open **Creative → Overview → Create sermon poster / 讲道海报**.
 2. Enter the exact Chinese and English titles, then upload reference images.
 3. Choose **Generate 4 Designs**. Review the four separate options, adjust text
