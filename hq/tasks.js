@@ -3,17 +3,20 @@
 // usage: node hq/tasks.js list [--json]
 //        node hq/tasks.js add "<title>" [--team <Team>] [--agent <name>] [--note "<text>"] [--status todo|doing|review|done]
 //                                       [--kind task|approval|post|meeting] [--date YYYY-MM-DD] [--time HH:MM] [--subtitle "<text>"]
-//        node hq/tasks.js move <id> todo|doing|review|done          (done stamps done_at, anything else clears it)
+//                                       [--channel <key>|main|@office]   (a channel's key from .hq-channels.json, main, or the whole office)
+//        node hq/tasks.js move <id> todo|doing|review|done|cancelled (done stamps done_at, anything else clears it)
+//        node hq/tasks.js channel <id> <key>|main|@office|auto     (file the task under a channel; auto: from its note/folder)
 //        node hq/tasks.js progress <id> <0..100> ["<subtitle>"]     (what the task is doing right now)
 //        node hq/tasks.js note <id> "<text>"                        (note "out:<name>" ties the task to out/<name>: Approve in the app moves it)
 //        node hq/tasks.js remove <id>
-// Task = { id, title, team, agent, status, kind, note, subtitle, progress, date, time, created, updated, done_at }
+// Task = { id, title, team, agent, status, kind, note, subtitle, progress, date, time, created, updated, done_at, channel }
 const fs = require("fs");
 const path = require("path");
 const FILE = path.join(__dirname, "tasks.json");
-const STATUSES = ["todo", "doing", "review", "done"];
+const STATUSES = ["todo", "doing", "review", "done", "cancelled"];
 const KINDS = ["task", "approval", "post", "meeting"];
-const DEFAULTS = { team: "", agent: "", note: "", kind: "task", subtitle: "", progress: null, date: null, time: null, done_at: null };
+const DEFAULTS = { team: "", agent: "", note: "", kind: "task", subtitle: "", progress: null, date: null, time: null, done_at: null, channel: null };
+const cleanChannel = (c) => (c === "main" ? "" : c === "@office" || (typeof c === "string" && /^[a-z0-9-]+$/.test(c)) ? c : null);   // "main": the main channel; the app checks it is real
 
 function normalize(t) {
   for (const [k, v] of Object.entries(DEFAULTS)) if (t[k] === undefined) t[k] = v;
@@ -53,11 +56,11 @@ if (cmd === "add") {
   const status = STATUSES.includes(o.status) ? o.status : "todo";
   const task = normalize({ id, title, team: o.team === true ? "" : o.team || "", agent: o.agent === true ? "" : o.agent || "", status,
     kind: KINDS.includes(o.kind) ? o.kind : "task", note: o.note === true ? "" : o.note || "", subtitle: o.subtitle === true ? "" : o.subtitle || "",
-    progress: cleanProgress(o.progress), date: cleanDate(o.date), time: cleanTime(o.time), created: now(), updated: now(), done_at: status === "done" ? now() : null });
+    progress: cleanProgress(o.progress), date: cleanDate(o.date), time: cleanTime(o.time), created: now(), updated: now(), done_at: status === "done" ? now() : null, channel: cleanChannel(o.channel) });
   db.tasks.push(task); save(db); out({ added: task });
 } else if (cmd === "move") {
   const t = find(o._[0]); const st = o._[1];
-  if (!t || !STATUSES.includes(st)) { console.error("move <id> todo|doing|review|done"); process.exit(1); }
+  if (!t || !STATUSES.includes(st)) { console.error("move <id> todo|doing|review|done|cancelled"); process.exit(1); }
   setStatus(t, st); save(db); out({ moved: t });
 } else if (cmd === "progress") {
   const t = find(o._[0]); const p = cleanProgress(o._[1]);
@@ -66,6 +69,10 @@ if (cmd === "add") {
 } else if (cmd === "note") {
   const t = find(o._[0]); if (!t) { console.error("no such task"); process.exit(1); }
   t.note = o._.slice(1).join(" "); t.updated = now(); save(db); out({ noted: t });
+} else if (cmd === "channel") {
+  const t = find(o._[0]); const c = o._[1] === "auto" ? null : cleanChannel(o._[1]);
+  if (!t || (o._[1] !== "auto" && c === null)) { console.error("channel <id> <key>|main|@office|auto"); process.exit(1); }
+  t.channel = c; t.updated = now(); save(db); out({ channel: t });
 } else if (cmd === "remove") {
   const n = db.tasks.length; db.tasks = db.tasks.filter((t) => t.id !== o._[0]); save(db); out({ removed: n - db.tasks.length });
 } else {

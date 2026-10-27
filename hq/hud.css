@@ -309,10 +309,31 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 
 /* ---------- task board ---------- */
 #task-board { width: var(--board-w); }
-.add-task { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 12px 18px 0; }
+.add-task { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; padding: 12px 18px 0; }
+.add-task input { grid-column: 1 / -1; }                    /* the title gets the whole first line; team, channel and Add below */
 .add-task input, .add-task select, .field { height: 34px; padding: 0 11px; border-radius: 9px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); color: var(--text); outline: 0; }
 .add-task input:focus, .field:focus { border-color: rgba(123, 108, 246, 0.6); }
-.add-task select { max-width: 130px; }
+.add-task select { min-width: 0; }
+/* channels on the board: filter chips above the tabs, a pill on every task */
+.chrow { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px 0; }
+.chchip { height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.1); color: #a9b0c0; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.chchip i { width: 8px; height: 8px; border-radius: 50%; background: var(--chc); }
+.chchip b { font-weight: 700; color: #c9cfdb; }
+.chchip.active { background: color-mix(in srgb, var(--chc) 30%, #232836); border-color: var(--chc); color: #fff; }
+.chpill { font: 600 9.5px var(--mono); padding: 2px 7px; border-radius: 4px; background: color-mix(in srgb, var(--chc) 35%, #1b1f2a); color: #f1f3fa; border: 1px solid color-mix(in srgb, var(--chc) 70%, transparent); white-space: nowrap; }
+.chpill.office { color: #aab1c0; background: #262b36; border-color: #3a404d; }
+.btn.mng { min-width: 0; width: 30px; padding: 0; font-size: 16px; line-height: 1; letter-spacing: 1px; background: transparent; border-color: rgba(255, 255, 255, 0.12); color: #b6bdcc; }
+.btn.mng.on, .btn.mng:hover { background: #2a3142; color: #fff; }
+.btn.danger { background: #3a1f25; border-color: #6b2a34; color: #ffb5bf; }
+.btn.danger:hover { background: #55242e; color: #fff; }
+.trow.cancelled { opacity: 0.72; }
+.trow.cancelled .title { text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.35); }
+.cx-g { color: #8a91a0; font-size: 13px; }
+.task-detail .td-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: center; margin-top: 10px; }
+.task-detail .td-l { font: 500 10px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: #7f8291; }
+.task-detail .td-ch { height: 30px; max-width: 280px; }
+.task-detail .td-moves { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-detail .td-end { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .btn { height: 34px; padding: 0 14px; border-radius: 9px; background: #323440; border: 1px solid #3a3e4a; color: #dbdfe8; font-weight: 600; font-size: 12.5px; white-space: nowrap; }
 .btn:hover { background: #3a3d4b; }
 .btn.primary { background: linear-gradient(180deg, #fec745, #f6a71c); border-color: transparent; color: #472600; }
@@ -670,7 +691,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   #floor-ctl { right: 10px; bottom: auto; top: 50%; transform: translateY(-50%); padding: 5px; }
   #floor-ctl button { min-width: 44px; height: 44px; }
   /* a sheet covers the office: its billboards stay hidden (the scene pauses too) */
-  #hud.panel-open #team-cards, #hud.panel-open #agent-pills, #hud.panel-open #brain-label, #hud.panel-open #subagent-cards,
+  #hud.panel-open #team-cards, #hud.panel-open #agent-pills, #hud.panel-open #brain-label, #hud.panel-open #subagent-cards, #hud.panel-open #floor-ctl,
   #hud.lead-open #team-cards, #hud.lead-open #agent-pills, #hud.lead-open #brain-label, #hud.lead-open #room-label,
   #hud.ask-open #team-cards, #hud.ask-open #agent-pills, #hud.ask-open #brain-label, #hud.ask-open #room-label { visibility: hidden; }
   #hud.panel-open #team-cards *, #hud.lead-open #team-cards *, #hud.ask-open #team-cards *, #hud.panel-open #agent-pills *, #hud.lead-open #agent-pills *, #hud.ask-open #agent-pills * { visibility: hidden !important; }
@@ -715,7 +736,13 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   .field, .add-task input, .add-task select { height: 44px; border-radius: 11px; }
 
   /* task board: approving from the phone is the main use, so Approve / Review are big */
-  .add-task { grid-template-columns: minmax(0, 1fr) 96px auto; gap: 8px; padding: 12px var(--gut-r) 0 var(--gut-l); }
+  .add-task { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; padding: 12px var(--gut-r) 0 var(--gut-l); }
+  .chrow { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 10px var(--gut-r) 0 var(--gut-l); }
+  .chrow::-webkit-scrollbar { display: none; }
+  .chchip { flex: none; height: 36px; padding: 0 13px; font-size: 13.5px; }
+  .trow .act .btn.mng { min-width: 0; width: 44px; padding: 0; font-size: 18px; }
+  .task-detail .td-ch { height: 42px; max-width: none; }
+  .task-detail .td-grid { grid-template-columns: minmax(0, 1fr); }
   .add-task select { max-width: none; min-width: 0; padding: 0 8px; }
   .ftabs { gap: 6px; padding: 10px var(--gut-r) 4px var(--gut-l); overflow-x: auto; scrollbar-width: none; }
   .ftabs::-webkit-scrollbar { display: none; }

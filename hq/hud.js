@@ -85,7 +85,7 @@
     status: null, teams: [], agents: [], brain: null, brainNotes: null,
     notifs: [], notifTotal: 0, notifSeeded: false, unread: 0,
     view: "office", panelTeam: null, panelTab: "overview", focused: null,
-    filter: "all", openDetail: null, calMonth: new Date().toISOString().slice(0, 7), calDays: {},
+    filter: "all", chFilter: "all", openDetail: null, calMonth: new Date().toISOString().slice(0, 7), calDays: {},
     askAgent: null,
     run: { id: null, offset: 0, quiet: false, seen: new Set(), prompt: "" },
     hookRunning: null, evOffset: 0, hookSig: "", hookAt: 0,   // the hook feed's {agent: count}, polled every 2 s from /api/events
@@ -642,6 +642,11 @@
   }
   const tagStyle = (t) => `--tcl:${lighten(accent(t), 0.35)};--tcd:${darken(accent(t), 0.5)}`;
   const tagPill = (team) => { const t = teamByName(team); return `<span class="tag" style="${t ? tagStyle(t) : "--tcl:#3a3f4d;--tcd:#d5d9e3"}">${esc(t ? t.name : team || "Office")}</span>`; };
+  // channels: the server gives each task t.ch, a channel key ("" is the main channel) or null for the whole office
+  const chList = () => (state.status && state.status.channels) || [];
+  const chName = (key) => (key == null ? "Whole office" : (chList().find((c) => c.key === key) || {}).name || key || "Main channel");
+  const chPill = (key) => `<span class="chpill${key == null ? " office" : ""}" style="--chc:${key == null ? "#4a5060" : hashColor("channel:" + key)}">${esc(chName(key))}</span>`;
+  const inChannel = (t) => state.chFilter === "all" || (state.chFilter === "@office" ? t.ch == null : t.ch === state.chFilter);
   function ring(p) {
     const r = 13, c = 2 * Math.PI * r, off = c * (1 - clamp(p, 0, 100) / 100);
     return `<span class="ring"><svg viewBox="0 0 32 32"><circle class="trk" cx="16" cy="16" r="${r}"/><circle class="arc" cx="16" cy="16" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/></svg><span class="n">${Math.round(p)}</span></span>`;
@@ -656,17 +661,27 @@
     if (t.status === "doing") { glyph = t.progress != null ? ring(t.progress) : '<span class="spin"></span>'; meta = t.subtitle || t.agent || "running"; act = t.progress != null ? "" : '<span class="chev">›</span>'; if (t.progress != null) { act = glyph; glyph = '<span class="spin"></span>'; } }
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : ""; }
     else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = t.subtitle || timeAgo(t.done_at || t.updated); act = '<span class="chev">›</span>'; }
+    else if (t.status === "cancelled") { glyph = '<span class="cx-g">✕</span>'; meta = "cancelled " + timeAgo(t.updated); act = `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore</button>`; cls = "cancelled"; }
     else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now">Edit</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
-    const title = t.date && t.status !== "done" && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
-    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${tagPill(t.team)}${t.final ? '<span class="final-pill" title="Video, thumbnail and caption are all ready">✓ Final</span>' : ""}<span>${esc(meta)}</span></div></div><div class="act">${act}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
+    const title = t.date && !["done", "cancelled"].includes(t.status) && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
+    // every task has its own ⋯: channel, move, cancel, delete (clicking the title of a task with a video opens its review instead)
+    const manage = `<button class="btn sm mng ${state.openDetail === t.id ? "on" : ""}" data-manage="${esc(t.id)}" type="button" title="Manage: channel, move, cancel, delete" aria-label="Manage this task" aria-expanded="${state.openDetail === t.id}">⋯</button>`;
+    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${chPill(t.ch)}${tagPill(t.team)}${t.final ? '<span class="final-pill" title="Video, thumbnail and caption are all ready">✓ Final</span>' : ""}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage}</div></div>${state.openDetail === t.id ? taskDetail(t) : ""}`;
   }
+  const STATUS_LABEL = { todo: "To do", doing: "Running", review: "Waiting", done: "Done" };
   function taskDetail(t) {
     const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {}, top = m ? m[1].split("/")[0] : "";
     if (t.footage && t.status === "todo") files.push(`<button class="btn sm blue" data-edit-footage="${esc(t.id)}" type="button">${svg("play")} Edit this video</button>`);
     if (m && st.out && st.out[top]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[top].files || []).length} files</button>`);
     else if (m && st.approved && st.approved[top]) files.push(`<button class="btn sm blue" data-rv-folder="approved/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open to post</button>`);
-    const moves = ["todo", "doing", "review", "done"].filter((s) => s !== t.status).map((s) => `<button class="btn sm" data-move="${esc(t.id)}:${s}">${({ todo: "To do", doing: "Running", review: "Waiting", done: "Done" })[s]}</button>`).join("");
-    return `<div class="task-detail"><div><b>${esc(t.title)}</b> <span class="hint">· ${esc(t.kind)}${t.agent ? " · " + esc(t.agent) : ""}${t.date ? " · " + esc(t.date) + (t.time ? " " + esc(t.time) : "") : ""} · created ${esc(timeAgo(t.created))}</span></div>${t.note ? `<div class="nt">${esc(t.note)}</div>` : '<div class="hint" style="margin-top:4px">No note on this task.</div>'}${files.length ? `<div>${files.join("")}</div>` : ""}<div class="row">${moves}<button class="btn sm" data-remove="${esc(t.id)}" style="margin-left:auto">Remove</button></div></div>`;
+    const moves = Object.keys(STATUS_LABEL).filter((s) => s !== t.status).map((s) => `<button class="btn sm" data-move="${esc(t.id)}:${s}" type="button">${STATUS_LABEL[s]}</button>`).join("");
+    const opt = (value, label, on) => `<option value="${esc(value)}" ${on ? "selected" : ""}>${esc(label)}</option>`;
+    const chOpts = opt("auto", `Automatic · ${chName(t.ch)}`, t.channel == null) + chList().map((c) => opt("ch:" + c.key, c.name, t.channel === c.key)).join("") + opt("@office", "Whole office (no channel)", t.channel === "@office");
+    const stop = t.status === "cancelled" ? `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore to To do</button>` : `<button class="btn sm" data-cancel="${esc(t.id)}" type="button">Cancel task</button>`;
+    return `<div class="task-detail"><div><b>${esc(t.title)}</b> <span class="hint">· ${esc(t.kind)}${t.agent ? " · " + esc(t.agent) : ""}${t.date ? " · " + esc(t.date) + (t.time ? " " + esc(t.time) : "") : ""} · created ${esc(timeAgo(t.created))}</span></div>${t.note ? `<div class="nt">${esc(t.note)}</div>` : '<div class="hint" style="margin-top:4px">No note on this task.</div>'}${files.length ? `<div>${files.join("")}</div>` : ""}
+      <div class="td-grid"><span class="td-l">Channel</span><select class="field td-ch" data-task-ch="${esc(t.id)}" aria-label="Channel of this task">${chOpts}</select>
+      <span class="td-l">Move to</span><div class="td-moves">${moves}</div></div>
+      <div class="td-end">${stop}<button class="btn sm danger" data-del="${esc(t.id)}" type="button">Delete</button></div></div>`;
   }
   const teamTasks = (t) => ((state.status && state.status.tasks) || []).filter((x) => t && (x.team === t.name || String(x.team).toLowerCase() === t.key));
 
@@ -759,16 +774,21 @@
     return Array.from(names).filter(name => !linked.has(name));
   }
   function renderBoard() {
-    const p = $("#task-board"), st = state.status || {}, tasks = st.tasks || [];
+    const p = $("#task-board"), st = state.status || {}, allTasks = st.tasks || [];
+    if (state.chFilter !== "all" && state.chFilter !== "@office" && !chList().some((c) => c.key === state.chFilter)) state.chFilter = "all";
+    const tasks = allTasks.filter(inChannel);
     const doing = tasks.filter((t) => t.status === "doing"), review = tasks.filter((t) => t.status === "review"), todo = tasks.filter((t) => t.status === "todo");
     const done = tasks.filter((t) => t.status === "done" && isToday(t.done_at)).sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
+    const cancelled = tasks.filter((t) => t.status === "cancelled").sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // every finished folder in out/ waits for the owner: edits (edit.mp4), but also notes-only or script-only work
     const SPECIAL_OUT = ["scripts", "radar", "pulse"], outNames = new Set(st.waiting_for_approval || []);
     for (const [name, info] of Object.entries(st.out || {})) if (!SPECIAL_OUT.includes(name) && info && (info.files || []).length) outNames.add(name);
     // Native Studio deliveries already have a real review task. Keep that task
     // as the single approval entry, without changing ordinary out/ cards.
-    const outWaiting = uncoveredSermonOutFolders(outNames, review).sort().map((name) => ({ name, info: (st.out || {})[name] || {} }));
-    const counts = { all: tasks.length + outWaiting.length, running: doing.length, waiting: review.length + outWaiting.length, done: done.length };
+    // a folder without a task has no channel of its own here: it shows under All channels
+    const outWaiting = state.chFilter === "all" ? uncoveredSermonOutFolders(outNames, review).sort().map((name) => ({ name, info: (st.out || {})[name] || {} })) : [];
+    const counts = { all: doing.length + review.length + todo.length + done.length + outWaiting.length, running: doing.length, waiting: review.length + outWaiting.length, done: done.length, cancelled: cancelled.length };
+    if (state.filter === "cancelled" && !cancelled.length && !allTasks.some((t) => t.status === "cancelled")) state.filter = "all";
     const f = state.filter, show = (k) => f === "all" || f === k;
     const sec = (title, dot, n) => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span></div>`;
     const approvalRow = ({ name, info }) => `<div class="trow approval hot ia" data-out="${esc(name)}" data-rv-folder="out/${esc(name)}"><span class="g">${info.cover ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/cover.jpg" alt="">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`}</span><div class="tt"><div class="title">${esc(name.replace(/[-_]+/g, " "))}</div><div class="meta">${tagPill("Creative")}<span>${info.edit ? "edit ready" : `${(info.files || []).length} file${(info.files || []).length === 1 ? "" : "s"}`} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div></div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button></div></div>`;
@@ -780,9 +800,18 @@
     body += isPhone() ? waitingSec + runningSec : runningSec + waitingSec;      // a phone is for approving: what waits for you comes first
     if (f === "all" && todo.length) body += sec("To do", "#6b7280", todo.length) + todo.map(taskRow).join("");
     if (show("done")) body += sec("Done today", "#4cceac", done.length) + (done.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing finished yet today.</div>');
-    p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">Whole office · today</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
-      <form class="add-task" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team"><option value="">Auto</option>${teamOpts}</select><button class="btn blue" type="submit">Add</button></form>
-      <div class="ftabs">${[["all", "All"], ["running", "Running"], ["waiting", "Waiting"], ["done", "Done"]].map(([k, l]) => `<button class="ftab ${f === k ? "active" : ""}" data-filter="${k}" type="button">${l} <b>${counts[k]}</b></button>`).join("")}</div>
+    if (f === "cancelled") body = sec("Cancelled", "#6b7280", cancelled.length) + (cancelled.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing cancelled here.</div>') + '<div class="hint" style="margin:6px 0">Restore puts a task back in To do. Delete (under ⋯) removes it from the board for good; its files stay.</div>';
+    // channel chips: open work per channel (cancelled and finished tasks are not counted)
+    const open = (t) => ["todo", "doing", "review"].includes(t.status), nOpen = (pred) => allTasks.filter((t) => open(t) && pred(t)).length;
+    const chips = [["all", "All channels", nOpen(() => true)], ...chList().map((c) => [c.key, c.name, nOpen((t) => t.ch === c.key)]), ["@office", "Whole office", nOpen((t) => t.ch == null)]];
+    const chRow = `<div class="chrow" role="group" aria-label="Show tasks for">${chips.map(([k, l, n]) => `<button class="chchip ${state.chFilter === k ? "active" : ""}" data-chf="${esc(k)}" type="button" style="--chc:${k === "all" ? "#7b6cf6" : k === "@office" ? "#4a5060" : hashColor("channel:" + k)}"><i></i>${esc(l)} <b>${n}</b></button>`).join("")}</div>`;
+    const addCh = state.chFilter === "all" ? "auto" : state.chFilter === "@office" ? "@office" : "ch:" + state.chFilter;
+    const chOpts = [["auto", "Channel: auto"], ...chList().map((c) => ["ch:" + c.key, c.name]), ["@office", "Whole office"]].map(([v, l]) => `<option value="${esc(v)}" ${v === addCh ? "selected" : ""}>${esc(l)}</option>`).join("");
+    const tabs = [["all", "All"], ["running", "Running"], ["waiting", "Waiting"], ["done", "Done"], ...(allTasks.some((t) => t.status === "cancelled") || f === "cancelled" ? [["cancelled", "Cancelled"]] : [])];
+    p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">${state.chFilter === "all" ? "Whole office" : esc(chName(state.chFilter === "@office" ? null : state.chFilter))} · today</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
+      <form class="add-task" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team" aria-label="Team"><option value="">Team: auto</option>${teamOpts}</select><select id="task-ch" aria-label="Channel">${chOpts}</select><button class="btn blue" type="submit">Add</button></form>
+      ${chRow}
+      <div class="ftabs">${tabs.map(([k, l]) => `<button class="ftab ${f === k ? "active" : ""}" data-filter="${k}" type="button">${l} <b>${counts[k]}</b></button>`).join("")}</div>
       <div class="pbody">${body}</div>
       <div class="drop-strip"><div class="lbl"><span>Drop files · how work enters${(st.channels || []).length > 1 ? ` · clips for <select id="drop-ch" aria-label="Channel for dropped clips">${st.channels.map((c) => `<option value="${esc(c.key)}" ${c.key === (state.dropCh || "") ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>` : ""}</span><span>${(st.inbox && st.inbox.clips || []).length} clips · ${(st.inbox && st.inbox.radar || []).length} notes · ${(st.inbox && st.inbox.stats || []).length} csv · ${(st.inbox && st.inbox.messages || []).length} mail</span></div><div class="drops">
         <div class="drop" data-kind="clips">Clips<small>mp4 mov mkv webm</small></div><div class="drop" data-kind="radar">Comments<small>txt md csv json</small></div><div class="drop" data-kind="stats">Analytics<small>csv exports</small></div><div class="drop" data-kind="messages">Emails<small>eml txt md json</small></div></div></div>`;
@@ -1597,12 +1626,20 @@
       if (d.close != null) { if (b.closest("#agent-card")) hideAgentCard(); else openPanel("office"); return; }
       if (d.ptab) { state.panelTab = d.ptab; renderTeamPanel(); return; }
       if (d.filter) { state.filter = d.filter; renderBoard(); return; }
+      if (d.chf != null) { state.chFilter = d.chf; state.openDetail = null; renderBoard(); return; }
+      if (d.manage) { state.openDetail = state.openDetail === d.manage ? null : d.manage; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
+      if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is under Cancelled if you want it back."); return; }
+      if (d.del) {
+        const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.del);
+        if (!t || !window.confirm(`Delete "${shortTask(t.title, 60)}" from the board for good?\n\nIts files stay where they are (out/, approved/). This cannot be undone; use Cancel task if you may want it back.`)) return;
+        if (state.openDetail === t.id) state.openDetail = null;
+        taskAction({ action: "remove", id: t.id }, "Task deleted from the board. Its files were not touched."); return;
+      }
       if (d.approve) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.approve); if (t && folderOfTask(t)) { openReview({ taskId: t.id }); return; } taskAction({ action: "approve", id: d.approve }, "Approved. The owner publishes; nothing is posted by the office."); return; }
       if (d.approveOut) { openReview({ folder: "out/" + d.approveOut }); return; }   // look before you approve
       if (d.review) { openReview({ taskId: d.review }); return; }
       if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
-      if (d.remove) { taskAction({ action: "remove", id: d.remove }, "Task removed from the board."); return; }
       if (d.editFootage) { taskAction({ action: "edit", id: d.editFootage }, "Editing started: the Creative team is on it. Nothing posts until you approve.").then((r) => { if (r) setLead(true); }); return; }
       if (d.run) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.run); if (t) { send(`/brief ${t.title} (board task ${t.id}${t.team ? ", team " + t.team : ""})`); setLead(true); } return; }
       if (d.board != null) { openPanel("tasks"); return; }
@@ -1621,14 +1658,23 @@
       if (f.id === "rv-changes") { e.preventDefault(); const t = $("#rv-change-text").value.trim(); if (t) reviewChanges(t); return; }
       if (f.id === "ask-any") { e.preventDefault(); submitAsk(); }
       else if (f.id === "lead-form") { e.preventDefault(); const i = $("#lead-input"); if (i.value.trim()) send(i.value.trim()); i.value = ""; }
-      else if (f.id === "add-task") { e.preventDefault(); const title = $("#task-title").value.trim(); if (!title) return; state.addTeam = $("#task-team").value; taskAction({ action: "add", title, team: $("#task-team").value }, `Added "${shortTask(title, 40)}" to the board.`); }
+      else if (f.id === "add-task") {
+        e.preventDefault(); const title = $("#task-title").value.trim(); if (!title) return; state.addTeam = $("#task-team").value;
+        const c = $("#task-ch") ? $("#task-ch").value : "auto", body = { action: "add", title, team: $("#task-team").value };
+        if (c !== "auto") body.channel = c === "@office" ? "@office" : c.slice(3);
+        taskAction(body, `Added "${shortTask(title, 40)}" to the board.`);
+      }
       else if (f.id === "teach") { e.preventDefault(); const i = $("#teach-text"); if (i.value.trim()) send("/teach " + i.value.trim()); i.value = ""; setLead(true); }
       else if (f.id === "cal-add") { e.preventDefault(); const title = $("#cal-title").value.trim(); if (!title) return; taskAction({ action: "add", title, team: $("#cal-team").value, kind: "post", date: $("#cal-date").value, time: $("#cal-time").value }, `Scheduled "${shortTask(title, 40)}".`).then(loadCalendar); }
     });
     // drag and drop onto the board's strip
     document.addEventListener("dragover", (e) => { const z = e.target.closest(".drop"); if (z) { e.preventDefault(); z.classList.add("over"); } });
     document.addEventListener("dragleave", (e) => { const z = e.target.closest(".drop"); if (z) z.classList.remove("over"); });
-    document.addEventListener("change", (e) => { if (e.target && e.target.id === "drop-ch") state.dropCh = e.target.value; });
+    document.addEventListener("change", (e) => {
+      if (e.target && e.target.id === "drop-ch") state.dropCh = e.target.value;
+      const id = e.target && e.target.dataset && e.target.dataset.taskCh, v = id && e.target.value;
+      if (id) taskAction({ action: "channel", id, channel: v === "auto" ? null : v === "@office" ? "@office" : v.slice(3) }, "Channel updated.");
+    });
     document.addEventListener("drop", (e) => { const z = e.target.closest(".drop"); if (!z) return; e.preventDefault(); z.classList.remove("over"); if (e.dataTransfer.files.length) upload(z.dataset.kind, Array.from(e.dataTransfer.files)); });
     // ask box
     const ask = $("#ask-input");

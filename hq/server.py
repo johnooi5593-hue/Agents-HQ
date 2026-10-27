@@ -59,10 +59,11 @@ TASKS = os.path.join(HERE, "tasks.json")
 TEAMS_FILE = os.path.join(HERE, "teams.json")
 MCP_FILE = os.path.join(ROOT, ".mcp.json")
 STATIC = {"/hud.js", "/hud.css", "/office3d.js", "/thumbnail-studio.html", "/thumbnail-studio.js", "/thumbnail-studio.css"}
-STATUSES = ("todo", "doing", "review", "done")
+STATUSES = ("todo", "doing", "review", "done", "cancelled")   # cancelled: dropped by the owner, kept so it can come back
 KINDS = ("task", "approval", "post", "meeting")
 SCHEDULED_KINDS = ("post", "meeting")
-TASK_DEFAULTS = {"team": "", "agent": "", "note": "", "kind": "task", "subtitle": "", "progress": None, "date": None, "time": None, "done_at": None}
+TASK_DEFAULTS = {"team": "", "agent": "", "note": "", "kind": "task", "subtitle": "", "progress": None, "date": None, "time": None, "done_at": None, "channel": None}
+OFFICE = "@office"      # task.channel: None = worked out from the task (task_channel), a channel key, or OFFICE = whole office
 ACRONYMS = {"seo": "SEO", "qa": "QA", "ai": "AI", "ux": "UX", "ui": "UI", "pr": "PR", "hq": "HQ"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -419,6 +420,35 @@ def task_footage(task):
     return (m[1], ch[1] if ch else "") if path and os.path.isfile(path) else None
 
 
+def task_channel(task):
+    """The channel a task belongs to (a key, "" for the main channel) or None for the whole office: the owner's choice,
+    else channel:<key> in its note, else new footage in inbox/ (the main channel), else its work folder's channel.txt
+    (a folder without one is the main channel's)."""
+    ch, note = task.get("channel"), task.get("note") or ""
+    if ch == OFFICE:
+        return None
+    if isinstance(ch, str) and channels.get(ch):
+        return ch
+    m = re.search(r"(?:^|\s)channel:([a-z0-9-]+)", note)
+    if m and channels.get(m[1]):
+        return m[1]
+    if FOOTAGE.search(note):
+        return ""
+    m = re.search(r"out:([^\s,;]+)", note)
+    if m:
+        name = m[1].strip("/").split("/")[0]
+        for area in ("out", "approved"):
+            d = safe_join(os.path.join(ROOT, area), name)
+            if d and os.path.isdir(d):
+                try:
+                    with open(os.path.join(d, "channel.txt"), encoding="utf-8") as f:
+                        key = f.read(200).strip()
+                except OSError:
+                    key = ""
+                return key if channels.get(key) else ""
+    return None
+
+
 def edit_prompt(rel, ch, task_id):
     """The lead's instruction for the Edit button: edit-clips for that one video, for its channel."""
     n = channels.name(ch)
@@ -477,6 +507,9 @@ def _task_action(body):
                    "note": str(body.get("note") or "")[:500], "subtitle": str(body.get("subtitle") or "")[:200], "progress": clean_progress(body.get("progress")),
                    "date": clean_date(body.get("date")), "time": clean_time(body.get("time")), "created": now_iso(), "updated": now_iso(),
                    "done_at": now_iso() if body.get("status") == "done" else None}
+            ch = body.get("channel")
+            if ch == OFFICE or (isinstance(ch, str) and channels.get(ch)):
+                new["channel"] = ch
             db["tasks"].append(normalize_task(new)); save_tasks(db)
             return 201, {"added": new}
         if action == "move" and task and body.get("status") in STATUSES:
@@ -488,9 +521,17 @@ def _task_action(body):
                         return 409, {"error": reason or "Use the final approval control for this thumbnail package."}
             set_status(task, body["status"]); save_tasks(db)
             return 200, {"moved": task}
-        if action == "remove":
+        if action == "remove":                      # off the board for good; its work folder and files stay where they are
             n = len(db["tasks"]); db["tasks"] = [t for t in db["tasks"] if t.get("id") != body.get("id")]; save_tasks(db)
             return 200, {"removed": n - len(db["tasks"])}
+        if action == "channel":                     # the owner files a task under a channel (None: worked out again)
+            if not task:
+                return 404, {"error": "no such task"}
+            ch = body.get("channel")
+            if ch is not None and ch != OFFICE and not (isinstance(ch, str) and channels.get(ch)):
+                return 400, {"error": "choose an existing channel"}
+            task["channel"], task["updated"] = ch, now_iso(); save_tasks(db)
+            return 200, {"channel": task}
         if action == "approve":
             if not task:
                 return 404, {"error": "no such task"}
@@ -536,7 +577,7 @@ def _task_action(body):
                 task["subtitle"] = str(body.get("subtitle") or "")[:200]
             task["updated"] = now_iso(); save_tasks(db)
             return 200, {"progress": task}
-    return 400, {"error": "action: add (title, team, kind?, date?, time?, subtitle?), move (id, status), remove (id), approve (id) or progress (id, progress, subtitle)"}
+    return 400, {"error": "action: add (title, team, kind?, date?, time?, subtitle?, channel?), move (id, status), remove (id), channel (id, channel), approve (id) or progress (id, progress, subtitle)"}
 
 
 def calendar_payload(month):
@@ -546,7 +587,7 @@ def calendar_payload(month):
         return None
     days = {}
     for t in load_tasks()["tasks"]:
-        if isinstance(t.get("date"), str) and t["date"].startswith(month + "-"):
+        if isinstance(t.get("date"), str) and t["date"].startswith(month + "-") and t["status"] != "cancelled":
             days.setdefault(t["date"], []).append(t)
     for rows in days.values():
         rows.sort(key=lambda t: (t.get("time") is None, t.get("time") or "", t.get("created") or ""))
@@ -678,6 +719,7 @@ def status_payload():
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
+        t["ch"] = task_channel(t)                           # its channel (key, "" main) or None: the whole office
     s["channels"] = [{"key": c["key"], "name": c.get("name") or ("Main channel" if c["main"] else c["key"])} for c in channels.payload()["channels"]]
     for c in s["channels"][1:]:                             # a channel's clips wait in inbox/<key>/
         s["inbox"]["clips"] += [c["key"] + "/" + n for n in files(channels.inbox(c["key"]), CLIP_EXT)]
@@ -754,7 +796,7 @@ class Notifier:
                         self._item(fresh, team, f"{title} ready for your OK", "waiting", iso_ms(t.get("updated")), task=tid)
                     elif cur[0] == "done" and is_today(t.get("done_at")):
                         self._item(fresh, team, f"{title} done", "done", iso_ms(t.get("done_at")), task=tid)
-                    if cur[1] in SCHEDULED_KINDS and cur[2] and cur[2] >= today:
+                    if cur[1] in SCHEDULED_KINDS and cur[2] and cur[2] >= today and cur[0] != "cancelled":
                         self._item(fresh, team, f"{title} scheduled · {when}", "scheduled", iso_ms(t.get("updated")), task=tid)
                     continue
                 if prev is None or prev[0] != cur[0]:
@@ -762,7 +804,7 @@ class Notifier:
                         self._item(fresh, team, f"{title} ready for your OK", "waiting", iso_ms(t.get("updated")), task=tid)
                     elif cur[0] == "done":
                         self._item(fresh, team, f"{title} done", "done", iso_ms(t.get("done_at") or t.get("updated")), task=tid)
-                if (prev is None or prev[1:] != cur[1:]) and cur[1] in SCHEDULED_KINDS and cur[2]:
+                if (prev is None or prev[1:] != cur[1:]) and cur[1] in SCHEDULED_KINDS and cur[2] and cur[0] != "cancelled":
                     self._item(fresh, team, f"{title} scheduled · {when}", "scheduled", iso_ms(t.get("updated")), task=tid)
             for tid in [k for k in self.board if k not in seen]:
                 del self.board[tid]
