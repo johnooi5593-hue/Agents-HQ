@@ -25,17 +25,37 @@ ID = r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}"
 STATIC = {"/sermon-studio.html", "/sermon-studio.css", "/sermon-studio.js"}
 # "Back to HQ" in the studio page pointed at another address (the older office). This Agents HQ serves the page, so its
 # way back is this same HQ: the office at "/", or the review task the studio was opened from (?task=<id>), same tab.
-BACK_TO_HQ = b"""<script>(function () {
+# The code rides along at the end of the studio's own sermon-studio.js (a strict page may block any other script), and
+# once more inline in the page for a page that loads no script; it also adds a small "Agents HQ" button that always works.
+BACK_TO_HQ_JS = b"""
+;(function () {
+  if (window.__hqBack) return; window.__hqBack = true;
+  var top = window.top || window;
   function home() { var t = new URLSearchParams(location.search).get("task"); return "/" + (t ? "?task=" + encodeURIComponent(t) : ""); }
-  function isBack(el) { return el && /^\\s*back to (?:claude |agents? )?hq\\b/i.test(el.textContent || ""); }
-  function fix(root) { (root || document).querySelectorAll("a,button").forEach(function (el) { if (isBack(el) && el.tagName === "A") { el.href = home(); el.removeAttribute("target"); } }); }
-  document.addEventListener("click", function (e) {
-    var el = e.target.closest && e.target.closest("a,button");
-    if (!isBack(el)) return;
-    e.preventDefault(); e.stopImmediatePropagation(); location.assign(home());
-  }, true);
-  fix(); new MutationObserver(function () { fix(); }).observe(document.documentElement, { childList: true, subtree: true });
-})();</script>"""
+  function go() { try { top.location.assign(home()); } catch (e) { location.assign(home()); } }
+  function isBack(el) { var t = (el && el.textContent || "").replace(/\\s+/g, " ").trim(); return t.length < 40 && /^back to (?:claude |agents? |the )?hq\\b/i.test(t); }
+  function backOf(node) { for (var el = node, i = 0; el && el.nodeType === 1 && i < 6; el = el.parentElement, i++) if (isBack(el)) return el; return null; }
+  function fix() { document.querySelectorAll("a").forEach(function (a) { if (isBack(a)) { a.href = home(); a.removeAttribute("target"); } }); }
+  ["pointerdown", "mousedown", "touchstart", "click", "auxclick"].forEach(function (type) {
+    window.addEventListener(type, function (e) {
+      if (!backOf(e.target)) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (type === "click" || type === "auxclick") go();
+    }, { capture: true, passive: false });
+  });
+  window.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && backOf(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); go(); } }, true);
+  function pill() {
+    if (window !== top || document.getElementById("hq-home-pill") || !document.body) return;
+    var b = document.createElement("a"); b.id = "hq-home-pill"; b.href = home(); b.textContent = "\\u2190 Agents HQ";
+    b.setAttribute("style", "position:fixed;left:14px;bottom:14px;z-index:2147483647;padding:8px 14px;border-radius:999px;background:#f5b82e;color:#1a1300;font:700 13px system-ui,sans-serif;text-decoration:none;box-shadow:0 4px 18px rgba(0,0,0,.45)");
+    b.addEventListener("click", function (e) { e.preventDefault(); go(); });
+    document.body.appendChild(b);
+  }
+  function ready() { fix(); pill(); new MutationObserver(fix).observe(document.documentElement, { childList: true, subtree: true }); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready); else ready();
+})();
+"""
+BACK_TO_HQ = b"<script>" + BACK_TO_HQ_JS + b"</script>"
 BASE = "/api/sermon-design"
 
 
@@ -547,9 +567,20 @@ class SermonDesignBridge:
                 handler._sermon_response_started = True
                 if path == "/sermon-studio.html":                 # the page lives on D:, outside this repo: fix its way home here
                     page = file.read_bytes()
-                    page = page.replace(b"</body>", BACK_TO_HQ + b"</body>", 1) if b"</body>" in page else page + BACK_TO_HQ
+                    if b"sermon-studio.js" not in page:          # else the fix rides in that script (an inline one may be blocked)
+                        page = page.replace(b"</body>", BACK_TO_HQ + b"</body>", 1) if b"</body>" in page else page + BACK_TO_HQ
                     handler.send_response(200)
                     handler.send_header("Content-Type", "text/html; charset=utf-8")
+                    handler.send_header("Content-Length", str(len(page)))
+                    handler.send_header("Cache-Control", "no-store")
+                    handler.end_headers()
+                    if method != "HEAD":
+                        handler.wfile.write(page)
+                    return True
+                if path == "/sermon-studio.js":                   # the studio's own script: allowed even on a strict page
+                    page = file.read_bytes() + b"\n" + BACK_TO_HQ_JS
+                    handler.send_response(200)
+                    handler.send_header("Content-Type", "text/javascript; charset=utf-8")
                     handler.send_header("Content-Length", str(len(page)))
                     handler.send_header("Cache-Control", "no-store")
                     handler.end_headers()
