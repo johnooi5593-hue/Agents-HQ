@@ -23,6 +23,19 @@ ENGINE_ROOT = Path(r"D:\AI OFFICE")
 ENGINE_HOST, ENGINE_PORT = "127.0.0.1", 4341
 ID = r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}"
 STATIC = {"/sermon-studio.html", "/sermon-studio.css", "/sermon-studio.js"}
+# "Back to HQ" in the studio page pointed at another address (the older office). This Agents HQ serves the page, so its
+# way back is this same HQ: the office at "/", or the review task the studio was opened from (?task=<id>), same tab.
+BACK_TO_HQ = b"""<script>(function () {
+  function home() { var t = new URLSearchParams(location.search).get("task"); return "/" + (t ? "?task=" + encodeURIComponent(t) : ""); }
+  function isBack(el) { return el && /^\\s*back to (?:claude |agents? )?hq\\b/i.test(el.textContent || ""); }
+  function fix(root) { (root || document).querySelectorAll("a,button").forEach(function (el) { if (isBack(el) && el.tagName === "A") { el.href = home(); el.removeAttribute("target"); } }); }
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest && e.target.closest("a,button");
+    if (!isBack(el)) return;
+    e.preventDefault(); e.stopImmediatePropagation(); location.assign(home());
+  }, true);
+  fix(); new MutationObserver(function () { fix(); }).observe(document.documentElement, { childList: true, subtree: true });
+})();</script>"""
 BASE = "/api/sermon-design"
 
 
@@ -532,6 +545,17 @@ class SermonDesignBridge:
                 if not file.is_file():
                     raise DesignError("The prepared studio interface is missing.", 503)
                 handler._sermon_response_started = True
+                if path == "/sermon-studio.html":                 # the page lives on D:, outside this repo: fix its way home here
+                    page = file.read_bytes()
+                    page = page.replace(b"</body>", BACK_TO_HQ + b"</body>", 1) if b"</body>" in page else page + BACK_TO_HQ
+                    handler.send_response(200)
+                    handler.send_header("Content-Type", "text/html; charset=utf-8")
+                    handler.send_header("Content-Length", str(len(page)))
+                    handler.send_header("Cache-Control", "no-store")
+                    handler.end_headers()
+                    if method != "HEAD":
+                        handler.wfile.write(page)
+                    return True
                 return handler.send_static(str(file)) or True
             if path == BASE + "/download":
                 self._download(handler, url.query, method == "HEAD"); return True
