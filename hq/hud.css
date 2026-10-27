@@ -334,6 +334,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .trow.stopped .title { color: #c4c9d4; }
 .stop-g, .wait-g { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #2a2f3c; color: #9aa3b2; font-size: 9px; letter-spacing: -1px; }
 .wait-g { font-size: 13px; letter-spacing: 0; line-height: 1; }
+.ph .sub .jobs { color: #7fb0ff; font-weight: 600; }
 .task-detail .nt { overflow-wrap: anywhere; }                 /* long folder paths in a note wrap instead of widening the board */
 .task-detail .td-chat { display: grid; gap: 8px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
 .task-detail .msgs { display: grid; gap: 6px; max-height: 300px; overflow-y: auto; padding-right: 2px; }

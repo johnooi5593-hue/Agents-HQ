@@ -22,9 +22,10 @@ class BoardTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         tree = ast.parse(SERVER.read_text(encoding="utf-8"))
         names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action", "add_chat", "after_run"}
-        body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF") for t in n.targets)]
+        body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF", "MAX_PARALLEL") for t in n.targets)]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-        body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Run", "Desk")]
+        body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Run", "Desk", "Desks")]
+        body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "lane_of"]
         self.db = {"tasks": []}
         self.env = {"re": re, "os": os, "datetime": datetime, "shutil": __import__("shutil"), "ROOT": str(self.root), "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
                     "load_tasks": lambda: self.db, "uuid": __import__("uuid"), "threading": __import__("threading"), "time": __import__("time"), "sys": sys, "save_tasks": lambda db: None, "now_iso": lambda: "2026-10-27T00:00:00Z"}
@@ -161,6 +162,13 @@ class BoardTests(unittest.TestCase):
         run.add({"type": "tool_done", "text": '{"added": {"id": "t9", "title": "x"}}'})
         self.assertEqual(run.tasks, ["t7", "t8", "t9"])
 
+    def wait_for(self, check):
+        for _ in range(250):
+            if check():
+                return True
+            __import__("time").sleep(0.02)
+        return False
+
     def test_the_desk_lines_up_messages_while_the_lead_works(self):
         import threading
         gate, done = threading.Event(), []
@@ -170,13 +178,41 @@ class BoardTests(unittest.TestCase):
         a = desk.start("first", ["t1"])
         b = desk.start("second", ["t2"])
         self.assertTrue(b.summary()["queued"])
+        self.assertTrue(self.wait_for(lambda: a.started))
         self.assertEqual(desk.working_on(), {"t1": {"state": "working", "step": "starting"}, "t2": {"state": "queued"}})
         gate.set()
-        for _ in range(100):
-            if len(done) == 2:
-                break
-            __import__("time").sleep(0.02)
+        self.assertTrue(self.wait_for(lambda: len(done) == 2))
         self.assertEqual(done, [a.id, b.id])                                    # the second started by itself after the first
+
+    def test_tasks_on_different_videos_run_at_the_same_time(self):
+        import threading
+        for i, folder in enumerate(["clip-a", "clip-b", "clip-a-v2", "clip-c"], 1):
+            self.db["tasks"].append({"id": f"t{i}", "title": "x", "status": "doing", "note": f"out:{folder}"})
+        release, running, most = threading.Event(), set(), [0]
+
+        def fake_run(desk_self, run):
+            running.add(run.id); most[0] = max(most[0], len(running))
+            release.wait(5)
+            running.discard(run.id); run.done = True
+        self.env["Desk"]._run = fake_run
+        desks = self.env["Desks"](limit=2)
+        done = []
+        desks.on_done = lambda run: done.append(run.id)
+        a, b = desks.start("fix a", ["t1"]), desks.start("fix b", ["t2"])
+        same = desks.start("fix a again", ["t3"])                            # clip-a-v2 is the same video as clip-a
+        c = desks.start("fix c", ["t4"])                                     # a third video, but only 2 slots
+        self.assertTrue(self.wait_for(lambda: a.started and b.started))
+        live = desks.working_on()
+        self.assertEqual((live["t1"]["state"], live["t2"]["state"], live["t3"]["state"], live["t4"]["state"]),
+                         ("working", "working", "queued", "queued"))
+        self.assertEqual(desks.state()["running"], 2)
+        lead = desks.start("hello")                                          # the Lead tab has its own conversation
+        self.assertIn("lead", desks.lanes)
+        release.set()
+        self.assertTrue(self.wait_for(lambda: len(done) == 5))
+        self.assertEqual(most[0], 2)                                         # never more than the limit at once
+        self.assertLess(done.index(a.id), done.index(same.id))              # same video: one after the other
+        self.assertTrue(all(r.id in desks.runs for r in (a, b, same, c, lead)))
 
 
 if __name__ == "__main__":

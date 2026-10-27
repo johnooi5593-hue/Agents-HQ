@@ -676,7 +676,7 @@
     } else if (t.status === "doing") {
       const live = t.live && t.live.state;                  // the lead is on it now, it waits in line, or nothing runs it (stopped)
       if (live === "working") { glyph = '<span class="spin"></span>'; meta = "working · " + (t.live.step || t.subtitle || "the lead is on it"); act = t.progress != null ? ring(t.progress) : '<span class="chev">›</span>'; }
-      else if (live === "queued") { glyph = '<span class="wait-g" title="Waiting for the lead">…</span>'; meta = "waiting in line · the lead finishes its current job first"; act = '<span class="chev">›</span>'; }
+      else if (live === "queued") { glyph = '<span class="wait-g" title="Waiting for the lead">…</span>'; meta = "waiting in line · starts when a slot is free or its video's earlier job is done"; act = '<span class="chev">›</span>'; }
       else { glyph = '<span class="stop-g" title="Nothing is working on this now">❚❚</span>'; meta = "stopped · nothing is working on it" + (t.subtitle ? " · last note: " + t.subtitle : ""); act = `<button class="btn sm blue" data-run="${esc(t.id)}" type="button" title="Start this task again">Run again</button>`; cls = "stopped"; }
     }
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : ""; }
@@ -699,7 +699,7 @@
     const msgs = (t.chat || []).map((m) => `<div class="msg ${m.from === "owner" ? "me" : "lead"}${m.error ? " err" : ""}"><div class="who">${m.from === "owner" ? "You" : "Lead"} · ${esc(timeAgo(m.at))}</div><div class="tx">${esc(m.text)}</div></div>`).join("");
     const team = t.team || "the team", live = t.live && t.live.state;
     return `<div class="td-chat"><span class="td-l">Chat with ${esc(team)}</span>${msgs ? `<div class="msgs">${msgs}</div>` : '<div class="hint">No messages yet. What the lead says about this task shows up here.</div>'}
-      ${live === "working" ? `<div class="hint live"><span class="spin"></span> The lead is on it now: ${esc(t.live.step || "")}</div>` : live === "queued" ? '<div class="hint live">Your message waits in line; the lead finishes its current job first.</div>' : ""}
+      ${live === "working" ? `<div class="hint live"><span class="spin"></span> The lead is on it now: ${esc(t.live.step || "")}</div>` : live === "queued" ? '<div class="hint live">Waiting in line: it starts by itself when a slot is free.</div>' : ""}
       <form class="say" data-say-form="${esc(t.id)}"><textarea id="say-text" class="field" rows="2" placeholder="Message ${esc(team)} about this task: a change, an answer, OK to go ahead…" required></textarea><button class="btn sm blue" type="submit">Send</button></form></div>`;
   }
   // a finished task whose work was approved (approved/<name>) can go back for changes, as a new version
@@ -910,7 +910,7 @@
     const addCh = state.chFilter === "all" ? "auto" : state.chFilter === "@office" ? "@office" : "ch:" + state.chFilter;
     const chOpts = [["auto", "Channel: auto"], ...chList().map((c) => ["ch:" + c.key, c.name]), ["@office", "Whole office"]].map(([v, l]) => `<option value="${esc(v)}" ${v === addCh ? "selected" : ""}>${esc(l)}</option>`).join("");
     const tabs = [["all", "All"], ["running", "Running"], ["waiting", "Waiting"], ["done", "Done"], ...(allTasks.some((t) => t.status === "cancelled") || f === "cancelled" ? [["cancelled", "Cancelled"]] : []), ...(anyDeleted ? [["deleted", "Deleted"]] : [])];
-    p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">${state.chFilter === "all" ? "Whole office" : esc(chName(state.chFilter === "@office" ? null : state.chFilter))} · today</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
+    p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">${state.chFilter === "all" ? "Whole office" : esc(chName(state.chFilter === "@office" ? null : state.chFilter))} · today${st.desk && st.desk.running ? ` · <b class="jobs">${st.desk.running} of ${st.desk.limit} jobs running</b>${st.desk.queued ? `, ${st.desk.queued} waiting` : ""}` : ""}</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
       <form class="add-task" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team" aria-label="Team"><option value="">Team: auto</option>${teamOpts}</select><select id="task-ch" aria-label="Channel">${chOpts}</select><button class="btn blue" type="submit">Add</button></form>
       ${chRow}
       <div class="ftabs">${tabs.map(([k, l]) => `<button class="ftab ${f === k ? "active" : ""}" data-filter="${k}" type="button">${l} <b>${counts[k]}</b></button>`).join("")}</div>
@@ -1125,7 +1125,7 @@
     try {
       const r = await postJSON("/api/run", task ? { prompt, task } : { prompt });
       $("#lead-text").textContent = (r.queued ? "Lead · next in line: " : "Lead · working: ") + shortTask(prompt, 60);
-      if (r.queued) toast("chief", "Chief of staff", "The lead finishes its current job first; this one starts right after.", { soft: true });
+      if (r.queued) toast("chief", "Chief of staff", "Waiting in line: it starts by itself in a moment.", { soft: true });
       attach(r.id, false); renderTopbar(); return r.id;
     } catch (e) { toast("chief", "Chief of staff", e.status === 409 ? "The lead is still working on the previous message." : e.message || "could not send", { bad: true }); return null; }
   }
@@ -1763,7 +1763,7 @@
       if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.editFootage) { taskAction({ action: "edit", id: d.editFootage }, "Editing started: the Creative team is on it. Nothing posts until you approve.").then((r) => { if (r) setLead(true); }); return; }
-      if (d.run) { taskAction({ action: "run", id: d.run }).then((r) => { if (r && r.run) { attach(r.run.id, false); toast("chief", "Chief of staff", r.run.queued ? "Started again: it waits in line, the lead finishes its current job first." : "Started: the lead is on it."); } }); return; }
+      if (d.run) { taskAction({ action: "run", id: d.run }).then((r) => { if (r && r.run) { attach(r.run.id, false); toast("chief", "Chief of staff", r.run.queued ? "Waiting in line: it starts by itself when a slot is free (or its video's earlier job is done)." : "Started: the lead is on it."); } }); return; }
       if (d.board != null) { openPanel("tasks"); return; }
       if (d.cal != null) { openPanel("calendar"); return; }
       if (d.brief != null) { const t = teamByKey(state.panelTeam); pickAgent(t ? (headOf(t) || {}).name : null); focusAsk(); return; }

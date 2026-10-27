@@ -25,7 +25,25 @@ function normalize(t) {
   return t;
 }
 function load() { let db; try { db = JSON.parse(fs.readFileSync(FILE, "utf8")); } catch (e) { db = { tasks: [] }; } db.tasks = (db.tasks || []).map(normalize); return db; }
-function save(db) { fs.writeFileSync(FILE, JSON.stringify(db, null, 2) + "\n"); }
+const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Several lead jobs can change the board at the same moment, and so can the app: hq/tasks.lock lets one in at a time
+// (the app's server takes the same lock), and the board is written whole and swapped in, so nobody reads half a file.
+const LOCK = path.join(__dirname, "tasks.lock");
+function lock() {
+  for (const end = Date.now() + 10000; Date.now() < end; nap(20)) {
+    try { fs.closeSync(fs.openSync(LOCK, "wx")); return true; } catch (e) {
+      if (e.code !== "EEXIST") return false;
+      try { if (Date.now() - fs.statSync(LOCK).mtimeMs > 15000) fs.unlinkSync(LOCK); } catch (e2) { /* someone else took it */ }
+    }
+  }
+  return false;
+}
+function unlock(held) { if (held) try { fs.unlinkSync(LOCK); } catch (e) { /* already gone */ } }
+function save(db) {
+  const tmp = `${FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 2) + "\n");
+  for (let i = 0; ; i++) { try { fs.renameSync(tmp, FILE); return; } catch (e) { if (i >= 20 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw e; nap(50); } }
+}
 function opts(args) {
   const o = { _: [] };
   for (let i = 0; i < args.length; i++) {
@@ -46,6 +64,8 @@ function setStatus(t, st) {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
+const held = ["add", "move", "progress", "note", "channel", "remove"].includes(cmd) && lock();   // reading needs no lock
+process.on("exit", () => unlock(held));
 const db = load();
 const o = opts(rest);
 const find = (id) => db.tasks.find((t) => t.id === id);

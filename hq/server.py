@@ -68,7 +68,50 @@ ACRONYMS = {"seo": "SEO", "qa": "QA", "ai": "AI", "ux": "UX", "ui": "UI", "pr": 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
-TASK_LOCK = threading.Lock()
+
+
+class BoardLock:
+    """The board's lock: one thread at a time in this server, and one process at a time across the office through
+    hq/tasks.lock, which hq/tasks.js takes too (several lead jobs can run `node hq/tasks.js` at the same moment).
+    A lock older than STALE seconds was left by a process that died; waiting longer than WAIT goes on without it."""
+    STALE, WAIT = 15, 10
+
+    def __init__(self, path):
+        self.path, self.local, self.depth, self.fd = path, threading.RLock(), 0, None
+
+    def __enter__(self):
+        self.local.acquire()
+        self.depth += 1
+        if self.depth == 1:
+            end = time.time() + self.WAIT
+            while self.fd is None and time.time() < end:
+                try:
+                    self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    try:
+                        if time.time() - os.path.getmtime(self.path) > self.STALE:
+                            os.remove(self.path)      # our own lock file, left behind by a process that stopped
+                            continue
+                    except OSError:
+                        pass
+                    time.sleep(0.02)
+                except OSError:
+                    break                             # a read-only folder: the in-process lock still holds
+        return self
+
+    def __exit__(self, *exc):
+        self.depth -= 1
+        if self.depth == 0 and self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
+        self.local.release()
+
+
+TASK_LOCK = BoardLock(os.path.join(HERE, "tasks.lock"))
 
 
 # small helpers
@@ -284,9 +327,18 @@ def load_tasks():
 
 
 def save_tasks(db):
-    with open(TASKS, "w", encoding="utf-8") as f:
+    """Write the board whole, then swap it in: a reader (hq/tasks.js, another lead job) never sees half a file."""
+    tmp = f"{TASKS}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2)
         f.write("\n")
+    for attempt in range(20):                  # Windows refuses the swap while another process is reading the file
+        try:
+            os.replace(tmp, TASKS)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    os.replace(tmp, TASKS)
 
 
 def clean_date(s):
@@ -1238,9 +1290,11 @@ FRESH_AFTER_COST = float(os.environ.get("HQ_LEAD_MAX_COST", "3"))           # do
 
 class Desk:
     """One lead conversation. Each message resumes it, so "OK" and corrections keep their context. To save tokens a new
-    conversation starts after a long pause, or once the old one grew big or expensive (the brain and the files carry over)."""
+    conversation starts after a long pause, or once the old one grew big or expensive (the brain and the files carry over).
+    gate: shared by every desk (see Desks), it caps how many lead jobs run at the same time."""
 
-    def __init__(self):
+    def __init__(self, gate=None, name="lead"):
+        self.gate, self.name = gate, name
         self.session_id, self.resumable, self.runs, self.order, self.current = str(uuid.uuid4()), False, {}, [], None
         self.last_at, self.spent, self.context = 0.0, 0.0, 0
         self.queue, self.on_done = [], None              # messages waiting for the lead to finish; on_done(run) after each
@@ -1269,16 +1323,22 @@ class Desk:
             self.order.append(run.id)
             if self.current and not self.current.done:
                 self.queue.append(run)
-                run.add({"type": "system", "text": f"waiting: the lead finishes the job before this one first ({len(self.queue)} in line)"})
+                run.add({"type": "system", "text": f"waiting: {'the lead finishes your previous message first' if self.name == 'lead' else 'an earlier job on the same video finishes first'} ({len(self.queue)} in line)"})
                 return run
-            self.current, run.started = run, True
+            self.current = run
         threading.Thread(target=self._work, args=(run,), daemon=True).start()
         return run
 
     def _work(self, run):
+        if self.gate and not self.gate.acquire(blocking=False):
+            run.add({"type": "system", "text": "waiting for a free slot: the most lead jobs that run at once are already running"})
+            self.gate.acquire()
+        run.started = True
         try:
             self._run(run)
         finally:
+            if self.gate:
+                self.gate.release()
             if self.on_done:
                 try:
                     self.on_done(run)
@@ -1287,7 +1347,7 @@ class Desk:
             with self.lock:
                 nxt = self.queue.pop(0) if self.queue else None
                 if nxt:
-                    self.current, nxt.started = nxt, True
+                    self.current = nxt
             if nxt:
                 threading.Thread(target=self._work, args=(nxt,), daemon=True).start()
 
@@ -1301,7 +1361,7 @@ class Desk:
                 out[tid] = {"state": "queued"}
         if cur and not cur.done:
             for tid in cur.tasks:
-                out[tid] = {"state": "working", "step": cur.last_step()}
+                out[tid] = {"state": "working", "step": cur.last_step()} if cur.started else {"state": "queued"}
         return out
 
     def _run(self, run):
@@ -1363,7 +1423,63 @@ class Desk:
                 "runs": [self.runs[i].summary() for i in self.order[-20:]]}
 
 
-desk = Desk()
+MAX_PARALLEL = max(1, int(os.environ.get("HQ_PARALLEL", "3")))     # lead jobs that run at the same time
+
+
+def lane_of(tasks):
+    """Which desk a message goes to: one per video folder (a task's out:<name>), so work on different videos runs at the
+    same time and two jobs never edit the same folder at once; a task without a folder gets its own; anything else
+    (the Lead tab, follow-ups) goes to the lead's own conversation."""
+    if not tasks:
+        return "lead"
+    task = next((t for t in load_tasks()["tasks"] if t.get("id") == tasks[0]), None)
+    m = re.search(r"out:([^\s,;]+)", (task or {}).get("note") or "")
+    return "out:" + re.sub(r"-v\d+$", "", m[1].strip("/").split("/")[0]) if m else "task:" + tasks[0]
+
+
+class Desks:
+    """Several lead conversations at once: the lead's own (the Lead tab) and one per video or task. Each keeps its own
+    context, so a task's chat resumes that task's conversation. At most MAX_PARALLEL run at the same time; the rest wait
+    for a free slot, and a second job for the same video waits for the first."""
+
+    def __init__(self, limit=MAX_PARALLEL):
+        self.gate, self.lanes, self.runs, self.order, self.on_done = threading.BoundedSemaphore(limit), {}, {}, [], None
+        self.limit, self.lock = limit, threading.Lock()
+
+    def lane(self, key):
+        with self.lock:
+            if key not in self.lanes:
+                d = self.lanes[key] = Desk(self.gate, key)
+                d.on_done = lambda run: self.on_done and self.on_done(run)
+            return self.lanes[key]
+
+    def start(self, prompt, tasks=()):
+        run = self.lane(lane_of(list(tasks))).start(prompt, tasks)
+        with self.lock:
+            self.runs[run.id] = run
+            self.order.append(run.id)
+        return run
+
+    def working_on(self):
+        out = {}
+        for d in list(self.lanes.values()):
+            for tid, live in d.working_on().items():
+                if tid not in out or live["state"] == "working":
+                    out[tid] = live
+        return out
+
+    def state(self):
+        with self.lock:
+            runs = [self.runs[i] for i in self.order[-20:]]
+            busy = [d.current for d in self.lanes.values() if d.current and not d.current.done]
+        working = [r for r in busy if r.started]
+        newest = max(working, key=lambda r: self.order.index(r.id), default=None)
+        return {"busy": bool(busy), "current": newest.id if newest else None, "running": len(working), "limit": self.limit,
+                "queued": sum(len(d.queue) for d in self.lanes.values()) + len(busy) - len(working),
+                "runs": [r.summary() for r in runs]}
+
+
+desk = Desks()
 desk.on_done = lambda run: (after_run(run), notifier.refresh())
 
 
