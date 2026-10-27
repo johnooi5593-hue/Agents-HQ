@@ -259,6 +259,22 @@ class ThumbnailTests(unittest.TestCase):
         self.assertIn("No video frame", job["warnings"][0])
         self.assertFalse(self.engine.jobs[job["id"]]["request"]["provenance"]["sourceFrameAvailable"])
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe not installed")
+    def test_source_frame_comes_from_the_middle_not_second_zero(self):
+        self.frame.stop()                                  # the real extraction, on a real 4 s video: black, then white from 1 s
+        try:
+            video = self.root / "black-start.mp4"
+            import subprocess
+            subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1:r=10", "-f", "lavfi", "-i", "color=c=white:s=64x64:d=3:r=10",
+                            "-filter_complex", "[0][1]concat=n=2:v=1", "-pix_fmt", "yuv420p", "-y", str(video)], check=True, capture_output=True)
+            out = self.root / "frame.jpg"
+            frame = self.bridge._frame(video, out)
+            self.assertIsNotNone(frame)
+            gray = subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-i", str(out), "-vf", "scale=1:1,format=gray", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+            self.assertGreater(gray[0], 200)
+        finally:
+            self.frame.start()
+
     def server_actions(self):
         tree = ast.parse((Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"))
         funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("approve_folder", "_approve_folder", "task_action", "_task_action")]

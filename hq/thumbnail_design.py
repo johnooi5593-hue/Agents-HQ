@@ -7,6 +7,7 @@ native review task. The original video is never moved at this intermediate step.
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -201,8 +202,18 @@ class ThumbnailDesignBridge:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             return None
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            result = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-ss", "0", "-i", str(video), "-frames:v", "1", "-vf", "scale=1280:1280:force_original_aspect_ratio=decrease", "-y", str(destination)], stdin=subprocess.DEVNULL, capture_output=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            # The middle of the approved video: its first frame is often black or a slate. Second 0 if the length is unknown.
+            at, ffprobe = 0.0, shutil.which("ffprobe")
+            if ffprobe:
+                probe = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(video)], stdin=subprocess.DEVNULL, capture_output=True, timeout=15, creationflags=flags)
+                try:
+                    duration = float(probe.stdout.decode("utf-8", "replace").strip())
+                    at = duration / 2 if probe.returncode == 0 and math.isfinite(duration) and duration > 0 else 0.0
+                except ValueError:
+                    pass
+            result = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-ss", "%.3f" % at, "-i", str(video), "-frames:v", "1", "-vf", "scale=1280:1280:force_original_aspect_ratio=decrease", "-y", str(destination)], stdin=subprocess.DEVNULL, capture_output=True, timeout=30, creationflags=flags)
             if result.returncode != 0 or not destination.is_file() or not 0 < destination.stat().st_size < 8 * 1024 * 1024:
                 return None
             return {"name": "approved-video-frame.jpg", "dataUrl": "data:image/jpeg;base64," + base64.b64encode(destination.read_bytes()).decode()}
