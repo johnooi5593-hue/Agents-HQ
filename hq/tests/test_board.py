@@ -22,13 +22,13 @@ class BoardTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         tree = ast.parse(SERVER.read_text(encoding="utf-8"))
-        names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action", "add_chat", "after_run"}
-        body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF", "MAX_PARALLEL") for t in n.targets)]
-        body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-        body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Run", "RunTimes", "Desk", "Desks")]
+        names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action", "add_chat", "after_run", "leads_setting"}
+        body = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+        body += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF", "MAX_LEADS", "MAX_PARALLEL") for t in n.targets)]
+        body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Gate", "Run", "RunTimes", "Desk", "Desks")]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "lane_of"]
         self.db = {"tasks": []}
-        self.env = {"re": re, "os": os, "datetime": datetime, "shutil": __import__("shutil"), "ROOT": str(self.root), "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
+        self.env = {"re": re, "os": os, "datetime": datetime, "shutil": __import__("shutil"), "ROOT": str(self.root), "office_conf": lambda: {}, "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
                     "load_tasks": lambda: self.db, "uuid": __import__("uuid"), "threading": __import__("threading"), "time": __import__("time"), "sys": sys, "save_tasks": lambda db: None, "now_iso": lambda: "2026-10-27T00:00:00Z", "json": json, "math": __import__("math"), "HERE": str(self.root)}
         exec(compile(ast.Module(body=body, type_ignores=[]), "server-board-fixture", "exec"), self.env)
         self.env["run_times"] = self.env["RunTimes"]()          # how long jobs took, kept in the temp folder

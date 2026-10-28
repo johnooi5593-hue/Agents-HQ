@@ -1591,7 +1591,56 @@ class Desk:
                 "runs": [self.runs[i].summary() for i in self.order[-20:]]}
 
 
-MAX_PARALLEL = max(1, int(os.environ.get("HQ_PARALLEL", "3")))     # lead jobs that run at the same time
+MAX_LEADS = 10                                                      # the most lead jobs the owner can let run at once
+
+
+def leads_setting():
+    """How many lead jobs run at the same time: HQ_PARALLEL, else the owner's choice in the menu (.hq-office.json), else 3."""
+    try:
+        n = int(os.environ.get("HQ_PARALLEL") or office_conf().get("leads") or 3)
+    except (TypeError, ValueError):
+        n = 3
+    return max(1, min(MAX_LEADS, n))
+
+
+def save_office(patch):
+    """Merge `patch` into .hq-office.json (written whole, then renamed into place)."""
+    data = dict(office_conf())
+    data.update(patch)
+    tmp = OFFICE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, OFFICE_FILE)
+
+
+class Gate:
+    """The free slots for lead jobs. Unlike a semaphore its size can change while jobs run: more slots start waiting jobs
+    at once, fewer let the running ones finish and start nothing new until the count is under the new limit."""
+
+    def __init__(self, limit):
+        self.limit, self.used, self.cond = limit, 0, threading.Condition()
+
+    def acquire(self, blocking=True):
+        with self.cond:
+            while self.used >= self.limit:
+                if not blocking:
+                    return False
+                self.cond.wait()
+            self.used += 1
+            return True
+
+    def release(self):
+        with self.cond:
+            self.used = max(0, self.used - 1)
+            self.cond.notify_all()
+
+    def resize(self, limit):
+        with self.cond:
+            self.limit = limit
+            self.cond.notify_all()
+
+
+MAX_PARALLEL = leads_setting()                                     # lead jobs that run at the same time (the menu changes it)
 
 
 def lane_of(tasks):
@@ -1611,8 +1660,15 @@ class Desks:
     for a free slot, and a second job for the same video waits for the first."""
 
     def __init__(self, limit=MAX_PARALLEL):
-        self.gate, self.lanes, self.runs, self.order, self.on_done = threading.BoundedSemaphore(limit), {}, {}, [], None
-        self.limit, self.lock = limit, threading.Lock()
+        self.gate, self.lanes, self.runs, self.order, self.on_done = Gate(limit), {}, {}, [], None
+        self.lock = threading.Lock()
+
+    @property
+    def limit(self):
+        return self.gate.limit
+
+    def set_limit(self, n):
+        self.gate.resize(n)
 
     def lane(self, key):
         with self.lock:
@@ -1992,6 +2048,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/restart":
             code, res = restart_office(self.read_json().get("force") is True)
             return self.send_json(res, code)
+        if path == "/api/leads":                           # the menu's "Leads at once": takes effect now, kept for next time
+            n = self.read_json().get("leads")
+            if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= MAX_LEADS:
+                return self.send_json({"error": f"leads must be a whole number from 1 to {MAX_LEADS}"}, 400)
+            save_office({"leads": n})
+            desk.set_limit(n)
+            return self.send_json({"leads": n, "env": bool(os.environ.get("HQ_PARALLEL"))})
         if path == "/api/run":
             body = self.read_json()
             prompt = body.get("prompt") or ""

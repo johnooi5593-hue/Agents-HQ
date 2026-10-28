@@ -235,6 +235,8 @@
       if (!state.agents.length) await loadAgents();
       attachOngoingRun(s);
       showUpdate(s.update);
+      const leads = $("#leads-limit");                        // the menu's "Leads at once" follows the office's setting
+      if (leads && document.activeElement !== leads && s.desk && s.desk.limit) leads.value = String(s.desk.limit);
       renderAll();
     } catch (e) { /* offline or logging in: keep the last state */ }
   }
@@ -2054,6 +2056,12 @@
     document.addEventListener("dragleave", (e) => { const z = e.target.closest(".drop"); if (z) z.classList.remove("over"); });
     document.addEventListener("change", (e) => {
       if (e.target && e.target.id === "drop-ch") state.dropCh = e.target.value;
+      if (e.target && e.target.id === "leads-limit") {           // Leads at once: takes effect now, kept for next time
+        const n = +e.target.value;
+        postJSON("/api/leads", { leads: n }).then((r) => toast("dev", "Leads at once", `Up to ${n} lead job${n === 1 ? "" : "s"} now run at the same time.` + (r.env ? " (HQ_PARALLEL on this computer sets it again at the next start.)" : ""), {}))
+          .catch((err) => toast("dev", "Leads at once", "Could not change it: " + (err && err.message || err), { bad: true }));
+        return;
+      }
       const id = e.target && e.target.dataset && e.target.dataset.taskCh, v = id && e.target.value;
       if (id) taskAction({ action: "channel", id, channel: v === "auto" ? null : v === "@office" ? "@office" : v.slice(3) }, "Channel updated.");
       const folder = e.target && e.target.dataset && e.target.dataset.outCh;

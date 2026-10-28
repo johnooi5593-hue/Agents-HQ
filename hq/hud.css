@@ -1194,3 +1194,6 @@ body.review-open { overflow: hidden; }
   .trow.approval .g .thumb { width: 40px; height: 40px; }
 }
 .rv-actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; }
+.menu-leads { display: block; cursor: default; }
+.menu-leads select { margin-left: 6px; padding: 2px 6px; border-radius: 6px; background: #1b2130; color: var(--text); border: 1px solid var(--line); font: 600 12px var(--font); }
+.menu-leads span { display: block; margin-top: 4px; font-size: 10.5px; line-height: 1.35; }
