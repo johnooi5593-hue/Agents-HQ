@@ -1,5 +1,6 @@
 import ast
 import datetime
+import json
 import os
 import re
 import sys
@@ -24,12 +25,13 @@ class BoardTests(unittest.TestCase):
         names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action", "add_chat", "after_run"}
         body = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF", "MAX_PARALLEL") for t in n.targets)]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-        body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Run", "Desk", "Desks")]
+        body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Run", "RunTimes", "Desk", "Desks")]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "lane_of"]
         self.db = {"tasks": []}
         self.env = {"re": re, "os": os, "datetime": datetime, "shutil": __import__("shutil"), "ROOT": str(self.root), "channels": Channels(), "TASK_LOCK": __import__("threading").Lock(),
-                    "load_tasks": lambda: self.db, "uuid": __import__("uuid"), "threading": __import__("threading"), "time": __import__("time"), "sys": sys, "save_tasks": lambda db: None, "now_iso": lambda: "2026-10-27T00:00:00Z"}
+                    "load_tasks": lambda: self.db, "uuid": __import__("uuid"), "threading": __import__("threading"), "time": __import__("time"), "sys": sys, "save_tasks": lambda db: None, "now_iso": lambda: "2026-10-27T00:00:00Z", "json": json, "math": __import__("math"), "HERE": str(self.root)}
         exec(compile(ast.Module(body=body, type_ignores=[]), "server-board-fixture", "exec"), self.env)
+        self.env["run_times"] = self.env["RunTimes"]()          # how long jobs took, kept in the temp folder
         self.act = self.env["_task_action"]
         self.env["channels"].name = lambda key: "Pong+Gospel" if key else "NLRCC"
         self.started = []
@@ -179,7 +181,7 @@ class BoardTests(unittest.TestCase):
         b = desk.start("second", ["t2"])
         self.assertTrue(b.summary()["queued"])
         self.assertTrue(self.wait_for(lambda: a.started))
-        self.assertEqual(desk.working_on(), {"t1": {"state": "working", "step": "starting"}, "t2": {"state": "queued"}})
+        self.assertEqual(desk.working_on(), {"t1": {"state": "working", "step": "starting", "progress": 1}, "t2": {"state": "queued"}})
         gate.set()
         self.assertTrue(self.wait_for(lambda: len(done) == 2))
         self.assertEqual(done, [a.id, b.id])                                    # the second started by itself after the first

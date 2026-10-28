@@ -13,7 +13,7 @@ office folder: on this computer only, never committed, never read by the agents 
 
 Stdlib only. Every post writes approved/<name>/posted.json as it goes, so the app shows progress and links.
 """
-import json, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+import json, math, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 from channels import folder_channel
 
@@ -25,6 +25,29 @@ VIDEO_EXT = (".mp4", ".mov", ".m4v")
 
 class PostError(Exception):
     pass
+
+
+PROGRESS = threading.local()                                   # the post this thread works on: progress() shows on its row
+
+
+def progress(pct, step=""):
+    """How far this thread's post is (0-99) and what it is doing, for the owner's Posting… row."""
+    report = getattr(PROGRESS, "report", None)
+    if report:
+        report(pct, step)
+
+
+class Sending:
+    """A video file going up: http.client reads it in blocks, and each block moves the % from lo to hi."""
+
+    def __init__(self, f, size, lo, hi, step="uploading the video"):
+        self.f, self.size, self.lo, self.hi, self.step, self.sent = f, max(1, size), lo, hi, step, 0
+
+    def read(self, n=-1):
+        block = self.f.read(n)
+        self.sent += len(block)
+        progress(self.lo + (self.hi - self.lo) * self.sent / self.size, self.step)
+        return block
 
 
 def http(method, url, data=None, headers=None, body=None, timeout=120):
@@ -101,6 +124,37 @@ def ig_ready(video):
     except OSError:
         pass
     return None
+
+
+def cover_jpeg(cover):
+    """The owner's thumbnail as a JPEG every platform takes (YouTube wants at most 2 MB, Instagram's cover is a JPEG,
+    a Codex pick is a large PNG), or None without ffmpeg. The picked file itself stays as it is."""
+    ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if not cover or not ff or not os.path.isfile(cover):
+        return None
+    fd, out = tempfile.mkstemp(prefix="hq-cover-", suffix=".jpg")
+    os.close(fd)
+    for q, scale in ((2, None), (4, None), (5, "1080:-2")):   # smaller only when it has to be
+        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", cover, "-frames:v", "1", "-q:v", str(q)] + (["-vf", "scale=" + scale] if scale else []) + [out]
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=120, creationflags=0x08000000 if os.name == "nt" else 0)
+            if r.returncode == 0 and 0 < os.path.getsize(out) <= 2 * 1024 * 1024:
+                return out
+        except (OSError, subprocess.SubprocessError):
+            break
+    try:
+        os.remove(out)
+    except OSError:
+        pass
+    return None
+
+
+def multipart(fields, name, filename, data, ctype="image/jpeg"):
+    """A multipart/form-data body with plain fields and one file: (body, headers)."""
+    b = "hq" + secrets.token_hex(8)
+    body = b"".join(f"--{b}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode() for k, v in fields.items())
+    body += f"--{b}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {ctype}\r\n\r\n".encode() + data + f"\r\n--{b}--\r\n".encode()
+    return body, {"Content-Type": f"multipart/form-data; boundary={b}"}
 
 
 class Accounts:
@@ -397,7 +451,7 @@ def media_files(folder):
     rank = lambda n: (0 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I) else 2 if re.search(r"clean|nocap|no-captions", n, re.I)
                       else 3 if os.path.basename(n).lower().startswith("cut") else 1)
     found["video"].sort(key=rank)
-    found["image"].sort(key=lambda n: (0 if "cover" in os.path.basename(n).lower() else 1, n))
+    found["image"].sort(key=lambda n: (0 if os.path.basename(n).lower() == "cover-codex.png" else 1 if "cover" in os.path.basename(n).lower() else 2, n))   # the owner's Codex pick first
     return found
 
 
@@ -420,6 +474,7 @@ class Publisher:
 
     def __init__(self, root, accounts, on_schedule=None, on_finish=None):
         self.root, self.accounts, self.lock, self.busy = root, accounts, threading.Lock(), set()
+        self.gate = threading.Lock()                               # a post starting vs. the check for interrupted posts
         self.on_schedule, self.on_finish = on_schedule, on_finish     # the board: a dated "post" task, done when all went out
 
     def record_path(self, folder):
@@ -441,6 +496,18 @@ class Publisher:
                 r[platform] = {**r.get(platform, {}), **kw, "at": int(time.time())}
             with open(self.record_path(folder), "w", encoding="utf-8") as f:
                 json.dump(r, f, indent=1, ensure_ascii=False)
+
+    def reporter(self, folder, p):
+        """progress() for one platform's post: written to posted.json at most once a second, or when the step changes."""
+        last = {"pct": -1, "step": None, "at": 0.0}
+
+        def report(pct, step=""):
+            pct, now = int(max(0, min(99, pct))), time.time()
+            if step == last["step"] and (pct == last["pct"] or now - last["at"] < 1):
+                return
+            last.update(pct=pct, step=step, at=now)
+            self.note(folder, p, progress=pct, step=step)
+        return report
 
     def payload(self, folder):
         f = media_files(folder)
@@ -482,10 +549,11 @@ class Publisher:
         again = [p for p in todo if (done.get(p) or {}).get("state") in ("posted", "scheduled") and not chosen[p].get("again")]
         if again:
             raise PostError(f"already posted or scheduled to {', '.join(again)}")
-        if folder in self.busy:
-            raise PostError("still posting this one")
+        with self.gate:
+            if folder in self.busy:
+                raise PostError("still posting this one")
+            self.busy.add(folder)
         rel = lambda path: (os.path.relpath(path, folder).replace(os.sep, "/") if os.path.dirname(os.path.abspath(path)).startswith(os.path.abspath(folder)) else os.path.relpath(path, office_root(folder) or folder).replace(os.sep, "/")) if path else ""
-        self.busy.add(folder)
         for p in todo:
             self.note(folder, p, state="waiting", error="", warning="", when=when or 0, job=None, link=done.get(p, {}).get("link", ""),
                       video=rel(video), cover=rel(cover))
@@ -499,12 +567,15 @@ class Publisher:
             if when and p not in NATIVE_SCHEDULE:               # Instagram: wait here, the scheduler posts it when due
                 self.note(folder, p, state="scheduled", job={"text": chosen[p], "video": rel(video), "cover": rel(cover)})
                 return
-            self.note(folder, p, state="posting" if not when else "uploading", error="")
+            self.note(folder, p, state="posting" if not when else "uploading", error="", progress=0, step="starting")
+            PROGRESS.report = self.reporter(folder, p)
             try:
-                link, extra = getattr(self, "post_" + p)(video, cover, chosen[p], when, channel)
+                link, extra = self.send(p, video, cover, chosen[p], when, channel)
                 self.note(folder, p, state="scheduled" if when else "posted", link=link, error="", **extra)
             except Exception as e:                              # one platform failing never stops the others
                 self.note(folder, p, state="failed", error=str(e)[:400])
+            finally:
+                PROGRESS.report = None
 
         def work():
             try:
@@ -518,6 +589,19 @@ class Publisher:
                 self.check_finished(folder)
         threading.Thread(target=work, daemon=True).start()
         return todo
+
+    def send(self, p, video, cover, text, when, channel):
+        """One platform, with the owner's thumbnail as a JPEG every platform takes (the picked file stays as it is)."""
+        progress(1, "preparing your thumbnail")
+        jpg = cover_jpeg(cover)
+        try:
+            return getattr(self, "post_" + p)(video, jpg or cover, text, when, channel)
+        finally:
+            if jpg:
+                try:
+                    os.remove(jpg)
+                except OSError:
+                    pass
 
     def cancel(self, folder, platform):
         """Cancel a scheduled post that is still waiting here (Instagram). Facebook and YouTube already hold theirs."""
@@ -565,24 +649,44 @@ class Publisher:
                     self.note(folder, p, state="posted")
                     continue
                 job = e["job"]
-                self.note(folder, p, state="posting", job=None)
+                self.note(folder, p, state="posting", job=None, progress=0, step="starting")
+                PROGRESS.report = self.reporter(folder, p)
                 try:
                     video = os.path.join(folder, job["video"])
                     if not os.path.isfile(video) and office_root(folder):
                         video = os.path.join(office_root(folder), job["video"])
                     cover = os.path.join(folder, job["cover"]) if job.get("cover") else None
-                    link, extra = getattr(self, "post_" + p)(video, cover, job["text"], None, folder_channel(folder))
+                    link, extra = self.send(p, video, cover, job["text"], None, folder_channel(folder))
                     late = now - e["when"] > 15 * 60
                     self.note(folder, p, state="posted", link=link, error="",
                               warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late else ""), **extra)
                 except Exception as ex:
                     self.note(folder, p, state="failed", error=str(ex)[:400])
+                finally:
+                    PROGRESS.report = None
             self.check_finished(folder)
+
+    def interrupted(self):
+        """A post still marked under way while nothing here works on it: Agents HQ stopped mid-post (a restart, the
+        computer off), so nothing will finish it. Show it as failed, so the owner can check the platform and post again."""
+        for folder in self.folders():
+            with self.gate:
+                if folder in self.busy:
+                    continue
+                r = self.record(folder)
+                stuck = [p for p in PLATFORMS if (r.get(p) or {}).get("state") in ("waiting", "posting", "uploading")]
+                for p in stuck:
+                    name = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube"}[p]
+                    self.note(folder, p, state="failed", error=f"Agents HQ stopped while this was posting, so it never finished. It may still have "
+                                                               f"gone out: check {name} first, and if it isn't there, tick it and post again.")
+            if stuck:
+                self.check_finished(folder)
 
     def run_scheduler(self, every=30):
         def loop():
             while True:
                 try:
+                    self.interrupted()                          # before run_due: its own posts finish inside its call
                     self.run_due()
                 except Exception as e:                          # keep the scheduler alive whatever one folder does
                     print("scheduler:", e)
@@ -593,6 +697,7 @@ class Publisher:
     def post_facebook(self, video, cover, text, when=None, channel=""):
         m = self.accounts.get("meta", channel)
         tok, page = m["page_token"], m["page_id"]
+        progress(3, "starting the upload")
         try:
             _, _, j = http("POST", f"{GRAPH}/{page}/video_reels", data={"upload_phase": "start", "access_token": tok})
         except PostError as e:
@@ -600,27 +705,47 @@ class Publisher:
         vid, upload = j["video_id"], j.get("upload_url") or f"https://rupload.facebook.com/video-upload/v23.0/{j['video_id']}"
         size = os.path.getsize(video)
         with open(video, "rb") as f:
-            http("POST", upload, body=f, headers={"Authorization": "OAuth " + tok, "offset": "0", "file_size": str(size),
+            http("POST", upload, body=Sending(f, size, 5, 85), headers={"Authorization": "OAuth " + tok, "offset": "0", "file_size": str(size),
                                                     "Content-Length": str(size)}, timeout=1800)
         finish = {"upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED", "description": text.get("caption", ""), "access_token": tok}
         if when:                                               # Facebook holds it and publishes it at that time
             finish.update(video_state="SCHEDULED", scheduled_publish_time=str(int(when)))
+        progress(88, "publishing")
         http("POST", f"{GRAPH}/{page}/video_reels", data=finish)
-        return f"https://www.facebook.com/reel/{vid}", {}
+        extra = {}
+        if cover:                                              # without this Facebook shows a frame of the video
+            progress(92, "setting your thumbnail")
+            try:
+                self.fb_thumb(vid, cover, tok)
+            except (PostError, OSError) as e:
+                extra["warning"] = f"Posted, but Facebook did not take your thumbnail ({e}). Set it in Meta Business Suite."
+        return f"https://www.facebook.com/reel/{vid}", extra
+
+    def fb_thumb(self, vid, cover, tok):
+        """The owner's thumbnail on a Facebook video; Facebook may still be processing it, so a few tries."""
+        with open(cover, "rb") as f:
+            img = f.read()
+        for wait in (0, 15, 30, 60):
+            time.sleep(wait)
+            body, headers = multipart({"is_preferred": "true", "access_token": tok}, "source", os.path.basename(cover), img,
+                                      "image/png" if cover.lower().endswith(".png") else "image/jpeg")
+            try:
+                http("POST", f"{GRAPH}/{vid}/thumbnails", body=body, headers=headers)
+                return
+            except PostError as e:
+                last = e
+        raise last
 
     def cover_url(self, cover, m, parked):
         """Instagram wants the cover as a URL: park it on the Page as an unpublished photo and use its address."""
         if not cover:
             return ""
         try:
-            boundary = "hq" + secrets.token_hex(8)
             with open(cover, "rb") as f:
                 img = f.read()
-            body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"published\"\r\n\r\nfalse\r\n"
-                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"access_token\"\r\n\r\n{m['page_token']}\r\n"
-                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"source\"; filename=\"cover.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n").encode() \
-                + img + f"\r\n--{boundary}--\r\n".encode()
-            _, _, j = http("POST", f"{GRAPH}/{m['page_id']}/photos", body=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+            body, headers = multipart({"published": "false", "access_token": m["page_token"]}, "source", os.path.basename(cover), img,
+                                      "image/png" if cover.lower().endswith(".png") else "image/jpeg")
+            _, _, j = http("POST", f"{GRAPH}/{m['page_id']}/photos", body=body, headers=headers)
             parked.append(j["id"])
             _, _, p = http("GET", f"{GRAPH}/{j['id']}?" + urllib.parse.urlencode({"fields": "images", "access_token": m["page_token"]}))
             return (p.get("images") or [{}])[0].get("source", "")
@@ -629,7 +754,8 @@ class Publisher:
 
     def ig_wait(self, cid, tok):
         """Wait until Instagram has processed a container: None when it is ready, else Instagram's error."""
-        for _ in range(120):                                   # up to 10 minutes of processing
+        for i in range(120):                                   # up to 10 minutes of processing
+            progress(50 + 45 * (1 - math.exp(-i / 24)), "Instagram is processing the video")
             _, _, s = http("GET", f"{GRAPH}/{cid}?" + urllib.parse.urlencode({"fields": "status_code,status", "access_token": tok}))
             if s.get("status_code") == "FINISHED":
                 return None
@@ -640,6 +766,7 @@ class Publisher:
 
     # Instagram Reel: container → the file straight to Instagram's upload host → wait until processed → publish
     def post_instagram(self, video, cover, text, when=None, channel=""):
+        progress(2, "checking the video for Instagram")
         ready = ig_ready(video)
         try:
             return self.post_instagram_file(ready or video, cover, text, self.accounts.get("meta", channel))
@@ -657,7 +784,7 @@ class Publisher:
         size = os.path.getsize(video)
         try:
             with open(video, "rb") as f:                         # the upload host takes the user token, not the Page token
-                http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{j['id']}", body=f,
+                http("POST", j.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v23.0/{j['id']}", body=Sending(f, size, 5, 50) if wait else f,
                      headers={"Authorization": "OAuth " + (m.get("user_token") or tok), "offset": "0", "file_size": str(size),
                               "Content-Length": str(size)}, timeout=1800)
         except PostError as e:
@@ -713,8 +840,15 @@ class Publisher:
         base = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
         parked, extra = [], {}                                 # the hidden cover on the Page
         try:
+            progress(3, "sending your thumbnail")
             url = self.cover_url(cover, m, parked)
             cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
+            for wait in (30, 90):                              # a refusal can pass later: a 57-second Reel went through
+                if cid or err != "upload refused":            # this way on the account that refused a 56-second one
+                    break
+                progress(5, f"Instagram refused the upload, trying again in {wait} seconds")
+                time.sleep(wait)
+                cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
             if not cid and url and err != "upload refused":   # taken but not processed: try once without the cover
                 cid, err2 = self.ig_direct(video, base, m)
                 if cid:
@@ -722,17 +856,19 @@ class Publisher:
                 else:
                     err = err2
             if not cid and err == "upload refused":
+                progress(50, "Instagram refused it three times: finding out why")
                 cap, d = self.ig_limit(video, base, m), duration(video)
                 long = f"{int(d // 60)}:{int(d % 60):02d}" if d else ""
                 if cap:
-                    raise PostError(f"Instagram refused this video: this account only takes videos up to about {cap} seconds from apps, "
-                                    f"and this one is {long}. In the Instagram app itself longer Reels work, so post this one by hand there, "
-                                    f"or ask Creative for an Instagram cut under {cap} seconds.")
+                    raise PostError(f"Instagram refused this video three times. Its test clips passed only up to about {cap} seconds today, "
+                                    f"and this one is {long}, but longer Reels have gone through before, so try Post again later. "
+                                    f"Otherwise post it by hand in the Instagram app, or ask Creative for an Instagram cut under {cap} seconds.")
                 raise PostError("Instagram refused this video file" + (" (a test clip just as long was fine, so it isn't the length)" if cap == 0 else "")
                                 + ". Post this one by hand in the Instagram app, and send a screenshot of this to Claude.")
             if not cid:
                 raise PostError(f"Instagram could not process the video ({err}). Try Post again in a few minutes; if it keeps failing, "
                                 "post this one by hand in the Instagram app.")
+            progress(97, "publishing")
             _, _, p = http("POST", f"{GRAPH}/{ig}/media_publish", data={"creation_id": cid, "access_token": tok})
         finally:
             self.unpark(parked, tok)
@@ -760,7 +896,7 @@ class Publisher:
         if not where:
             raise PostError("YouTube did not start the upload")
         with open(video, "rb") as f:
-            _, _, v = http("PUT", where, body=f, headers={"Authorization": "Bearer " + tok, "Content-Type": "video/*", "Content-Length": str(size)}, timeout=3600)
+            _, _, v = http("PUT", where, body=Sending(f, size, 3, 92), headers={"Authorization": "Bearer " + tok, "Content-Type": "video/*", "Content-Length": str(size)}, timeout=3600)
         vid, extra = v["id"], {}
         privacy = (v.get("status") or {}).get("privacyStatus", "")
         if privacy and privacy != meta["status"]["privacyStatus"] and not when:
@@ -770,6 +906,7 @@ class Publisher:
             extra["warning"] = ("Scheduled in YouTube Studio for that time. If your Google project hasn't passed the YouTube audit yet, "
                                 "YouTube keeps it private even then.")
         if cover:
+            progress(95, "setting your thumbnail")
             try:
                 with open(cover, "rb") as f:
                     img = f.read()

@@ -38,3 +38,7 @@ hq/sermon-pending-deliveries.json*
 .hq-office.json*
 .hq-access-key
 .hq-known-hosts
+hq/run-times.json
+hq/.phone-videos/
+hq/thumbnail-design/
+.cache/

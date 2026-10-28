@@ -1,96 +1,157 @@
-(() => {
+(function(global) {
   'use strict';
-  const $ = id => document.getElementById(id);
-  const query = new URLSearchParams(location.search);
-  let folder = query.get('folder'), taskId = query.get('taskId') || '';
-  let openedJob = null, retryRequested = false, pollStarted = Date.now();
-  const state = {config:null, context:null, jobs:new Map(), pending:false, timer:null};
-  const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  function notice(message, error=false) { $('notice').textContent=message; $('notice').className=error?'error':''; }
-  async function api(route, body) {
-    const response=await fetch('/api/thumbnail-design'+route, body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    let data; try { data=await response.json(); } catch { throw Error('封面功能尚未连接，请在 HQ 正常重启引擎后再试。'); }
-    if(!response.ok) throw Error(data.error||`请求失败 (${response.status})`);
-    return data;
+  const esc=text=>String(text??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const validId=value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value);
+  function safeURL(value,origin=global.location?.origin||'http://localhost') {
+    if(typeof value!=='string'||!value.startsWith('/')||value.startsWith('//'))return '';
+    try{const url=new URL(value,origin);return url.origin===origin&&!url.username&&!url.password&&(/^\/(?:files|api\/thumbnail-design)\//.test(url.pathname)||url.pathname==='/')?url.pathname+url.search+url.hash:'';}catch{return '';}
   }
-  const selectedChannel=()=>state.config?.channels.find(c=>c.key===$('channel').value);
-  function renderTemplates() {
-    const channel=selectedChannel(), templates=channel?.templates||[];
-    $('templates').innerHTML=templates.length?templates.map(t=>`<article class="template"><img src="${esc(t.previewUrl)}" alt="${esc(t.name)}"><div class="content"><h3>${esc(t.name)}</h3><small>${t.width} × ${t.height} · v${t.revision}</small>${t.id===channel.defaultTemplateId?'<small>✓ 频道默认模板</small>':`<button type="button" data-default="${esc(t.id)}">设为默认</button>`}</div></article>`).join(''):'<p>这个频道还没有模板。请先上传，其他频道的模板不会自动套用。</p>';
-    const previous=$('video-template').value;
-    $('video-template').innerHTML=templates.map(t=>`<option value="${esc(t.id)}">${esc(t.name)} · ${t.width} × ${t.height}${t.id===channel.defaultTemplateId?' · 默认':''}</option>`).join('');
-    $('video-template').value=templates.some(t=>t.id===previous)?previous:channel?.defaultTemplateId||templates[0]?.id||'';
-    $('approve').disabled=state.pending||!templates.length||!state.context?.eligible;
+  function channelJobs(jobs,key){return [...jobs].filter(j=>j&&typeof j.channel==='string'&&j.channel===key);}
+  function postEnabled(config){return config?.postCreation===true;}
+  function jobMatchesSource(job,source){if(!job||!source||job.channel!==source.channel)return false;if(job.sourceVideo?.sourceId)return job.sourceVideo.sourceId===source.sourceId;return Boolean(job.folder&&job.videoPath&&job.folder===source.folder&&job.videoPath===source.videoPath);}
+  const utilities={esc,safeURL,channelJobs,postEnabled,jobMatchesSource};
+  if(typeof module==='object'&&module.exports)module.exports=utilities;
+  if(!global.document)return;
+  const $=id=>document.getElementById(id),query=new URLSearchParams(global.location.search);
+  let folder=query.get('folder'),taskId=query.get('taskId')||'',openedJob=null,retryRequested=false,pollStarted=Date.now();
+  const state={config:null,context:null,jobs:new Map(),pending:false,timer:null,selecting:new Set(),postSignature:null,postKey:null,requestCounter:0,sourceRequiredForRevision:false,sources:[],sourceStale:false,recordedTitle:false,sourceRequest:0,showChannelHistory:false};
+  const terminal=new Set(['failed','interrupted','cancelled','delivered','awaiting_approval']);
+  const active=j=>!j.delivery&&!terminal.has(j.status)&&!['delivery_error','delivery-error'].includes(j.status);
+  const channelKey=()=>$('channel').value;
+  const selectedChannel=()=>state.config?.channels?.find(c=>c.key===channelKey());
+  const followsVideo=()=>$('post-title-mode').value!=='manual';
+  const selectedSource=()=>state.sources.find(source=>source.sourceId===$('source-video').value&&source.channel===channelKey());
+  const staleJobVersion=job=>{const source=state.sources.find(source=>source.channel===job.channel&&source.sourceId===job.sourceVideo?.sourceId);return Boolean(source&&job.sourceVideo.titleRevision!==source.titleRevision);};
+  function notice(message,error=false){$('notice').textContent=message;$('notice').className=error?'error':'';}
+  async function api(route,body){
+    let response;try{response=await fetch('/api/thumbnail-design'+route,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch{throw Error('连接中断，提交结果可能尚未确认。请刷新任务列表检查；系统不会自动重复生成。');}
+    let data;try{data=await response.json();}catch{throw Error('封面功能暂时无法读取。请保留当前内容，检查 HQ 连接后再试。');}
+    if(!response.ok){const error=Error(data.error||`请求失败 (${response.status})`);error.status=response.status;throw error;}return data;
   }
-  async function loadConfig(preferred) {
-    state.config=await api('/config');
-    $('channel').innerHTML=state.config.channels.map(c=>`<option value="${esc(c.key)}">${esc(c.name||'Main channel')}</option>`).join('');
-    if(state.config.channels.some(c=>c.key===preferred)) $('channel').value=preferred;
-    renderTemplates();
+  function apiUpload(route,body,onProgress){if(!global.XMLHttpRequest)return api(route,body);return new Promise((resolve,reject)=>{const x=new global.XMLHttpRequest();x.open('POST','/api/thumbnail-design'+route);x.setRequestHeader('Content-Type','application/json');x.upload.onprogress=e=>{if(e.lengthComputable)onProgress(Math.min(100,Math.floor(e.loaded/e.total*100)));};x.onload=()=>{let data;try{data=JSON.parse(x.responseText);}catch{return reject(Error('封面功能暂时无法读取。请保留当前内容，检查 HQ 连接后再试。'));}if(x.status<200||x.status>=300){const error=Error(data.error||`请求失败 (${x.status})`);error.status=x.status;return reject(error);}resolve(data);};x.onerror=()=>reject(Error('连接中断，提交结果可能尚未确认。请刷新任务列表检查；系统不会自动重复生成。'));x.send(JSON.stringify(body));});}
+  function setPending(value){state.pending=value;syncControls();}
+  function syncControls(){
+    const channel=selectedChannel(),hasTemplates=Boolean(channel?.templates?.length);
+    for(const id of ['post-title-mode','source-video','refresh-video-title','channel','post-template','post-title','post-subtitle','post-dimensions','post-source','post-instructions','save-template','template-file','template-name','template-instructions','dimensions','make-default'])$(id).disabled=state.pending||(!channel&&id!=='channel');
+    if(state.context?.channelKnown)$('channel').disabled=true;
+    const linked=followsVideo(),source=selectedSource();$('post-title').readOnly=linked;$('post-subtitle').readOnly=linked;$('title').readOnly=linked&&Boolean(source);$('subtitle').readOnly=linked&&Boolean(source);$('source-video-controls').hidden=!linked;$('create-post').disabled=state.pending||!postEnabled(state.config)||!hasTemplates||!channel||(linked&&(!source?.title||state.sourceStale||state.config?.sourceVideos!==true));
+    $('create-post').textContent=state.pending?'正在提交，请稍候…':'✦ 生成 4 张独立封面';if(!state.pending)$('save-template').textContent='保存频道模板';
+    $('approve').disabled=state.pending||!hasTemplates||!state.context?.eligible||(linked&&(!source?.title||state.sourceStale));
+    $('post-capability').hidden=postEnabled(state.config);
+    $('post-capability').textContent=state.config?'帖子封面功能尚未由当前后台启用。请保存内容，载入新版 HQ 引擎后继续；现有模板会保留。':'正在连接封面工作室…';
   }
-  function renderJobs() {
-    const labels={dispatching:'正在提交 Codex',watching:'Codex 正在制作',uncertain:'正在核对提交结果','delivery-error':'回传未完成',pending:'等待接收',queued:'已排队',running:'Codex 正在制作',generating:'Codex 正在制作',delivering:'正在回传 HQ',succeeded:'封面已生成',awaiting_approval:'Final 等你审核',delivered:'Final 等你审核',failed:'本次未完成',interrupted:'本次已中断',needs_input:'需要补充资料',delivery_error:'回传未完成'};
-    $('jobs').innerHTML=[...state.jobs.values()].reverse().map(j=>`<div class="job"><strong>${esc(labels[j.status]||j.status)}</strong><small>${esc(j.stage||j.id)}</small>${['dispatching','watching','pending','queued','running','generating','delivering'].includes(j.status)?`<progress max="100" value="${Math.max(0,Math.min(100,Number(j.progress)||0))}"></progress>`:''}${(j.warnings||[]).map(w=>`<p>${esc(w)}</p>`).join('')}${j.error?`<p>${esc(j.error)}</p>`:''}${j.status==='failed'?'<button type="button" data-retry>重新提交当前设置，生成新版本</button>':''}${!j.delivery&&j.status!=='failed'?`<button type="button" data-collect="${esc(j.id)}">检查并收取现有结果</button>`:''}${j.delivery?`<p>视频与四张封面已回到 Agent HQ。请在那里选择封面，检查并给最终 OK。</p><a class="action" href="/?task=${encodeURIComponent(j.delivery.taskId)}">打开 Final 审核 →</a>`:''}</div>`).join('');
+  function selectedTemplate(){return selectedChannel()?.templates?.find(t=>t.id===$('post-template').value);}
+  function renderSelectedTemplate(){
+    const template=selectedTemplate(),url=safeURL(template?.previewUrl);
+    $('selected-template').innerHTML=template?`${url?`<img src="${esc(url)}" alt="${esc(template.name)}">`:''}<div><strong>${esc(template.name)}</strong><small>本次模板 · ${Number(template.width)} × ${Number(template.height)}</small><button type="button" data-show-templates>更换模板</button></div>`:'<p>先为这个频道上传一个参考模板，再开始制作封面。</p>';
+    renderTemplateCards();syncControls();
   }
-  async function pollJobs() {
+  function renderTemplateCards(){
+    const channel=selectedChannel(),templates=channel?.templates||[],selected=$('post-template').value;
+    $('templates').innerHTML=templates.length?templates.map(t=>{const url=safeURL(t.previewUrl);return `<article class="template ${t.id===selected?'selected':''}">${url?`<img src="${esc(url)}" alt="${esc(t.name)}">`:''}<div class="content"><h3>${esc(t.name)}</h3><small>${Number(t.width)} × ${Number(t.height)} · v${Number(t.revision)||1}</small><button type="button" data-use-template="${esc(t.id)}" ${state.pending?'disabled':''} aria-pressed="${t.id===selected}">${t.id===selected?'✓ 本次使用':'使用这个模板'}</button>${t.id===channel.defaultTemplateId?'<small>频道默认模板</small>':`<button type="button" class="subtle" data-default="${esc(t.id)}" ${state.pending?'disabled':''}>设为频道默认</button>`}</div></article>`;}).join(''):'<p>这个频道还没有模板。上传一张参考图片后即可生成；其他频道的模板不会自动套用。</p>';
+  }
+  function renderTemplates(){
+    const channel=selectedChannel(),templates=channel?.templates||[];
+    for(const id of ['post-template','video-template']){const previous=$(id).value;$(id).innerHTML=templates.map(t=>`<option value="${esc(t.id)}">${esc(t.name)} · ${Number(t.width)} × ${Number(t.height)}${t.id===channel.defaultTemplateId?' · 默认':''}</option>`).join('');$(id).value=templates.some(t=>t.id===previous)?previous:channel?.defaultTemplateId||templates[0]?.id||'';}
+    renderSelectedTemplate();if(!templates.length)$('template-library').open=true;
+  }
+  async function loadConfig(preferred){
+    const data=await api('/config');if(!Array.isArray(data.channels))throw Error('无法读取频道列表；没有新建或替换你的频道。');state.config=data;
+    $('channel').innerHTML=data.channels.map(c=>`<option value="${esc(c.key)}">${esc(c.name||'Main channel')}</option>`).join('');
+    $('channel').value=data.channels.some(c=>c.key===preferred)?preferred:data.channels[0]?.key??'__choose__';renderTemplates();
+  }
+  const storageKey='thumbnail-studio-jobs-v1';
+  function savedJobs(){try{const rows=JSON.parse(global.localStorage?.getItem(storageKey)||'[]');return Array.isArray(rows)?rows.filter(r=>validId(r.id)&&typeof r.channel==='string').slice(-50):[];}catch{return [];}}
+  function rememberJob(job){
+    if(!job||!validId(job.id)||typeof job.channel!=='string')throw Error('HQ 没有确认这次封面的任务身份。请检查任务列表，不要重复提交。');
+    state.jobs.set(job.id,job);const rows=savedJobs().filter(r=>r.id!==job.id);rows.push({id:job.id,channel:job.channel});try{global.localStorage?.setItem(storageKey,JSON.stringify(rows.slice(-50)));}catch{}return job;
+  }
+  function renderJobs(){
+    const labels={dispatching:'正在提交 Codex',watching:'Codex 正在制作',uncertain:'提交结果待核对','delivery-error':'回传未完成',pending:'等待接收',queued:'已排队',running:'Codex 正在制作',generating:'Codex 正在制作',delivering:'正在回传 HQ',succeeded:'封面已生成',awaiting_approval:'等待最终审核',delivered:'选择你要使用的封面',failed:'本次未完成',interrupted:'本次已中断',needs_input:'需要补充资料',delivery_error:'回传未完成'};
+    const allJobs=channelJobs(state.jobs.values(),channelKey()).reverse(),source=selectedSource(),linked=followsVideo(),matching=source?allJobs.filter(job=>jobMatchesSource(job,source)):[],foreign=allJobs.filter(job=>!source||!jobMatchesSource(job,source)),jobs=linked&&!state.showChannelHistory?matching:allJobs;$('jobs-empty').hidden=jobs.length>0;$('jobs-empty').textContent=linked?(source?'这支视频还没有关联的封面。生成完成后，会在这里显示对应的四张选择。':'先选择对应的视频，再查看它的封面选择。频道其他历史保留在下方入口。'):'生成后，四张图片会在这里显示。你可以逐张查看、下载，再选一张用于帖子。';$('results-scope').textContent=linked?(state.showChannelHistory?'频道全部历史 · 其他视频 / 独立帖子会明确标注':source?'当前视频：'+(source.title||source.videoPath)+' · 只显示属于这支视频的封面':'请选择对应的视频 · 不会按相同标题猜测关联'):'独立帖子模式 · 本频道全部历史';$('show-channel-history').hidden=!linked||foreign.length===0;$('show-channel-history').textContent=state.showChannelHistory?'收起其他视频 / 独立帖子历史':'查看频道全部历史（其他视频 / 独立帖子 '+foreign.length+'）';$('show-channel-history').setAttribute('aria-expanded',String(state.showChannelHistory));
+    $('jobs').innerHTML=jobs.map(j=>{
+      const stale=staleJobVersion(j),options=Array.isArray(j.options)?j.options:[],review=safeURL(j.reviewUrl||j.delivery?.reviewUrl||(j.delivery?.taskId?'/?task='+encodeURIComponent(j.delivery.taskId):''));
+      const pictures=options.filter(o=>o&&safeURL(o.url)&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(o.name||''));
+      return `<article class="job" data-job="${esc(j.id)}"><div class="job-heading"><div>${linked&&state.showChannelHistory&&!jobMatchesSource(j,source)?'<span class="history-scope-badge">其他视频 / 独立帖子历史</span>':''}<span class="eyebrow">${j.sourceVideo?'VIDEO COVER':j.mode==='post'?'POST COVER':'THUMBNAIL'}</span><h3>${esc(j.title||'封面任务')}</h3>${stale?'<p class="job-version-warning">旧视频 / 标题版本 · 原标题和下载保留。请按当前视频标题主动生成新版，再选择使用；不会自动重做。</p>':''}${j.sourceVideo?`<small>对应视频 · ${esc(j.sourceVideo.videoPath||j.sourceVideo.titleSource||'按提交时的视频标题保存')}${safeURL(j.sourceVideo.videoUrl)?` · <a href="${esc(safeURL(j.sourceVideo.videoUrl))}" target="_blank" rel="noopener">查看视频 ↗</a>`:''}</small>`:''}<strong>${esc(labels[j.status]||j.status)}</strong></div><small>${esc(j.stage||j.id)}</small></div>${active(j)?`<progress max="100" value="${Math.max(0,Math.min(100,Number(j.progress)||0))}"></progress><p>任务已接受，可以继续其他工作。结果会回到这里和 HQ。</p>`:''}${j.status==='uncertain'?'<p class="inline-note">提交结果尚未确认。检查现有结果即可，不要另起重复任务。</p>':''}${(j.warnings||[]).map(w=>`<p class="job-warning">${esc(w)}</p>`).join('')}${j.error?`<p class="error">${esc(j.error)}</p>`:''}${pictures.length?`<div class="option-gallery">${pictures.map((option,index)=>{const chosen=j.selectedOption===option.name,download=safeURL(option.downloadUrl||option.url);return `<article class="option-card ${chosen?'chosen':''}"><a class="option-preview" href="${esc(safeURL(option.url))}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(safeURL(option.url))}" alt="${esc(j.title||'封面')} · 选择 ${index+1}"></a><div class="option-content"><div class="option-label"><strong>Option ${String(index+1).padStart(2,'0')}</strong><small>${Number(option.width)||''} × ${Number(option.height)||''}</small></div><button type="button" data-select-job="${esc(j.id)}" data-option="${esc(option.name)}" ${state.config?.optionSelection!==true||state.selecting.has(j.id)||stale?'disabled':''} aria-pressed="${chosen}" class="${chosen?'chosen-button':''}">${chosen?'✓ 已选这张':'选择这张封面'}</button>${download?`<a class="download" href="${esc(download)}" download="${esc(option.name)}" target="_blank" rel="noopener">↓ 下载 PNG</a>`:''}</div></article>`;}).join('')}</div><p class="selection-note">${j.selectedOption?'已保存封面选择。请检查文字、人物和画面，再到 HQ 给最终 OK。':'比较四张独立图片，选择一张用于帖子。选择不会自动批准或发布。'}</p>`:''}<div class="job-actions">${!j.delivery?`<button type="button" data-collect="${esc(j.id)}">检查现有结果</button>`:''}${j.status==='failed'?`<button type="button" data-new-version="${esc(j.id)}">用这次内容准备新版本</button>`:''}${review?`<a class="action" href="${esc(review)}">打开 HQ 最终审核 →</a>`:''}</div></article>`;
+    }).join('');
+  }
+  async function loadHistory(){
+    const key=channelKey();if(!selectedChannel())return;
+    if(state.config?.jobHistory===true){const data=await api('/jobs?'+new URLSearchParams({channel:key}));for(const job of data.jobs||[])if(job.channel===key)rememberJob(job);}
+    else for(const item of savedJobs().filter(r=>r.channel===key)){try{const data=await api('/jobs/'+encodeURIComponent(item.id));if(data.job?.channel===key)rememberJob(data.job);}catch{}}
+    if(channelKey()===key)renderJobs();
+  }
+  async function pollJobs(){
     clearTimeout(state.timer);
-    for(const [id,job] of state.jobs) {
-      if(job.delivery||['failed','interrupted','delivery_error','delivery-error'].includes(job.status))continue;
-      try { const data=await api('/jobs/'+encodeURIComponent(id));state.jobs.set(id,data.job); } catch(error) { notice(error.message,true); }
-    }
-    renderJobs();
-    if(Date.now()-pollStarted<30*60*1000&&[...state.jobs.values()].some(j=>!j.delivery&&!['failed','interrupted','delivery_error','delivery-error'].includes(j.status)))state.timer=setTimeout(pollJobs,4000);
+    for(const [id,job] of state.jobs){if(!active(job))continue;try{const data=await api('/jobs/'+encodeURIComponent(id));if(data.job?.id===id)rememberJob(data.job);else throw Error('返回的任务身份不一致，原任务已保留。');}catch(error){notice(error.message,true);}}
+    renderJobs();if(Date.now()-pollStarted<30*60*1000&&[...state.jobs.values()].some(active))state.timer=setTimeout(pollJobs,4000);
   }
-  function updateVideo() {
-    const video=state.context?.videos.find(v=>v.path===$('video').value);
-    $('player').src=video?.url||('/files/'+folder.split('/').map(encodeURIComponent).join('/')+'/'+(video?.path||'').split('/').map(encodeURIComponent).join('/'));
-  }
-  async function loadContext() {
-    const data=await api('/context?'+new URLSearchParams({folder,taskId})); state.context=data;
-    if(data.channel!==undefined&&data.channel!==null) {$('channel').value=data.channel;$('channel').disabled=data.channelKnown===true;}
-    if(!data.channelKnown){const option=document.createElement('option');option.value='__choose__';option.textContent='请选择这个视频所属频道';option.disabled=true;$('channel').prepend(option);$('channel').value='__choose__';}
+  function renderSourceInfo(){const linked=followsVideo(),source=selectedSource();if(!linked){$('source-video-note').textContent=state.recordedTitle?'当前保留这次历史任务记录的标题。选择「跟随视频标题」才会改用视频的最新标题；历史任务不会被改名。':'手动标题模式：只使用你填写的标题。模板中的 Golden Apple 等文字不会作为本次文案。';syncControls();return;}$('source-video-note').textContent=state.config?.sourceVideos!==true?'当前后台还未启用视频标题连接。可先载入新版，或主动选择「独立帖子 · 手动标题」。':!source?'请选择对应的视频。不会自动猜测其他项目标题，也不会采用模板里的旧标题。':state.sourceStale?'视频来源或标题已变化。请按「刷新视频标题」检查后再生成。':`${source.title?'标题：'+source.title:'这个视频缺少可确认的标题。请先在视频任务补好标题，再刷新。'}${source.subtitle?' · '+source.subtitle:''} · 视频：${source.videoPath||source.sourceId} · 来源：${source.titleSource||'视频任务资料'}${source.warnings?.length?' · '+source.warnings.join(' · '):''}`;syncControls();}
+  function applySourceTitle(){const source=selectedSource();if(!followsVideo()){renderSourceInfo();renderJobs();return;}$('post-title').value=source?.title||'';$('post-subtitle').value=source?.subtitle||'';$('title').value=source?.title||'';$('subtitle').value=source?.subtitle||'';if(source&&state.context&&source.folder===folder&&state.context.videos?.some(v=>v.path===source.videoPath)){$('video').value=source.videoPath;$('player').src=safeURL(source.videoUrl)||safeURL(state.context.videos.find(v=>v.path===source.videoPath)?.url);$('video-section').hidden=false;}else if(source&&state.context)$('video-section').hidden=true;renderSourceInfo();renderJobs();}
+  async function loadSources(selectContext=false){const key=channelKey(),requestId=++state.sourceRequest;if(state.config?.sourceVideos!==true){state.sources=[];$('source-video').innerHTML='<option value="">选择对应的视频</option>';$('source-video').value='';renderSourceInfo();return;}const data=await api('/sources?'+new URLSearchParams({channel:key}));if(channelKey()!==key||requestId!==state.sourceRequest)return;if(!Array.isArray(data.sources))throw Error('视频列表无法确认。请刷新视频标题；没有生成封面。');state.sources=data.sources.filter(source=>source&&source.channel===key&&typeof source.sourceId==='string'&&/^[a-f0-9]{64}$/i.test(source.sourceId)&&typeof source.titleRevision==='string'&&/^[a-f0-9]{64}$/i.test(source.titleRevision));const currentChoice=$('source-video').value;$('source-video').innerHTML='<option value="">选择对应的视频</option>'+state.sources.map(source=>`<option value="${esc(source.sourceId)}">${esc(source.title||'标题待补充')} · ${esc(source.videoPath||source.folder||'视频')}</option>`).join('');let selected=state.sources.some(source=>source.sourceId===currentChoice)?currentChoice:'';if(!selected&&selectContext){const videoPath=query.get('videoPath')||$('video').value||'',hasContext=Boolean(folder||taskId||query.get('videoPath'));const matches=hasContext?state.sources.filter(source=>(!folder||source.folder===folder)&&(!taskId||source.taskId===taskId||(Array.isArray(source.taskIds)&&source.taskIds.includes(taskId)))&&(!videoPath||source.videoPath===videoPath)):[];if(matches.length===1)selected=matches[0].sourceId;}$('source-video').value=selected;state.sourceStale=false;applySourceTitle();}
+  function updateVideo(){const video=state.context?.videos?.find(v=>v.path===$('video').value);$('player').src=safeURL(video?.url)|| (video&&folder?'/files/'+folder.split('/').map(encodeURIComponent).join('/')+'/'+video.path.split('/').map(encodeURIComponent).join('/'):'');if(followsVideo()&&video){const matches=state.sources.filter(source=>source.folder===folder&&source.videoPath===video.path&&(!taskId||source.taskId===taskId||(Array.isArray(source.taskIds)&&source.taskIds.includes(taskId))));const next=matches.length===1?matches[0].sourceId:'';if($('source-video').value!==next)state.showChannelHistory=false;$('source-video').value=next;state.sourceStale=false;applySourceTitle();}}
+  async function loadContext(){
     $('video-section').hidden=false;
-    $('video').innerHTML=(data.videos||[]).map(v=>`<option value="${esc(v.path)}">${esc(v.name)}</option>`).join('');
-    if(data.title)$('title').value=data.title;
-    for(const job of data.jobs||[])state.jobs.set(job.id,job);
-    if(data.videos?.length)updateVideo();
-    renderTemplates();renderJobs();
-    if(!data.channelKnown)notice('这个视频未记录频道，请先确认所属品牌，再批准视频。');
-    if(!data.eligible)notice(data.error||'这个版本暂时不能开始封面制作。',true);
-    if(state.jobs.size)pollJobs();
+    try{const data=await api('/context?'+new URLSearchParams({folder,taskId}));state.context=data;
+      if(data.channel!==undefined&&data.channel!==null&&state.config.channels.some(c=>c.key===data.channel)){$('channel').value=data.channel;$('channel').disabled=data.channelKnown===true;}
+      if(!data.channelKnown){const option=document.createElement('option');option.value='__choose__';option.textContent='请选择这个视频所属频道';option.disabled=true;$('channel').prepend(option);$('channel').value='__choose__';}
+      $('video').innerHTML=(data.videos||[]).map(v=>`<option value="${esc(v.path)}">${esc(v.name)}</option>`).join('');if(data.title)$('title').value=data.title;
+      for(const job of data.jobs||[])rememberJob(job);if(data.videos?.length){const exact=data.videos.find(v=>query.get('videoPath')&&v.path===query.get('videoPath'));$('video').value=exact?.path||(data.videos.length===1?data.videos[0].path:'');updateVideo();}
+      $('video-error').hidden=Boolean(data.eligible);$('video-error').textContent=data.error||'这个视频版本尚不能开始配套封面。你仍可使用上方的帖子封面功能。';renderTemplates();renderJobs();
+    }catch(error){state.context=null;$('video-error').hidden=false;$('video-error').textContent=error.message+' 仍可在上方单独制作帖子封面。';syncControls();}
   }
-  $('channel').addEventListener('change',()=>{renderTemplates();notice('已切换频道。模板只应用于当前频道。');});
-  $('video').addEventListener('change',updateVideo);
+  function validateImage(file,label){if(!file||!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>15*1024*1024)throw Error(`请选择 15 MB 以下的 PNG、JPG 或 WebP ${label}。`);}
+  const asDataUrl=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('无法读取图片，请重新选择。'));reader.readAsDataURL(file);});
+  function newKey(){return global.crypto?.randomUUID?.()||'post-'+Date.now().toString(36)+'-'+(++state.requestCounter).toString(36)+'-'+Math.random().toString(36).slice(2,9);}
+  async function submitPost(event){
+    event.preventDefault();if(state.pending)return;
+    try{
+      if(!postEnabled(state.config))throw Error('当前后台尚未启用单独制作帖子封面；请载入准备好的 HQ 更新。');
+      const channel=selectedChannel(),template=selectedTemplate();if(!channel)throw Error('请先选择已有频道。');if(!template)throw Error('请先选择这个频道的模板。');
+      const source=selectedSource();if(followsVideo()&&(state.config?.sourceVideos!==true||!source))throw Error('请先选择对应的视频，或主动切换到「独立帖子 · 手动标题」。');if(followsVideo()&&state.sourceStale)throw Error('视频标题已更新。请先按「刷新视频标题」检查后再生成。');const title=followsVideo()?String(source?.title||'').trim():$('post-title').value.trim();if(!title)throw Error(followsVideo()?'这个视频还没有可确认的标题。请先在视频任务填写标题，刷新后再生成；也可主动切换为手动标题。':'请输入封面标题。');
+      const dimensions=$('post-dimensions').value.split('x').map(Number);if(!['1080x1440','1080x1920','1920x1080'].includes($('post-dimensions').value))throw Error('请选择支持的封面尺寸。');
+      const payload={channel:channel.key,templateId:template.id,title,subtitle:$('post-subtitle').value.trim(),instructions:$('post-instructions').value.trim(),width:dimensions[0],height:dimensions[1],...(followsVideo()?{sourceVideo:{sourceId:source.sourceId,titleRevision:source.titleRevision}}:{})};
+      const file=$('post-source').files?.[0];if(!file&&state.sourceRequiredForRevision)throw Error('这个版本使用过人物／主体参考。请重新上传同一原图，再生成新版本，避免换错人物。');if(file)validateImage(file,'人物或主体参考');
+      setPending(true);if(file)payload.sourceImage={name:file.name,dataUrl:await asDataUrl(file)};
+      const signature=JSON.stringify(payload);if(signature!==state.postSignature){state.postSignature=signature;state.postKey=newKey();}payload.requestKey=state.postKey;
+      const data=payload.sourceImage?await apiUpload('/create-post',payload,pct=>{$('create-post').textContent=pct<100?`正在上传参考图 ${pct}%…`:'已上传 100%，正在提交…';}):await api('/create-post',payload);if(data.job?.channel!==payload.channel)throw Error('HQ 返回了不同频道的任务，原设置已保留。请检查任务列表。');rememberJob(data.job);renderJobs();notice('封面任务已接受。完成后会显示四张独立图片，供你选择和下载。');pollStarted=Date.now();pollJobs();$('results-section').scrollIntoView({behavior:'smooth',block:'start'});
+    }catch(error){if(error.status===409&&followsVideo()){state.sourceStale=true;renderSourceInfo();notice(error.message+' 请刷新视频标题并检查；没有自动重试。',true);}else notice(error.message,true);try{await loadHistory();}catch{}}finally{setPending(false);}
+  }
+  $('post-form').addEventListener('submit',submitPost);
+  $('post-title-mode').addEventListener('change',()=>{if(state.pending)return;state.recordedTitle=false;state.sourceStale=false;state.showChannelHistory=false;applySourceTitle();});
+  $('source-video').addEventListener('change',()=>{if(state.pending)return;state.sourceStale=false;state.recordedTitle=false;state.showChannelHistory=false;applySourceTitle();});
+  $('refresh-video-title').addEventListener('click',async()=>{if(state.pending)return;setPending(true);try{await loadSources(true);notice(followsVideo()?'已刷新对应视频的标题。请检查后再生成；模板和补充要求保持不变。':'已刷新视频列表，手动标题保持不变。');}catch(error){state.sourceStale=true;notice(error.message,true);}finally{setPending(false);renderSourceInfo();}});
+  $('channel').addEventListener('change',async()=>{if(state.pending)return;state.sourceRequiredForRevision=false;state.showChannelHistory=false;state.sources=[];state.sourceStale=false;state.recordedTitle=false;$('source-video').value='';$('post-title').value='';$('post-subtitle').value='';$('title').value='';$('subtitle').value='';$('post-source').value='';$('source-preview').hidden=true;renderTemplates();renderJobs();notice('已切换频道。请选择这个品牌的模板和内容。');try{await loadSources(false);}catch(error){state.sourceStale=true;notice(error.message,true);renderSourceInfo();}try{await loadHistory();pollJobs();}catch(error){notice(error.message,true);}});
+  $('post-template').addEventListener('change',renderSelectedTemplate);
+  $('selected-template').addEventListener('click',event=>{if(event.target.closest('[data-show-templates]')){$('template-library').open=true;$('template-library').scrollIntoView({behavior:'smooth',block:'start'});}});
   $('templates').addEventListener('click',async event=>{
-    const button=event.target.closest('[data-default]');if(!button)return;
-    button.disabled=true;try {const channel=$('channel').value;await api('/default',{channel,templateId:button.dataset.default});await loadConfig(channel);notice('已保存这个频道的默认模板。');}catch(error){notice(error.message,true);button.disabled=false;}
+    const use=event.target.closest('[data-use-template]');if(use&&!state.pending){if(!selectedChannel()?.templates.some(t=>t.id===use.dataset.useTemplate))return;$('post-template').value=use.dataset.useTemplate;renderSelectedTemplate();notice('已选择本次模板；频道默认设置保持不变。');$('post-section').scrollIntoView({behavior:'smooth',block:'start'});return;}
+    const button=event.target.closest('[data-default]');if(!button||state.pending)return;setPending(true);try{const channel=channelKey();await api('/default',{channel,templateId:button.dataset.default});await loadConfig(channel);notice('已保存这个频道的默认模板。');}catch(error){notice(error.message,true);}finally{setPending(false);}
   });
-  const asDataUrl=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('无法读取模板图片。'));reader.readAsDataURL(file);});
+  $('post-source').addEventListener('change',async()=>{const file=$('post-source').files?.[0];$('source-preview').hidden=!file;$('source-preview').innerHTML='';if(!file)return;try{validateImage(file,'人物或主体参考');const dataUrl=await asDataUrl(file);if($('post-source').files?.[0]!==file)return;$('source-preview').innerHTML=`<img src="${esc(dataUrl)}" alt="本次人物或主体参考"><small>${esc(file.name)} · 使用上传原图作为身份参考</small>`;}catch(error){notice(error.message,true);$('source-preview').hidden=true;}});
   $('template-form').addEventListener('submit',async event=>{
-    event.preventDefault();const button=event.submitter;button.disabled=true;
-    try {
-      const file=$('template-file').files[0];if(!file||!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>15*1024*1024)throw Error('请选择 15 MB 以下的 PNG、JPG 或 WebP 模板。');
-      const channel=$('channel').value,[width,height]=$('dimensions').value.split('x').map(Number);
-      await api('/templates',{channel,name:$('template-name').value.trim(),dataUrl:await asDataUrl(file),width,height,instructions:$('template-instructions').value.trim(),makeDefault:$('make-default').checked});
-      await loadConfig(channel);$('template-form').reset();$('upload-details').open=false;notice('模板已保存。之后这个频道的视频会使用所选默认模板。');
-    }catch(error){notice(error.message,true);}finally{button.disabled=false;}
+    event.preventDefault();if(state.pending)return;setPending(true);try{const file=$('template-file').files[0];validateImage(file,'模板');const channel=selectedChannel();if(!channel)throw Error('请先选择已有频道。');const [width,height]=$('dimensions').value.split('x').map(Number);await apiUpload('/templates',{channel:channel.key,name:$('template-name').value.trim(),dataUrl:await asDataUrl(file),width,height,instructions:$('template-instructions').value.trim(),makeDefault:$('make-default').checked},pct=>{$('save-template').textContent=pct<100?`正在上传模板 ${pct}%…`:'已上传 100%，正在保存…';});await loadConfig(channel.key);$('template-form').reset();$('upload-details').open=false;notice('模板已保存。现在填写帖子标题即可制作四张封面。');}catch(error){notice(error.message,true);}finally{setPending(false);}
   });
+  $('video').addEventListener('change',updateVideo);
   $('video-form').addEventListener('submit',async event=>{
-    event.preventDefault();if(state.pending)return;state.pending=true;renderTemplates();
-    try {
-      const video=state.context.videos.find(v=>v.path===$('video').value);if(!video)throw Error('请先选择这次批准的视频。');
-      const data=await api('/approve-video',{folder,taskId,videoPath:video.path,videoSha256:video.sha256,channel:$('channel').value,templateId:$('video-template').value,title:$('title').value.trim(),subtitle:$('subtitle').value.trim(),instructions:$('video-instructions').value.trim(),approval:true,retry:retryRequested});
-      state.jobs.set(data.job.id,data.job);renderJobs();notice('视频批准已记录，封面任务已提交。生成结果会回传 HQ，等待最终审核。');pollJobs();
-    }catch(error){notice(error.message,true);}finally{state.pending=false;retryRequested=false;renderTemplates();}
+    event.preventDefault();if(state.pending)return;setPending(true);try{const video=state.context?.videos.find(v=>v.path===$('video').value);if(!video)throw Error('请先选择这次批准的视频。');const source=selectedSource();if(followsVideo()&&(!source?.title||state.sourceStale||source.folder!==folder||source.videoPath!==video.path))throw Error('请先选择对应视频并刷新标题，再生成配套封面。');const data=await api('/approve-video',{folder,taskId,videoPath:video.path,videoSha256:video.sha256,channel:channelKey(),templateId:$('video-template').value,title:$('title').value.trim(),subtitle:$('subtitle').value.trim(),instructions:$('video-instructions').value.trim(),approval:true,retry:retryRequested,...(followsVideo()?{sourceVideo:{sourceId:source.sourceId,titleRevision:source.titleRevision}}:{})});rememberJob(data.job);renderJobs();notice('视频批准已记录，封面任务已提交；最终版本仍等你审核。');pollStarted=Date.now();pollJobs();}catch(error){if(error.status===409&&followsVideo()){state.sourceStale=true;renderSourceInfo();notice(error.message+' 请刷新视频标题并检查；没有自动重试。',true);}else notice(error.message,true);}finally{retryRequested=false;setPending(false);}
   });
   $('jobs').addEventListener('click',async event=>{
-    if(event.target.closest('[data-retry]')){retryRequested=true;$('video-form').requestSubmit($('approve'));return;}
-    const button=event.target.closest('[data-collect]');if(!button)return;button.disabled=true;
-    try{const data=await api('/jobs/'+encodeURIComponent(button.dataset.collect));state.jobs.set(data.job.id,data.job);renderJobs();pollStarted=Date.now();notice('已检查现有任务，没有重新生成图片。');pollJobs();}catch(error){notice(error.message,true);button.disabled=false;}
+    const choose=event.target.closest('[data-select-job]');if(choose){const job=state.jobs.get(choose.dataset.selectJob),option=job?.options?.find(o=>o.name===choose.dataset.option);if(!job||!option||job.channel!==channelKey()||state.selecting.has(job.id)||state.config?.optionSelection!==true)return;if(staleJobVersion(job)){notice('这套封面属于旧视频 / 标题版本。下载和历史选择保留，请按当前标题主动制作新版后再选择。',true);return;}state.selecting.add(job.id);renderJobs();try{const data=await api('/select',{jobId:job.id,optionName:option.name,expectedHash:option.sha256,channel:job.channel});if(data.job?.id!==job.id||data.job?.channel!==job.channel)throw Error('选择结果与原任务不一致，请检查已有任务。');rememberJob(data.job);notice('已保存这张封面选择。最终审核仍在 HQ，不会自动发布。');}catch(error){notice(error.message,true);}finally{state.selecting.delete(job.id);renderJobs();}return;}
+    const fresh=event.target.closest('[data-new-version]');if(fresh){const job=state.jobs.get(fresh.dataset.newVersion);if(!job||job.channel!==channelKey())return;$('post-title-mode').value='manual';state.recordedTitle=true;$('post-title').value=job.title||'';$('post-subtitle').value=job.subtitle||'';$('title').value=job.title||'';$('subtitle').value=job.subtitle||'';if(job.mode==='post'){$('post-title-mode').value='manual';state.recordedTitle=true;$('post-title').value=job.title||'';$('post-subtitle').value=job.subtitle||'';$('post-instructions').value=job.instructions||'';if(selectedChannel()?.templates.some(t=>t.id===job.templateId))$('post-template').value=job.templateId;state.postSignature=null;state.postKey=null;state.sourceRequiredForRevision=job.sourceFrameAvailable===true;$('post-source').value='';$('source-preview').hidden=true;renderSelectedTemplate();renderSourceInfo();$('post-section').scrollIntoView({behavior:'smooth',block:'start'});notice(state.sourceRequiredForRevision?'已填回文字。请重新上传原人物／主体照片，检查后再主动生成新版本。':'已填回原内容。检查后主动点生成，才会开始一个新版本。');}else{renderSourceInfo();retryRequested=true;$('video-section').scrollIntoView({behavior:'smooth',block:'start'});notice('请检查视频及当前设置，再主动批准这次新版本。');}return;}
+    const collect=event.target.closest('[data-collect]');if(!collect)return;collect.disabled=true;try{const data=await api('/jobs/'+encodeURIComponent(collect.dataset.collect));rememberJob(data.job);renderJobs();pollStarted=Date.now();notice('已检查现有结果，没有重新生成图片。');pollJobs();}catch(error){notice(error.message,true);collect.disabled=false;}
   });
-  (async()=>{try{
-    if(query.get('job')){openedJob=(await api('/jobs/'+encodeURIComponent(query.get('job')))).job;folder=openedJob.folder;taskId=openedJob.taskId||'';}
-    await loadConfig(query.get('channel')||'');notice('模板与视频按频道关联。');if(folder)await loadContext();
-    if(openedJob){$('title').value=openedJob.title||'';$('subtitle').value=openedJob.subtitle||'';$('video-instructions').value=openedJob.instructions||'';$('video-template').value=openedJob.templateId||'';$('video').value=openedJob.videoPath||'';updateVideo();}
-  }catch(error){notice(error.message,true);$('approve').disabled=true;}})();
-})();
+  $('show-channel-history').addEventListener('click',()=>{state.showChannelHistory=!state.showChannelHistory;renderJobs();});
+  $('refresh-jobs').addEventListener('click',async()=>{try{await loadHistory();notice('任务列表已更新，没有重新生成图片。');pollStarted=Date.now();pollJobs();}catch(error){notice(error.message,true);}});
+  global.addEventListener?.('focus',async()=>{if(state.pending||!followsVideo()||!selectedSource()||state.recordedTitle)return;try{await loadSources(false);}catch(error){state.sourceStale=true;notice(error.message,true);renderSourceInfo();}});
+  global.addEventListener?.('pagehide',()=>clearTimeout(state.timer));
+  (async()=>{
+    try{
+      if(query.get('job')){try{openedJob=(await api('/jobs/'+encodeURIComponent(query.get('job')))).job;if(openedJob?.mode!=='post'){folder=openedJob?.folder||folder;taskId=openedJob?.taskId||taskId;}}catch(error){notice(error.message,true);}}
+      await loadConfig(openedJob?.channel??query.get('channel')??'');notice('模板只参考风格；请先选对应的视频，或切换为独立帖子手动标题。');
+      if(folder&&openedJob?.mode!=='post')await loadContext();try{await loadSources(openedJob?.mode!=='post');}catch(error){state.sourceStale=true;notice(error.message,true);renderSourceInfo();}
+      if(openedJob){rememberJob(openedJob);$('post-title-mode').value='manual';state.recordedTitle=true;$('post-title').value=openedJob.title||'';$('post-subtitle').value=openedJob.subtitle||'';if(openedJob.mode==='post'){$('post-title-mode').value='manual';state.recordedTitle=true;state.sourceRequiredForRevision=openedJob.sourceFrameAvailable===true;$('post-title').value=openedJob.title||'';$('post-subtitle').value=openedJob.subtitle||'';$('post-instructions').value=openedJob.instructions||'';if(selectedChannel()?.templates.some(t=>t.id===openedJob.templateId))$('post-template').value=openedJob.templateId;renderSelectedTemplate();}else{$('title').value=openedJob.title||'';$('subtitle').value=openedJob.subtitle||'';$('video-instructions').value=openedJob.instructions||'';$('video-template').value=openedJob.templateId||'';$('video').value=openedJob.videoPath||'';updateVideo();}}
+      try{await loadHistory();}catch(error){notice(error.message,true);}renderJobs();renderSourceInfo();syncControls();if([...state.jobs.values()].some(active))pollJobs();
+    }catch(error){notice(error.message,true);syncControls();}
+  })();
+})(typeof window==='object'?window:globalThis);

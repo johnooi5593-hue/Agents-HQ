@@ -1,29 +1,46 @@
 <!doctype html>
 <html lang="zh-Hans">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>频道封面 · Agents HQ</title><link rel="stylesheet" href="/thumbnail-studio.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111316"><title>封面工作室 · Agents HQ</title><link rel="stylesheet" href="/thumbnail-studio.css?v=20261027-videotitle2"></head>
 <body>
 <main>
-  <header><a class="back" href="/">← Agent HQ</a><span class="eyebrow">CREATIVE / CODEX</span><h1>每个频道，有自己的封面。</h1><p>保存品牌模板。视频批准后，Codex 按模板制作四张独立 thumbnail，回到 HQ 等你确认。</p></header>
+  <header><a class="back" href="/">← Agent HQ</a><span class="eyebrow">CREATIVE / THUMBNAIL STUDIO</span><h1>为你的帖子，选一张好封面。</h1><p>选择对应视频，标题自动跟随视频；模板只参考视觉风格，不使用模板里的旧标题。制作四张独立封面，再回 HQ 检查。</p><ol class="steps"><li><b>1</b> 模板 + 内容</li><li><b>2</b> 四张独立图片</li><li><b>3</b> 选择 + 下载</li></ol></header>
   <div id="notice" role="status" aria-live="polite">正在读取频道…</div>
-  <section class="panel"><div class="section-head"><h2>频道模板</h2><span class="badge">按品牌保存</span></div><label>频道<select id="channel"></select></label><div id="templates" class="templates"></div>
-  <details id="upload-details"><summary>＋ 上传这个频道的模板</summary><form id="template-form" class="form-grid">
-    <label>模板名称<input id="template-name" required maxlength="100" placeholder="例如：主讲人 · 大标题"></label>
-    <label>输出尺寸<select id="dimensions"><option value="1080x1920">竖版 9:16 · 1080 × 1920</option><option value="1920x1080">横版 16:9 · 1920 × 1080</option><option value="1080x1440">小红书 3:4 · 1080 × 1440</option></select></label>
-    <label class="wide">模板图片<input id="template-file" type="file" accept="image/png,image/jpeg,image/webp" required><small>PNG、JPG 或 WebP。用图片参考构图、颜色、字体感觉；不会读取 PSD / Canva 的原生图层。</small></label>
-    <label class="wide">模板使用说明<textarea id="template-instructions" rows="3" maxlength="2000" placeholder="例如：人物在右侧，标题在左侧，保留频道颜色；旧标题需要替换。"></textarea></label>
-    <label class="check wide"><input id="make-default" type="checkbox" checked>设为这个频道的默认模板</label>
-    <div class="wide"><button class="primary" type="submit">保存频道模板</button><small>保存模板不会开始生成。</small></div>
-  </form></details></section>
-  <section id="video-section" class="panel" hidden><div class="section-head"><h2>批准视频，制作封面</h2><span class="badge">第一步审核</span></div>
-    <p>先检查这个视频，再确认本次封面文字。生成后的完整版本会回到 HQ，等你最后一次 OK。</p>
+  <section class="channel-bar"><label>所属频道 / 品牌<select id="channel" aria-describedby="channel-help"></select></label><small id="channel-help">模板、封面和历史任务按频道分别保存。</small></section>
+  <section id="post-section" class="panel"><div class="section-head"><div><span class="eyebrow">01 / CREATE</span><h2>制作帖子封面</h2></div><span class="badge">4 张独立选择</span></div>
+    <p>视频封面使用对应视频的准确标题。也可主动切换到独立帖子，手动填写标题。</p>
+    <p id="post-capability" class="inline-note" hidden></p>
+    <form id="post-form" class="form-grid">
+      <section class="wide source-video-panel"><label>标题来源<select id="post-title-mode"><option value="video">跟随视频标题</option><option value="manual">独立帖子 · 手动标题</option></select></label><div id="source-video-controls"><label>对应的视频<select id="source-video"><option value="">选择对应的视频</option></select></label><button type="button" id="refresh-video-title">刷新视频标题</button></div><p id="source-video-note" class="inline-note" role="status"></p></section>
+      <label class="wide">本次封面模板<select id="post-template" required></select><small>按模板的构图、颜色和字体感觉制作，文字换成你本次的内容。</small></label>
+      <div id="selected-template" class="selected-template wide"></div>
+      <label class="wide">封面标题<input id="post-title" required maxlength="180" placeholder="输入这次帖子要显示的准确标题" autocomplete="off"></label>
+      <label>副标题（可选）<input id="post-subtitle" maxlength="180" autocomplete="off"></label>
+      <label>输出尺寸<select id="post-dimensions"><option value="1080x1440">小红书 / 帖子 3:4 · 1080 × 1440</option><option value="1080x1920">Reels / 竖版 9:16 · 1080 × 1920</option><option value="1920x1080">YouTube / 横版 16:9 · 1920 × 1080</option></select></label>
+      <label class="wide">人物或主体参考（可选）<input id="post-source" type="file" accept="image/png,image/jpeg,image/webp"><small>PNG、JPG 或 WebP，15 MB 以下。使用这次的人物／主体；不会自动套用模板里不相关的人。</small></label>
+      <div id="source-preview" class="source-preview wide" hidden></div>
+      <label class="wide">补充要求（可选）<textarea id="post-instructions" rows="3" maxlength="2000" placeholder="例如：保留人物身份，大字放左侧，整体明亮一些…"></textarea></label>
+      <div class="wide create-actions"><button id="create-post" class="primary" type="submit">✦ 生成 4 张独立封面</button><small>接受任务后可以离开页面。每张单独生成；选择封面不等于批准或发布。</small></div>
+    </form>
+  </section>
+  <section id="results-section" class="panel"><div class="section-head"><div><span class="eyebrow">02 / CHOOSE</span><h2>你的封面选择</h2></div><button type="button" id="refresh-jobs">刷新任务列表</button></div><p id="results-scope" class="results-scope"></p><button type="button" id="show-channel-history" class="history-toggle" aria-expanded="false" hidden>查看频道全部历史</button><p id="jobs-empty">生成后，四张图片会在这里显示。你可以逐张查看、下载，再选一张用于帖子。</p><div id="jobs" aria-live="polite"></div></section>
+  <details id="template-library" class="panel"><summary><span>频道模板库</span><small>选择模板、保存新参考</small></summary><div id="templates" class="templates"></div>
+    <details id="upload-details"><summary>＋ 上传这个频道的模板</summary><form id="template-form" class="form-grid">
+      <label>模板名称<input id="template-name" required maxlength="100" placeholder="例如：主讲人 · 大标题"></label>
+      <label>模板默认尺寸<select id="dimensions"><option value="1080x1440">小红书 3:4 · 1080 × 1440</option><option value="1080x1920">竖版 9:16 · 1080 × 1920</option><option value="1920x1080">横版 16:9 · 1920 × 1080</option></select></label>
+      <label class="wide">模板图片<input id="template-file" type="file" accept="image/png,image/jpeg,image/webp" required><small>15 MB 以下。参考构图、颜色、字体感觉；不会读取 PSD / Canva 原生图层。</small></label>
+      <label class="wide">模板使用说明<textarea id="template-instructions" rows="3" maxlength="2000" placeholder="例如：人物在右侧，标题在左侧，保留频道颜色；旧标题需要替换。"></textarea></label>
+      <label class="check wide"><input id="make-default" type="checkbox" checked>设为这个频道的默认模板</label>
+      <div class="wide"><button id="save-template" class="primary" type="submit">保存频道模板</button><small>保存模板不会开始生成。</small></div>
+    </form></details>
+  </details>
+  <section id="video-section" class="panel" hidden><div class="section-head"><h2>已有视频 · 制作配套封面</h2><span class="badge">视频审核</span></div><p id="video-note">检查这支视频，再确认封面文字。成品回 HQ 等你最后 OK。</p><p id="video-error" class="inline-note error" hidden></p>
     <form id="video-form" class="form-grid">
       <label class="wide">本次视频<select id="video"></select></label><video id="player" class="wide" controls playsinline preload="metadata"></video>
-      <label>封面标题<input id="title" required maxlength="180" placeholder="请输入这次封面使用的准确文字"></label>
-      <label>副标题（可选）<input id="subtitle" maxlength="180"></label>
-      <label class="wide">本次使用的模板<select id="video-template" required></select><small>预选本频道默认模板。本次更换不会修改频道默认值。</small></label>
+      <label>封面标题<input id="title" required maxlength="180" placeholder="请输入这次封面使用的准确文字"></label><label>副标题（可选）<input id="subtitle" maxlength="180"></label>
+      <label class="wide">本次使用的模板<select id="video-template" required></select><small>本次选择不会修改频道默认模板。</small></label>
       <label class="wide">本次补充要求（可选）<textarea id="video-instructions" maxlength="2000" rows="2"></textarea></label>
-      <div class="wide"><button id="approve" class="primary" type="submit">批准这个视频，并用 Codex 生成 4 张封面</button></div>
-    </form><div id="jobs"></div>
+      <div class="wide"><button id="approve" class="primary" type="submit">批准这个视频，并生成 4 张封面</button></div>
+    </form>
   </section>
-  <footer>最终文件在 Agent HQ 的「Waiting for your OK」审核。视频批准只启动封面制作；不会自动发布。</footer>
-</main><script src="/thumbnail-studio.js"></script></body></html>
+  <footer>每张封面独立导出。最终版本仍在 Agent HQ 的「Waiting for your OK」审核；这里的选择不会发布到社交平台。</footer>
+</main><script src="/thumbnail-studio.js?v=20261027-videotitle2"></script></body></html>

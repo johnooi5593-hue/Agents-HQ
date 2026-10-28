@@ -22,6 +22,7 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
                     device (a phone on Wi-Fi or Tailscale) does. Never combine with HQ_TRUST_PROXY.
 """
 import base64, datetime, gzip, hashlib, hmac, html, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+import datetime, gzip, hashlib, hmac, html, json, math, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from followups import FollowUps
 from http import cookies
@@ -37,6 +38,8 @@ import activity  # noqa: E402  (watches every Claude Code session on this comput
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
 import webpush  # noqa: E402  (phone notifications for the installed app)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
+from sermon_design import DesignError  # noqa: E402
+from video_package import Packages  # noqa: E402  (each video's steps: video, caption, thumbnails → READY)
 from thumbnail_design import ThumbnailDesignBridge  # noqa: E402
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
@@ -397,7 +400,8 @@ def _approve_folder(name):
     if not name or not SAFE_NAME.match(name) or not src or not os.path.isdir(src):
         return 404, {"error": "no such work folder"}
     if "thumbnail_design" in globals():
-        error = thumbnail_design.guard_approval(name)
+        # a READY video (every step of its package picked) goes through; its Codex package was approved just before
+        error = None if not name.startswith("thumbnail-final-") and "packages" in globals() and packages.ready(name) else thumbnail_design.guard_approval(name)
         if error:
             return 409, {"error": error, "thumbnailWorkflow": True}
     os.makedirs(os.path.join(ROOT, "approved"), exist_ok=True)
@@ -507,13 +511,20 @@ def task_channel(task):
     return None
 
 
-def edit_prompt(rel, ch, task_id):
-    """The lead's instruction for the Edit button: edit-clips for that one video, for its channel."""
+PACKAGE_LINES = {
+    "video": "Package: video. The owner wants the edit only: no post.md and no cover.",
+    "caption": "Package: caption. The owner wants the edit and 3 title + caption sets (post.md); no cover.",
+    "full": "Package: full. The owner wants the edit, 3 title + caption sets (post.md), and Codex thumbnails after picking a title.",
+}
+
+
+def edit_prompt(rel, ch, task_id, package="full"):
+    """The lead's instruction for the Edit button: edit-clips for that one video, for its channel and its package."""
     n = channels.name(ch)
     who = (f" Channel: {n} (key {ch}). Same procedures as the main channel: follow \"Brand rules\" and \"Lessons\" as always, read "
            f"\"{n} · Company\" instead of \"Company\" and \"{n} · Brand rules\" on top (its rules win where they differ); never use the "
            f"main channel's name, logo, slogans or hashtags.") if ch else ""
-    return f'/edit-clips "{rel}"{who} Board task {task_id} is this video\'s New footage task.'
+    return f'/edit-clips "{rel}"{who} {PACKAGE_LINES.get(package, PACKAGE_LINES["full"])} Board task {task_id} is this video\'s New footage task.'
 
 
 def approved_dir(folder, areas=("approved",)):
@@ -708,7 +719,8 @@ def _task_action(body):
             got = task_footage(task) if task else None
             if not got:
                 return 404, {"error": "that video is no longer waiting in the inbox"}
-            run = desk.start(edit_prompt(*got, task["id"]), tasks=[task["id"]])
+            task["package"] = body.get("package") if body.get("package") in ("video", "caption", "full") else "full"
+            run = desk.start(edit_prompt(*got, task["id"], task["package"]), tasks=[task["id"]])
             set_status(task, "doing"); save_tasks(db)
             return 202, {"editing": task, "run": run.summary()}
         if action in ("run", "say"):                # Run / Run again, or the owner's message in the task's chat
@@ -892,6 +904,11 @@ def status_payload():
             info["hidden"] = name in hidden
             if name in hidden:
                 info["deleted_at"] = hidden[name]
+            if not name.startswith(("thumbnail-final-", "sermon-studio-")):
+                try:
+                    info["pkg"] = packages.state(name)                 # its steps and what the owner picked: the board's card
+                except Exception as e:
+                    sys.stderr.write(f"package of {name}: {e}\n")
     s["deleted"] = sorted(db.get("deleted") or [], key=lambda t: t.get("deleted_at") or "", reverse=True)
     for t in s["deleted"]:
         t["ch"] = task_channel(t)
@@ -909,6 +926,7 @@ def status_payload():
     s["update"] = dict(UPDATE)
     s["office_name"] = office_name()
     s["studios"] = sermon_design.engine_root.is_dir()      # the design studios run on AI OFFICE: hidden on a computer without it
+    s["boot"] = BOOT                                        # changes on every start: open windows reload to the new app
     s["brain_notes"] = sum(s.get("brain", {}).values())
     s["counts"] = {"agents": len(ag), "running": sum(running.values()),
                    "tasks_running": sum(1 for t in tasks if t["status"] == "doing"),
@@ -1366,7 +1384,7 @@ class Run:
     so the board shows which task is really being worked on and the lead's reply lands in that task's chat."""
     def __init__(self, prompt, tasks=()):
         self.id, self.prompt, self.events, self.done, self.ok = uuid.uuid4().hex[:8], prompt, [], False, None
-        self.tasks, self.started = list(dict.fromkeys(tasks)), False
+        self.tasks, self.started, self.started_at = list(dict.fromkeys(tasks)), False, None
         self._link(prompt)
 
     def _link(self, text):
@@ -1390,6 +1408,45 @@ class Run:
     def summary(self):
         return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events),
                 "tasks": self.tasks, "queued": not self.started and not self.done}
+
+
+class RunTimes:
+    """How long finished lead jobs took, per kind of desk (a video, a task, the Lead tab), so a running job can show
+    about how far along it is. Kept in hq/run-times.json across restarts."""
+    PATH = os.path.join(HERE, "run-times.json")
+    DEFAULT = {"out": 15 * 60, "task": 6 * 60, "lead": 4 * 60}
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        try:
+            with open(self.PATH, encoding="utf-8") as f:
+                self.seen = {k: [float(x) for x in v][-15:] for k, v in json.load(f).items() if k in self.DEFAULT}
+        except (OSError, ValueError, TypeError, AttributeError):
+            self.seen = {}
+
+    @staticmethod
+    def kind(lane):
+        return lane.split(":")[0] if lane.split(":")[0] in RunTimes.DEFAULT else "lead"
+
+    def add(self, lane, seconds):
+        with self.lock:
+            rows = self.seen.setdefault(self.kind(lane), [])
+            rows[:] = (rows + [max(60.0, seconds)])[-15:]
+            try:
+                with open(self.PATH, "w", encoding="utf-8") as f:
+                    json.dump(self.seen, f)
+            except OSError:
+                pass
+
+    def progress(self, lane, run):
+        """About how far along a running job is: 95 % at most until it is really done, so it never claims to be finished."""
+        rows = sorted(self.seen.get(self.kind(lane)) or [])
+        typical = rows[len(rows) // 2] if rows else self.DEFAULT[self.kind(lane)]
+        gone = time.time() - (run.started_at or time.time())
+        return max(1, min(95, int(95 * (1 - math.exp(-1.6 * gone / typical)))))
+
+
+run_times = RunTimes()
 
 
 FRESH_AFTER_IDLE = float(os.environ.get("HQ_LEAD_IDLE_MIN", "30")) * 60    # Claude's cache is gone by then: resuming re-buys the history
@@ -1442,12 +1499,14 @@ class Desk:
         if self.gate and not self.gate.acquire(blocking=False):
             run.add({"type": "system", "text": "waiting for a free slot: the most lead jobs that run at once are already running"})
             self.gate.acquire()
-        run.started = True
+        run.started, run.started_at = True, time.time()
         try:
             self._run(run)
         finally:
             if self.gate:
                 self.gate.release()
+            if run.ok:
+                run_times.add(self.name, time.time() - run.started_at)
             if self.on_done:
                 try:
                     self.on_done(run)
@@ -1470,7 +1529,7 @@ class Desk:
                 out[tid] = {"state": "queued"}
         if cur and not cur.done:
             for tid in cur.tasks:
-                out[tid] = {"state": "working", "step": cur.last_step()} if cur.started else {"state": "queued"}
+                out[tid] = {"state": "working", "step": cur.last_step(), "progress": run_times.progress(self.name, cur)} if cur.started else {"state": "queued"}
         return out
 
     def _run(self, run):
@@ -1596,6 +1655,7 @@ desk.on_done = lambda run: (after_run(run), notifier.refresh())
 followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "add", **task})[1]["added"])
 sermon_design = SermonDesignBridge(ROOT, task_action, load_tasks, notify=lambda: notifier.refresh())
 thumbnail_design = ThumbnailDesignBridge(ROOT, sermon_design, channels, task_action, load_tasks, notify=lambda: notifier.refresh())
+packages = Packages(ROOT, thumbnail_design, task_action, approve_folder, load_tasks, lambda prompt: desk.start(prompt))
 
 
 def on_approved(name):
@@ -1896,7 +1956,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({**run.summary(), "events": run.events[after:], "offset": after})
         m = re.match(r"^/files/(out|approved)/(.+)$", path)
         if m:
-            return self.send_static(safe_join(os.path.join(ROOT, m[1]), m[2]))
+            full = safe_join(os.path.join(ROOT, m[1]), m[2])
+            if "phone" in qs and full and full.lower().endswith((".mp4", ".mov", ".m4v")) and os.path.isfile(full):
+                full = phone_copy(full) or full             # the phone plays a small copy; the original if it can't be made
+            return self.send_static(full)
         if path in STATIC:
             return self.send_app_file(os.path.join(HERE, path.lstrip("/")))
         m = re.match(r"^/vendor/(.+)$", path)
@@ -1926,6 +1989,9 @@ class Handler(BaseHTTPRequestHandler):
         LAST_ACTION[0] = time.time()                       # the owner is using HQ: an update restart waits
         if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
+        if path == "/api/restart":
+            code, res = restart_office(self.read_json().get("force") is True)
+            return self.send_json(res, code)
         if path == "/api/run":
             body = self.read_json()
             prompt = body.get("prompt") or ""
@@ -1974,6 +2040,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/channels":
             code, payload = channels_action(self.read_json())
             return self.send_json(payload, code)
+        if path == "/api/package":                         # a video's package: its steps, the owner's picks, READY → approved
+            try:
+                result = packages.action(self.read_json())
+            except DesignError as e:
+                return self.send_json({"error": str(e)}, e.status)
+            notifier.refresh()
+            return self.send_json(result)
         if path == "/api/approve":
             name = self.read_json().get("name") or ""
             if isinstance(name, str) and name.startswith("thumbnail-final-"):
@@ -2064,6 +2137,69 @@ def supervise():
         first = False
 
 
+BOOT = uuid.uuid4().hex[:12]                      # this start of the office (a restart gets a new one)
+PHONE_DIR = os.path.join(HERE, ".phone-videos")   # small copies of videos for watching on a phone, made on first view
+PHONE_LOCKS, PHONE_LOCK = {}, threading.Lock()
+
+
+def phone_copy(video):
+    """A phone-sized copy of a video (540 wide, about 1.2 Mbit/s): a full-quality edit is too big to stream to a phone
+    over Tailscale or mobile data, so it never starts. Made once per version of the file and kept in hq/.phone-videos/;
+    None when ffmpeg is missing or fails (the original is sent then)."""
+    st = os.stat(video)
+    key = hashlib.sha1(f"{os.path.abspath(video)}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:20]
+    out = os.path.join(PHONE_DIR, key + ".mp4")
+    with PHONE_LOCK:
+        lock = PHONE_LOCKS.setdefault(key, threading.Lock())
+    with lock:                                    # two requests for the same video wait for one copy
+        if os.path.isfile(out):
+            return out
+        ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+        if not ff:
+            return None
+        os.makedirs(PHONE_DIR, exist_ok=True)
+        tmp = out + ".part.mp4"
+        try:
+            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-i", video, "-vf", "scale='min(540,iw)':-2",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "1200k", "-bufsize", "2400k",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", tmp],
+                           capture_output=True, timeout=600, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
+            os.replace(tmp, out)
+            return out
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.stderr.write(f"phone copy of {video}: {e}\n")
+            return None
+
+
+HTTPD = [None]                                    # the running server, so the owner's Restart can stop it
+
+
+def busy_now():
+    """What a restart would cut off, in plain words: lead jobs running or waiting, and posts going out."""
+    d = desk.state()
+    out = []
+    if d["running"] or d["queued"]:
+        out.append(f"{d['running']} job{'s' if d['running'] != 1 else ''} running" + (f", {d['queued']} waiting" if d["queued"] else ""))
+    if publisher.busy:
+        out.append(f"{len(publisher.busy)} post{'s' if len(publisher.busy) != 1 else ''} going out")
+    return out
+
+
+def restart_office(force=False):
+    """The owner's Restart HQ (the user menu, or py -3 hq/restart.py): the office exits with RESTART_CODE and supervise()
+    starts it again with the latest code, the same way an update restarts it. Refused while work is under way unless
+    force, because a restart stops lead jobs and posts mid-way."""
+    if not os.environ.get("HQ_CHILD") or not HTTPD[0]:
+        return 409, {"error": "This HQ was started without its launcher, so it can't start itself again. Use Restart engine in the tray."}
+    busy = busy_now()
+    if busy and not force:
+        return 409, {"error": "HQ is busy: " + " and ".join(busy) + ". Restarting now stops them.", "busy": busy}
+    print("Agents HQ: restarting at the owner's request" + (" (stopping: " + ", ".join(busy) + ")" if busy else ""), flush=True)
+    RESTART.set()
+    threading.Timer(0.5, HTTPD[0].shutdown).start()       # after this reply has gone out
+    return 200, {"ok": True, "stopped": busy}
+
+
 def office_quiet():
     """No lead job running or waiting, nothing being posted, and the owner hasn't clicked anything for a while."""
     return not desk.state()["busy"] and not publisher.busy and time.time() - LAST_ACTION[0] > QUIET_FOR
@@ -2119,7 +2255,7 @@ def main():
     auto_update()                                     # in the office: only reads the launcher's result (HQ_UPDATE_NOTE)
     if HOST not in ("127.0.0.1", "localhost", "::1") and not PASSWORD:
         sys.exit(f"Refusing to listen on {HOST} without HQ_PASSWORD: anyone who reaches this port could run your team.")
-    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    httpd = HTTPD[0] = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         sermon_design.resume_pending()       # only read-only watches for previously accepted native jobs
         thumbnail_design.resume_pending()    # only observes already approved thumbnail requests

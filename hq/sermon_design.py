@@ -38,6 +38,7 @@ BACK_TO_HQ_JS = b"""
     return stop;
   }
   function go() {
+    if (window.SermonStudio && typeof window.SermonStudio.navigateHome === "function") { window.SermonStudio.navigateHome(); return; }
     if (wouldBlock() && !window.confirm(__LEAVE_MSG__)) return;
     window.__hqLeaving = true;
     try { top.location.assign(home()); } catch (e) { location.assign(home()); }
@@ -102,7 +103,7 @@ def allowed(method, path):
             re.fullmatch(BASE + r"/projects/" + ID + r"(?:/assets/" + ID + r"|/designs/" + ID + r"/preview)?", path))
     if method == "POST":
         return path in (BASE + "/projects", BASE + "/assets") or bool(re.fullmatch(
-            BASE + r"/projects/" + ID + r"(?:/(?:generate|preview|export|restore|recap))?", path))
+            BASE + r"/projects/" + ID + r"(?:/(?:generate|preview|export|restore|recap|trash|untrash))?", path))
     return method == "PUT" and bool(re.fullmatch(BASE + r"/projects/" + ID, path))
 
 
@@ -453,7 +454,7 @@ class SermonDesignBridge:
                     (temporary / "README.md").write_text(
                         "# Sermon Design Studio delivery\n\nNative Resvg/Sharp renderer; generated imagery only when provider provenance records it. "
                         "This is not a Claude model run.\n\nProject: " + pid + "\nRevision: " + str(revision) +
-                        "\n\nPNG/JPG artwork, editable SVG/HTML and ZIP are separate files. Review this exact version; nothing is approved or published.\n",
+                        "\n\nPNG/JPG artwork and source ZIP are separate files. A complete picture has embedded lettering; its SVG/HTML is an image container, not recovered text or layers. Review this exact version; nothing is approved or published.\n",
                         encoding="utf-8")
                     os.replace(temporary, destination)
                 finally:
@@ -475,7 +476,7 @@ class SermonDesignBridge:
             else:
                 code, result = self.task_action({"action": "add", "title": ("XHS Sermon Recap Pro" if project.get("kind") == "xhs" else "Sermon Title 16:9") + " · " + str(project.get("titles", {}).get("chinese") or project.get("name") or pid),
                     "team": "Creative", "agent": "thumbnail-designer", "status": "review", "kind": "approval", "note": marker + " Native Design Studio renderer; user OK required.",
-                    "subtitle": "Independent artwork + editable source · awaiting your OK"})
+                    "subtitle": "Independent artwork + saved source · awaiting your OK"})
                 if code != 201 or not result.get("added", {}).get("id"):
                     raise DesignError("Files were copied, but the HQ review task could not be registered. Retry opening the project; no model task was started.", 502)
                 task_id = result["added"]["id"]
