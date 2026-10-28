@@ -26,7 +26,7 @@ HERE = os.path.join(SRC, "release", "client")
 PRODUCT_REPO = "johnooi5593-hue/Agents-HQ-Client"
 
 LEAVE_OUT = (
-    "release/", "hq/tests/", "fly.toml", "deploy/",
+    "release/", "hq/tests/", "fly.toml", "deploy/", "docs/client-edition.md",
     "docs/CLAUDE-HQ-THUMBNAIL-HANDOFF-", "docs/CODEX-", "docs/channel-thumbnails.md", "docs/sermon-design-studio.md",
     ".claude/skills/caption-card/", ".claude/skills/poster-kinetic/", ".claude/skills/sermon-moments/",
     ".claude/skills/sermon-poster/", ".claude/skills/xhs-sermon-recap/",
