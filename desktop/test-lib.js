@@ -41,10 +41,10 @@ function tmpdir() {
 
 test("quoteArg and cmdline quote spaces and quotes", () => {
   assert.strictEqual(lib.quoteArg("plain"), "plain");
-  assert.strictEqual(lib.quoteArg("C:\\Users\\John Ooi\\x"), '"C:\\Users\\John Ooi\\x"');
+  assert.strictEqual(lib.quoteArg("C:\\Users\\Ana Lee\\x"), '"C:\\Users\\Ana Lee\\x"');
   assert.strictEqual(lib.quoteArg(""), '""');
-  assert.strictEqual(lib.cmdline("git", ["clone", "https://x", "C:\\Users\\John Ooi\\Documents\\Agents HQ"]),
-    'git clone https://x "C:\\Users\\John Ooi\\Documents\\Agents HQ"');
+  assert.strictEqual(lib.cmdline("git", ["clone", "https://x", "C:\\Users\\Ana Lee\\Documents\\Agents HQ"]),
+    'git clone https://x "C:\\Users\\Ana Lee\\Documents\\Agents HQ"');
 });
 
 test("run() never throws for a missing command", async () => {
@@ -213,9 +213,9 @@ test("installLines: the winget commands, then the native Claude Code installer w
 // ---------------------------------------------------------------- the office folder and the sign-in guess
 
 test("officeBase keeps the office out of OneDrive", () => {
-  assert.strictEqual(lib.officeBase("C:\\Users\\John Ooi\\Documents", "C:\\Users\\John Ooi"), "C:\\Users\\John Ooi\\Documents");
-  assert.strictEqual(lib.officeBase("C:\\Users\\John Ooi\\OneDrive\\Documents", "C:\\Users\\John Ooi"), "C:\\Users\\John Ooi");
-  assert.strictEqual(lib.officeBase("C:\\Users\\John Ooi\\OneDrive - Contoso\\Documents", "C:\\Users\\John Ooi"), "C:\\Users\\John Ooi");
+  assert.strictEqual(lib.officeBase("C:\\Users\\Ana Lee\\Documents", "C:\\Users\\Ana Lee"), "C:\\Users\\Ana Lee\\Documents");
+  assert.strictEqual(lib.officeBase("C:\\Users\\Ana Lee\\OneDrive\\Documents", "C:\\Users\\Ana Lee"), "C:\\Users\\Ana Lee");
+  assert.strictEqual(lib.officeBase("C:\\Users\\Ana Lee\\OneDrive - Contoso\\Documents", "C:\\Users\\Ana Lee"), "C:\\Users\\Ana Lee");
   assert.strictEqual(lib.officeBase("/home/john/Documents", "/home/john"), "/home/john/Documents");
   assert.strictEqual(lib.officeBase("", "/home/john"), "/home/john");
 });
@@ -246,11 +246,11 @@ test("claudeSignedIn looks at the credentials file, ~/.claude.json and the envir
 test("settings round-trip, defaults and a broken file", () => {
   const dir = tmpdir();
   const file = path.join(dir, "deep", "settings.json");          // the folder does not exist yet
-  const defaults = { officeDir: "C:\\Users\\John Ooi\\Documents\\Agents HQ", port: 7331, setupDone: false };
+  const defaults = { officeDir: "C:\\Users\\Ana Lee\\Documents\\Agents HQ", port: 7331, setupDone: false };
   assert.deepStrictEqual(lib.loadSettings(file, defaults), defaults, "missing file -> defaults");
   const saved = lib.saveSettings(file, { ...defaults, port: 7333, setupDone: true });
   assert.deepStrictEqual(lib.loadSettings(file, defaults), saved, "round-trip");
-  assert.strictEqual(lib.loadSettings(file, defaults).officeDir, "C:\\Users\\John Ooi\\Documents\\Agents HQ", "spaces and backslashes survive");
+  assert.strictEqual(lib.loadSettings(file, defaults).officeDir, "C:\\Users\\Ana Lee\\Documents\\Agents HQ", "spaces and backslashes survive");
   assert.ok(!fs.existsSync(file + ".tmp"), "no temp file left behind");
   fs.writeFileSync(file, "{ not json");
   assert.deepStrictEqual(lib.loadSettings(file, defaults), defaults, "broken file -> defaults");
@@ -838,6 +838,29 @@ test("refreshPath is a no-op off Windows, resolveClaude never throws", async () 
   assert.ok(r && ("bin" in r) && ("kind" in r));
   console.log("      claude executable: " + (r.bin || "not found") + (r.kind ? " (" + r.kind + ")" : ""));
   assert.strictEqual(await lib.shortPath("/x") , lib.IS_WIN ? await lib.shortPath("/x") : null);
+});
+
+test("the office's name and access code: cleaned, checked, never handed to the page", () => {
+  assert.strictEqual(lib.cleanOfficeName('  Acme <b>"HQ"</b> & co\\ '), "Acme bHQ/b  co");
+  assert.strictEqual(lib.cleanOfficeName("x".repeat(60)).length, 40);
+  assert.strictEqual(lib.cleanOfficeName(null), "");
+  const key = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + "b3BlbnNzaC1rZXktdjEAAAAA".repeat(8) + "\n-----END OPENSSH PRIVATE KEY-----\n";
+  const code = "HQ1." + Buffer.from(key).toString("base64url");
+  assert.ok(lib.accessCodeOk(code));
+  assert.ok(lib.accessCodeOk(code.slice(0, 60) + "\n " + code.slice(60)));          // a code that wrapped in an email
+  assert.ok(!lib.accessCodeOk(code.slice(0, 50)));
+  assert.ok(!lib.accessCodeOk("HQ1." + Buffer.from("-----BEGIN RSA PRIVATE KEY-----" + "x".repeat(200)).toString("base64url")));
+  assert.ok(!lib.accessCodeOk(""));
+  const dir = tmpdir();
+  assert.deepStrictEqual(lib.officeSummary(dir), { name: "", access: false, private: false });
+  lib.writeOffice(dir, { name: "Acme HQ" });
+  lib.writeOffice(dir, { access: code });
+  assert.deepStrictEqual(lib.readOffice(dir), { name: "Acme HQ", access: code });
+  const summary = lib.officeSummary(dir);
+  assert.deepStrictEqual(summary, { name: "Acme HQ", access: true, private: false });
+  assert.ok(!JSON.stringify(summary).includes("HQ1."));
+  fs.writeFileSync(path.join(dir, lib.OFFICE_FILE), "[1,2]");
+  assert.deepStrictEqual(lib.readOffice(dir), {});
 });
 
 // ---------------------------------------------------------------- run them

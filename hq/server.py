@@ -21,7 +21,7 @@ HQ_HOST=0.0.0.0 and HQ_PASSWORD: then every screen and call needs a login, kept 
   HQ_LOCAL_TRUST=1  phone access from the desktop app: requests from this computer itself need no login, every other
                     device (a phone on Wi-Fi or Tailscale) does. Never combine with HQ_TRUST_PROXY.
 """
-import datetime, gzip, hashlib, hmac, html, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
+import base64, datetime, gzip, hashlib, hmac, html, json, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from followups import FollowUps
 from http import cookies
@@ -907,6 +907,8 @@ def status_payload():
         s["inbox"]["clips"] += [c["key"] + "/" + n for n in files(channels.inbox(c["key"]), CLIP_EXT)]
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
     s["update"] = dict(UPDATE)
+    s["office_name"] = office_name()
+    s["studios"] = sermon_design.engine_root.is_dir()      # the design studios run on AI OFFICE: hidden on a computer without it
     s["brain_notes"] = sum(s.get("brain", {}).values())
     s["counts"] = {"agents": len(ag), "running": sum(running.values()),
                    "tasks_running": sum(1 for t in tasks if t["status"] == "doing"),
@@ -1020,17 +1022,91 @@ push = webpush.Push(ROOT)
 notifier = Notifier()
 
 
+OFFICE_FILE = os.path.join(ROOT, ".hq-office.json")
+_OFFICE = {"mtime": None, "data": {}}
+
+
+def office_conf():
+    """This office's own settings, written by the desktop app's setup and never uploaded: its name ("Acme HQ") and, for
+    a client edition, the access code it updates with. Read again whenever the file changes."""
+    try:
+        mtime = os.path.getmtime(OFFICE_FILE)
+    except OSError:
+        return {}
+    if mtime != _OFFICE["mtime"]:
+        try:
+            with open(OFFICE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        _OFFICE.update(mtime=mtime, data=data if isinstance(data, dict) else {})
+    return _OFFICE["data"]
+
+
+def office_name():
+    """The name on the office's pages and the phone app: the client's own ("Acme HQ"), or Agents HQ."""
+    name = re.sub(r'[\x00-\x1f<>"&\\]', "", str(os.environ.get("HQ_OFFICE_NAME") or office_conf().get("name") or "")).strip()[:40]
+    return name or "Agents HQ"
+
+
+def named(data, ctype):
+    """A page or the phone app's description with this office's name in place of "Agents HQ"."""
+    name = office_name()
+    if name == "Agents HQ" or not ctype.startswith(("text/html", "application/manifest")):
+        return data
+    safe = html.escape(name) if ctype.startswith("text/html") else json.dumps(name)[1:-1]
+    return data.replace(b"Agents HQ", safe.encode("utf-8"))
+
+
 UPDATE = {"ok": None, "version": "", "from": "", "message": "not checked", "at": 0}
 USER_DATA = ("brain/memory.jsonl",)          # the owner's own data inside tracked files: never lost in an update
 
 
 def git(*args, timeout=60):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")     # never sit waiting for a password nobody sees
+    ssh = git_ssh()
+    if ssh:
+        env["GIT_SSH_COMMAND"] = ssh
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
 
 REPO_URL = os.environ.get("HQ_REPO_URL", "https://github.com/johnooi5593-hue/Agents-HQ")
 REPO_BRANCH = os.environ.get("HQ_REPO_BRANCH", "main")
+ACCESS_KEY = os.path.join(ROOT, ".hq-access-key")
+ACCESS_PREFIX = "HQ1."
+
+
+def access_key_text(code):
+    """The private key inside an access code ("HQ1." + base64url of a read-only deploy key), or "" for anything else."""
+    code = re.sub(r"\s+", "", str(code or ""))
+    if not code.startswith(ACCESS_PREFIX):
+        return ""
+    try:
+        text = base64.urlsafe_b64decode(code[len(ACCESS_PREFIX):] + "=" * (-len(code) % 4)).decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    return text if text.startswith("-----BEGIN OPENSSH PRIVATE KEY-----") else ""
+
+
+def git_ssh():
+    """How git reaches an SSH remote: a client edition updates from a private GitHub repo with the read-only key in its
+    access code (from setup, kept in .hq-access-key). Never interactive: no key or a refused key fails at once."""
+    if not REPO_URL.startswith("git@"):
+        return ""
+    q = lambda p: '"' + p.replace(os.sep, "/") + '"'
+    cmd = f"ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={q(os.path.join(ROOT, '.hq-known-hosts'))}"
+    key = access_key_text(office_conf().get("access"))
+    if not key:
+        return cmd
+    try:
+        with open(ACCESS_KEY, encoding="ascii") as f:
+            same = f.read() == key
+    except OSError:
+        same = False
+    if not same:
+        with open(ACCESS_KEY, "w", encoding="ascii", newline="\n") as f:
+            f.write(key)
+    return cmd + f" -o IdentitiesOnly=yes -i {q(ACCESS_KEY)}"
 
 
 def adopt_folder(now):
@@ -1666,13 +1742,25 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
 
     def send_typed(self, full, ctype):
-        """A small public file with its exact type (the app's worker must be served as JavaScript)."""
+        """A small public file with its exact type (the app's worker must be served as JavaScript). The pages and the
+        app description carry this office's own name."""
         with open(full, "rb") as f:
-            data = f.read()
+            data = named(data=f.read(), ctype=ctype)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_page(self, full):
+        """app.html and login.html, with this office's name. Never cached: a new name shows on the next open."""
+        with open(full, "rb") as f:
+            data = named(f.read(), "text/html")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1722,12 +1810,12 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         path, qs = unquote(url.path), parse_qs(url.query)
         if path == "/login":
-            return self.redirect("/") if not PASSWORD or self.authed() else self.send_file(os.path.join(HERE, "login.html"))
+            return self.redirect("/") if not PASSWORD or self.authed() else self.send_page(os.path.join(HERE, "login.html"))
         if path in PWA_FILES:                              # the phone app's description, icons, offline page and worker:
             name, ctype = PWA_FILES[path]                  # public, since a phone fetches them before it logs in
             return self.send_typed(os.path.join(HERE, "pwa", name), ctype)
         if path in ("/", "/index.html"):
-            return self.guard(page=True) and self.send_file(os.path.join(HERE, "app.html"))
+            return self.guard(page=True) and self.send_page(os.path.join(HERE, "app.html"))
         if path == "/oauth/youtube":                       # Google sends the browser back here; the one-time state is the check
             try:
                 if qs.get("error"):

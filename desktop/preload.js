@@ -8,7 +8,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 // calls the page may make (each answers with a promise): window.desktop.<name>(...) -> ipc channel
 const INVOKE = {
   getState: "hq:getState", check: "hq:check", installMissing: "hq:installMissing", signIn: "hq:signIn",
-  openFolder: "hq:openFolder", openLog: "hq:openLog", start: "hq:start", openPhone: "hq:openPhone",
+  officeSet: "hq:officeSet", openFolder: "hq:openFolder", openLog: "hq:openLog", start: "hq:start", openPhone: "hq:openPhone",
   phoneGet: "phone:get", phoneSet: "phone:set", phoneQr: "phone:qr", phoneTailscale: "phone:tailscale",
   phoneInstallTailscale: "phone:install-tailscale", phoneGenerate: "phone:generate", phoneCopy: "phone:copy",
   phoneSecureGet: "phone:secure-get", phoneSecureOn: "phone:secure-on", phoneSecureOff: "phone:secure-off",

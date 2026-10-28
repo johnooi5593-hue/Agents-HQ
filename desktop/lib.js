@@ -20,6 +20,10 @@ const IS_WIN = process.platform === "win32";
 const DEFAULT_PORT = 7331;
 const LAST_PORT = 7340;
 const REPO_URL = "https://github.com/johnooi5593-hue/Agents-HQ";
+// A client edition (made by release/client_edition.py) updates from a private repo with the access code from setup, so
+// the app never tries a plain download of it; the builder sets this to true.
+const PRIVATE_EDITION = false;
+const OFFICE_FILE = ".hq-office.json";            // the office's own name and access code, inside the office folder, never uploaded
 const CHECK_TIMEOUT_MS = 10000;
 const MAX_OUTPUT = 64 * 1024;
 
@@ -928,8 +932,46 @@ class RingLog {
   onLine(fn) { this.listeners.push(fn); return () => { this.listeners = this.listeners.filter((f) => f !== fn); }; }
 }
 
+// ---------------------------------------------------------------- the office's name and access code
+
+/** A name for the office's pages ("Acme HQ"): no markup characters, at most 40 characters. */
+function cleanOfficeName(name) {
+  return String(name == null ? "" : name).replace(/[\x00-\x1f<>"&\\]/g, "").trim().slice(0, 40);
+}
+
+/** True for an access code from the supplier: "HQ1." and a base64url read-only GitHub key (hq/server.py reads it the same way). */
+function accessCodeOk(code) {
+  code = String(code == null ? "" : code).replace(/\s+/g, "");
+  if (!code.startsWith("HQ1.") || code.length < 100) return false;
+  try { return Buffer.from(code.slice(4), "base64url").toString("ascii").startsWith("-----BEGIN OPENSSH PRIVATE KEY-----"); }
+  catch (_) { return false; }
+}
+
+function readOffice(dir) {
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(dir, OFFICE_FILE), "utf8"));
+    return d && typeof d === "object" && !Array.isArray(d) ? d : {};
+  } catch (_) { return {}; }
+}
+
+/** Merge `patch` into the office file (written whole, then renamed into place). */
+function writeOffice(dir, patch) {
+  const data = Object.assign(readOffice(dir), patch);
+  const file = path.join(dir, OFFICE_FILE), tmp = file + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+  fs.renameSync(tmp, file);
+  return data;
+}
+
+/** What the setup screen may know: the name, whether an access code is saved (never the code itself), the edition. */
+function officeSummary(dir) {
+  const d = readOffice(dir);
+  return { name: cleanOfficeName(d.name), access: accessCodeOk(d.access), private: PRIVATE_EDITION };
+}
+
 module.exports = {
-  IS_WIN, DEFAULT_PORT, LAST_PORT, REPO_URL, TOOLS, PYTHON_CANDIDATES,
+  IS_WIN, DEFAULT_PORT, LAST_PORT, REPO_URL, PRIVATE_EDITION, TOOLS, PYTHON_CANDIDATES,
+  OFFICE_FILE, cleanOfficeName, accessCodeOk, readOffice, writeOffice, officeSummary,
   quoteArg, cmdline, run, runLine, killTree,
   parseVersion, firstLine, pythonLabel, checkGit, checkNode, checkPython, checkFfmpeg, checkClaude, checkAll,
   refreshPath, resolveClaude, shortPath, claudeSignedIn, officeBase, installLines, installScript,

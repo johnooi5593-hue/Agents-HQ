@@ -110,7 +110,7 @@ async function start() {
   settings = lib.loadSettings(settingsFile, { officeDir: defaultOfficeDir(), port: lib.DEFAULT_PORT, setupDone: false });
   if (typeof settings.officeDir !== "string" || !settings.officeDir) settings.officeDir = defaultOfficeDir();
   if (!Number.isInteger(settings.port) || settings.port < 1 || settings.port > 65535) settings.port = lib.DEFAULT_PORT;
-  Object.assign(state, { officeDir: settings.officeDir, port: settings.port, setupDone: !!settings.setupDone, logFile });
+  Object.assign(state, { officeDir: settings.officeDir, port: settings.port, setupDone: !!settings.setupDone, logFile, office: lib.officeSummary(settings.officeDir) });
 
   // the log: every line to the setup screen and to engine.log
   openLogStream();
@@ -203,7 +203,7 @@ async function ensureOffice() {
   if (!clearWay(dir) || !clearWay(tmp)) { setState({ phase: "error", message: stuck }); return false; }
   const git = state.tools.find((t) => t.name === "git");
   let ok = false;
-  if (git && git.ok) {
+  if (git && git.ok && !lib.PRIVATE_EDITION) {             // a client edition's repo is private: start from the copy in the app
     say(`Downloading Agents HQ into ${dir} ...`);
     const code = await stream("git", ["clone", lib.REPO_URL, tmp], { cwd: path.dirname(dir) });
     ok = code === 0 && isOffice(tmp);
@@ -215,7 +215,26 @@ async function ensureOffice() {
   }
   if (!ok) { setState({ phase: "error", message: stuck }); return false; }
   say(`The office is in ${dir}.`);
+  setState({ office: lib.officeSummary(dir) });
   return true;
+}
+
+/** "Your office" on the setup screen: the office's name, and for a client edition the access code its updates use. */
+function setOffice(req) {
+  req = req && typeof req === "object" ? req : {};
+  const dir = settings.officeDir;
+  if (!isOffice(dir)) return { ok: false, message: "Wait until the office folder is set up, then save again." };
+  const patch = {};
+  if (typeof req.name === "string") patch.name = lib.cleanOfficeName(req.name);
+  if (typeof req.access === "string" && req.access.trim()) {
+    if (!lib.accessCodeOk(req.access)) return { ok: false, message: "That access code is not complete. Copy the whole code (it starts with HQ1.) and paste it again." };
+    patch.access = req.access.replace(/\s+/g, "");
+  }
+  try { lib.writeOffice(dir, patch); }
+  catch (e) { return { ok: false, message: "Could not save: " + e.message }; }
+  setState({ office: lib.officeSummary(dir) });
+  say("Office settings saved" + (patch.name !== undefined ? `: name "${patch.name || "Agents HQ"}"` : "") + (patch.access ? ", access code saved" : "") + ".");
+  return { ok: true, message: "Saved." + (patch.name !== undefined ? " The office shows its name the next time you open or reload it." : "") + (patch.access ? " Updates use the access code from the next check." : "") };
 }
 
 function isOffice(dir) {
@@ -717,6 +736,7 @@ function registerIpc() {
   });
   ipcMain.handle("hq:installMissing", () => installMissing());
   ipcMain.handle("hq:signIn", () => signIn());
+  ipcMain.handle("hq:officeSet", (_e, req) => setOffice(req));
   ipcMain.handle("hq:openFolder", async () => ({ ok: !(await openFolder()) }));
   ipcMain.handle("hq:openLog", async () => ({ ok: !(await openLog()) }));
   ipcMain.handle("hq:start", () => startOrOpen());

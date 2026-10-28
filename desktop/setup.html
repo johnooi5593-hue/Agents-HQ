@@ -74,6 +74,11 @@
   button.primary:hover:not(:disabled) { background: #ffdf40; border-color: #ffdf40; }
   button.wide { flex: 1 1 100%; padding: 13px 16px; font-size: 16px; }
   .note { font-size: 14px; color: var(--muted); min-height: 1.4em; }
+  .office { display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .office label { grid-column: 1 / -1; display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  .office input { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; user-select: text; }
+  .office input:focus { outline: none; border-color: rgba(255, 212, 0, .6); }
+  .office .small { align-self: center; font-size: 13px; color: var(--muted); }
   .note.bad { color: var(--bad); }
 
   /* folder line */
@@ -129,6 +134,12 @@
         <button id="btn-open" class="primary wide" disabled>Open Agents HQ</button>
       </div>
       <div class="note" id="note"></div>
+      <div class="office" id="office">
+        <label>Office name <input id="office-name" maxlength="40" placeholder="Your company's name, e.g. Acme HQ" autocomplete="off"></label>
+        <label id="access-row" hidden>Access code (from the message you got with the app) <input id="office-access" type="password" placeholder="HQ1.…" autocomplete="off"></label>
+        <span class="small" id="office-state"></span>
+        <button id="btn-office" type="button">Save</button>
+      </div>
       <div class="folder">
         <span>Office folder</span><code id="folder">...</code>
         <a id="lnk-folder">Open folder</a>
@@ -229,6 +240,7 @@
     $("folder").title = s.officeDir || "";
     renderSteps(s);
     renderTools(s);
+    renderOffice(s.office || {});
 
     var missing = (s.tools || []).filter(function (t) { return !t.ok; });
     var claudeOk = (s.tools || []).some(function (t) { return t.name === "claude" && t.ok; });
@@ -247,6 +259,23 @@
     else if (s.phase === "missing") { open.disabled = !s.requiredOk; open.textContent = "Start anyway"; }
     else { open.disabled = true; open.textContent = "Open Agents HQ"; }
   }
+
+  // ---- "Your office": the name on its pages and, for a client edition, the access code for updates
+  var officeLoaded = false;
+  function renderOffice(o) {
+    var name = $("office-name");
+    if (!officeLoaded && document.activeElement !== name) { name.value = o.name || ""; officeLoaded = !!state.officeDir; }
+    $("access-row").hidden = !o.private;
+    $("office-access").placeholder = o.access ? "Saved. Paste a new code only to replace it." : "HQ1.…";
+    $("office-state").textContent = o.private && !o.access ? "Updates start once the access code is saved." : "";
+  }
+  $("btn-office").addEventListener("click", function () {
+    var access = $("office-access").value;
+    api.officeSet({ name: $("office-name").value, access: access }).then(function (res) {
+      note(res.message, res.ok === false);
+      if (res.ok) $("office-access").value = "";
+    }).catch(function (e) { note("Save did not work: " + (e && e.message || e), true); });
+  });
 
   function note(text, bad) {
     noteEl.textContent = text || "";

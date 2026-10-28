@@ -109,6 +109,7 @@
   const avColor = (a, t, i = 0) => { const base = accent(t); return i % 3 === 1 ? lighten(base, 0.18) : i % 3 === 2 ? darken(base, 0.22) : base; };
   const hookRun = () => state.hookRunning || (state.status && state.status.running) || {};
   const hasProject = () => !!(window.HQ_OFFICE && typeof window.HQ_OFFICE.project === "function");
+  const studios = () => !!(state.status && state.status.studios);   // the design studios run on AI OFFICE: only where it is installed
   const hasFn = (name) => !!(window.HQ_OFFICE && typeof window.HQ_OFFICE[name] === "function");
   const callScene = (name, ...args) => { if (!hasFn(name)) return undefined; try { return window.HQ_OFFICE[name](...args); } catch (e) { return undefined; } };
   const shortTask = (text, n = 28) => { const s = String(text || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s; };
@@ -760,7 +761,7 @@
       const today = tasks.filter((x) => isToday(x.created) || isToday(x.updated) || isToday(x.done_at) || x.status === "doing" || x.status === "review").length;
       const tools = t.tools || [], live = tools.filter((x) => x.status === "connected").length;
       const skills = (t.skills || []).map((s) => ({ ...s, ...skillState(t, s, run) })), par = skills.filter((s) => s.on).length;
-      const designTools = t.key === "creative" ? `<div class="sec"><span>Design Studio / 设计</span><span class="cnt">4 separate options</span></div><div class="hint">中文 + English titles, add a reference, then generate four designs. Finished files return here for your OK.</div><div class="row" style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px"><button class="btn blue" type="button" data-sermon-studio="title">✦ Create sermon poster / 讲道海报</button><button class="btn" type="button" data-sermon-studio="xhs">XHS Sermon Recap Pro</button><a class="btn" href="/thumbnail-studio.html">Channel thumbnails / 频道封面</a></div>` : "";
+      const designTools = t.key === "creative" && studios() ? `<div class="sec"><span>Design Studio / 设计</span><span class="cnt">4 separate options</span></div><div class="hint">中文 + English titles, add a reference, then generate four designs. Finished files return here for your OK.</div><div class="row" style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px"><button class="btn blue" type="button" data-sermon-studio="title">✦ Create sermon poster / 讲道海报</button><button class="btn" type="button" data-sermon-studio="xhs">XHS Sermon Recap Pro</button><a class="btn" href="/thumbnail-studio.html">Channel thumbnails / 频道封面</a></div>` : "";
       body = designTools + `<div class="tiles">
           <div class="tile"><div class="k">Tasks today</div><div class="v">${today}</div>${sparkline(series(t.key, "up", today), "#7d7dbd")}</div>
           <div class="tile"><div class="k">Running</div><div class="v">${runningN}</div>${sparkline(series(t.key, "flat", runningN), "#349282")}</div>
@@ -1122,7 +1123,7 @@
   }
   async function send(prompt, task) {                      // HQ.send(prompt): one message to the lead (task: the board task it is about)
     prompt = String(prompt || "").trim(); if (!prompt) return null;
-    const studio = sermonDesignRoute(prompt);
+    const studio = studios() && sermonDesignRoute(prompt);   // only where AI OFFICE runs the studio
     if (studio) { window.location.assign(studio); return null; }
     try {
       const r = await postJSON("/api/run", task ? { prompt, task } : { prompt });
@@ -1420,7 +1421,7 @@
         <div class="pub-h">Raw footage folder <span>${cur.drive ? (cur.drive_ok ? "watching: new videos show up as New footage" : "this computer can't find that folder right now") : "not set"}</span></div>
         <input class="pub-in" id="ch-drive" placeholder="G:\\My Drive\\${esc(name(cur))} raw" value="${esc(cur.drive || "")}" autocomplete="off">
         <div class="acc-row"><button class="btn primary" data-chan-save="update" type="button">${busy("ch-update")}Save</button>${cur.drive ? `<button class="btn" data-chan-save="scan" type="button">${busy("ch-scan")}Check now</button>` : ""}</div>
-        <div class="acc-row"><a class="btn" href="/thumbnail-studio.html?channel=${encodeURIComponent(rv.ch)}">频道默认封面模板 / Thumbnail templates</a></div><details class="acc-help"><summary>How to use Google Drive for raw footage</summary><ol>
+        ${studios() ? `<div class="acc-row"><a class="btn" href="/thumbnail-studio.html?channel=${encodeURIComponent(rv.ch)}">频道默认封面模板 / Thumbnail templates</a></div>` : ""}<details class="acc-help"><summary>How to use Google Drive for raw footage</summary><ol>
           <li>On this computer install <b>Google Drive for desktop</b> (google.com/drive/download) and sign in with the Google account that has the footage.</li>
           <li>In Google Drive make a folder for this channel's raw videos, for example <b>${esc(name(cur))} raw</b>.</li>
           <li>Open File Explorer → <b>Google Drive (G:)</b> → My Drive → that folder. Click the address bar, copy the path, paste it above and press Save.</li>

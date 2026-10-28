@@ -35,3 +35,6 @@ inbox/messages/*
 .hq-imported.json*
 hq/sermon-project-links.json*
 hq/sermon-pending-deliveries.json*
+.hq-office.json*
+.hq-access-key
+.hq-known-hosts
