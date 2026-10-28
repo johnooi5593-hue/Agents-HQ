@@ -827,7 +827,7 @@ test("the secure link helpers against a real process (a fake tailscale on the PA
 test("constants", () => {
   assert.strictEqual(lib.DEFAULT_PORT, 7331);
   assert.strictEqual(lib.LAST_PORT, 7340);
-  assert.strictEqual(lib.REPO_URL, "https://github.com/johnooi5593-hue/Agents-HQ");
+  assert.strictEqual(lib.REPO_URL, lib.PRIVATE_EDITION ? "https://github.com/johnooi5593-hue/Agents-HQ-Client" : "https://github.com/johnooi5593-hue/Agents-HQ");   // the client edition points at the private repo
   assert.deepStrictEqual(lib.PYTHON_CANDIDATES, [["py", "-3"], ["python"], ["python3"]]);
   assert.strictEqual(lib.pythonLabel(["py", "-3"]), "py -3");
 });
@@ -852,12 +852,12 @@ test("the office's name and access code: cleaned, checked, never handed to the p
   assert.ok(!lib.accessCodeOk("HQ1." + Buffer.from("-----BEGIN RSA PRIVATE KEY-----" + "x".repeat(200)).toString("base64url")));
   assert.ok(!lib.accessCodeOk(""));
   const dir = tmpdir();
-  assert.deepStrictEqual(lib.officeSummary(dir), { name: "", access: false, private: false });
+  assert.deepStrictEqual(lib.officeSummary(dir), { name: "", access: false, private: lib.PRIVATE_EDITION });
   lib.writeOffice(dir, { name: "Acme HQ" });
   lib.writeOffice(dir, { access: code });
   assert.deepStrictEqual(lib.readOffice(dir), { name: "Acme HQ", access: code });
   const summary = lib.officeSummary(dir);
-  assert.deepStrictEqual(summary, { name: "Acme HQ", access: true, private: false });
+  assert.deepStrictEqual(summary, { name: "Acme HQ", access: true, private: lib.PRIVATE_EDITION });
   assert.ok(!JSON.stringify(summary).includes("HQ1."));
   fs.writeFileSync(path.join(dir, lib.OFFICE_FILE), "[1,2]");
   assert.deepStrictEqual(lib.readOffice(dir), {});
