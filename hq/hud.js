@@ -721,11 +721,13 @@
     const manage = `<button class="btn sm mng ${state.openDetail === t.id ? "on" : ""}" data-manage="${esc(t.id)}" type="button" title="Chat and manage: channel, move, cancel, delete" aria-label="Chat and manage this task" aria-expanded="${state.openDetail === t.id}">⋯</button>`;
     if (state.flash === t.id) cls += " flash";
     if (t.asks) cls += " asks";
+    const ready = t.final && !["done", "cancelled"].includes(t.status);      // its video, cover and caption are all there
+    if (ready) cls += " final-ready";
     if (state.openDetail === t.id) act = act.replace(">Answer<", ">Close<");
     const asks = t.asks ? `<button class="ask-pill" data-manage="${esc(t.id)}" type="button" title="Open the chat to answer">${(t.chat || []).slice(-1).some((m) => m.error) ? "Stopped · see why" : "Lead asks you"}</button>` : "";
     const nChat = (t.chat || []).length;
     const nOlder = ((state.older || {})[t.id] || []).length; if (nOlder) meta += ` · +${nOlder} older version${nOlder === 1 ? "" : "s"}`;
-    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${esc(title)}</div><div class="meta">${asks}${chPill(t.ch)}${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage.replace("⋯", nChat ? `⋯<i class="chat-n">${nChat}</i>` : "⋯")}</div></div>${state.editPick === t.id ? editChooser(t) : ""}${state.openDetail === t.id ? taskDetail(t) : ""}`;
+    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${ready ? readyTag : ""}${esc(title)}</div><div class="meta">${asks}${chPill(t.ch)}${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage.replace("⋯", nChat ? `⋯<i class="chat-n">${nChat}</i>` : "⋯")}</div></div>${state.editPick === t.id ? editChooser(t) : ""}${state.openDetail === t.id ? taskDetail(t) : ""}`;
   }
   // the task's chat: the lead's replies about this task, and the owner's messages to its team
   function taskChat(t) {
@@ -929,6 +931,13 @@
     // A video with a package (out/<name> holding an edit) is always a card: its steps, READY, and Open for the pick screen.
     // The card is the video's review, so its own folder row and its Codex "Final" tasks are not repeated inside it.
     const byVideo = (items, wantReady) => {                  // wantReady true/false: the Waiting cards (READY or not); omitted: plain groups
+      // Tasks with the same title in one channel (one sermon title's many design projects) share one card, closed until
+      // opened. A video with its own package card keeps it.
+      const titled = {};
+      for (const it of items) if (it.t && !((st.out || {})[it.key] || {}).pkg) (titled[(it.t.ch || "") + "|" + taskTitle(it.t)] ||= []).push(it);
+      for (const [tk, list] of Object.entries(titled)) {
+        if (list.length > 1 && new Set(list.map((it) => it.key)).size > 1) for (const it of list) { it.key = "title:" + tk; it.groupTitle = taskTitle(it.t); }
+      }
       const order = [], rowsOf = {}, cards = wantReady !== undefined;
       items.forEach((it, i) => { const k = it.key || "#" + i; if (!rowsOf[k]) { rowsOf[k] = []; order.push(k); } rowsOf[k].push(it); });
       return order.map((k) => {
@@ -937,12 +946,15 @@
         if (!pkg && all.length < 2) return all[0].row(false);
         const rows = pkg ? all.filter((r) => r.t && !/(?:^|\s)thumbnail-request:/.test(r.t.note || "")) : all;
         const folder = all.find((r) => r.folder), ts = rows.filter((r) => r.t).map((r) => r.t);
-        const shut = (state.closedVideos || new Set()).has(k) && !rows.some((r) => state.openDetail === (r.t ? r.t.id : "out:" + k));
+        const byTitle = k.startsWith("title:"), anyReady = ts.some((t) => t.final);
+        const shut = (byTitle ? !(state.openTitles || new Set()).has(k) : (state.closedVideos || new Set()).has(k)) && !rows.some((r) => state.openDetail === (r.t ? r.t.id : "out:" + k));
         const asks = ts.filter((t) => t.asks).length, blocked = ts.filter((t) => /(?:^|\s)Blocked:/.test(t.note || "")).length;
-        const meta = [rows.length && `${rows.length} task${rows.length === 1 ? "" : "s"}`, asks && `${asks} ${asks === 1 ? "asks" : "ask"} you`, blocked && `${blocked} blocked`].filter(Boolean).join(" · ");
-        const title = folder ? folderTitle(folder.folder) : k.replace(/[-_]+/g, " ");
+        const meta = [rows.length && `${rows.length} task${rows.length === 1 ? "" : "s"}`, asks && `${asks} ${asks === 1 ? "asks" : "ask"} you`, blocked && `${blocked} blocked`, byTitle && anyReady && "ready to post"].filter(Boolean).join(" · ");
+        const title = folder ? folderTitle(folder.folder) : byTitle ? all[0].groupTitle : k.replace(/[-_]+/g, " ");
+        const glow = (pkg && pkg.ready) || (byTitle && anyReady);
         const open = pkg ? `<button class="btn sm ${pkg.ready ? "ready" : "primary"}" data-rv-folder="out/${esc(k)}" type="button">${pkg.ready ? "Post" : "Open"}</button>` : "";
-        return `<div class="vgroup ${shut ? "shut" : ""} ${pkg && pkg.ready ? "is-ready" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${folderThumb({ name: k, info })}<span class="vg-tt"><span class="vg-title">${pkg && pkg.ready ? readyTag : ""}${esc(title)}</span>${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? '<span class="vg-chev">›</span>' : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
+        const head = byTitle ? `<span class="thumb vg-count">${rows.length}</span>` : folderThumb({ name: k, info });
+        return `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? '<span class="vg-chev">›</span>' : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
       }).join("");
     };
     const videoOf = (t) => { const m = /source-task:(\S+)/.exec(t.note || ""), src = m && allTasks.find((x) => x.id === m[1]); return (src && outOf(src)) || outOf(t); };   // a thumbnail package joins its video
@@ -1952,7 +1964,7 @@
       if (d.ptab) { state.panelTab = d.ptab; renderTeamPanel(); return; }
       if (d.filter) { state.filter = d.filter; renderBoard(); return; }
       if (d.chf != null) { state.chFilter = d.chf; state.openDetail = null; renderBoard(); return; }
-      if (d.vgroup != null) { const s = (state.closedVideos ||= new Set()); if (!s.delete(d.vgroup)) s.add(d.vgroup); renderBoard(); return; }
+      if (d.vgroup != null) { const s = d.vgroup.startsWith("title:") ? (state.openTitles ||= new Set()) : (state.closedVideos ||= new Set()); if (!s.delete(d.vgroup)) s.add(d.vgroup); renderBoard(); return; }
       if (d.manage) { state.openDetail = state.openDetail === d.manage ? null : d.manage; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is under Cancelled if you want it back."); return; }
       if (d.del) {                                         // no "are you sure": the toast has Undo instead
