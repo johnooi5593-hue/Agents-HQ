@@ -1182,6 +1182,13 @@ def merge_brain(mine, theirs):
     return "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out)
 
 
+def local_edits():
+    """Tracked files changed on this computer and not committed, other than the brain (which an update merges). Work in
+    progress, by the owner or another tool: an update never sets it aside, it waits until the work is committed."""
+    out = git("status", "--porcelain", "--untracked-files=no").stdout
+    return [l[3:].strip().strip('"') for l in out.splitlines() if l.strip() and l[3:].strip().strip('"') not in USER_DATA]
+
+
 def auto_update():
     """Pull the newest Agents HQ from GitHub before starting, so the app keeps itself up to date.
     Robust to the owner's own changes: files the office edits locally (the brain) are backed up, the update is applied,
@@ -1220,7 +1227,12 @@ def auto_update():
             print("update check skipped:", UPDATE["message"]); return
         if git("merge-base", "--is-ancestor", "@{u}", "HEAD").returncode == 0:
             UPDATE.update(ok=True, message="up to date", at=now); print(f"Agents HQ is up to date ({before})"); return
-        # the owner's local edits to tracked files: back them up, set them aside, update, then put them back
+        edits = local_edits()
+        if edits:                                           # unfinished work in tracked files: leave it exactly as it is
+            UPDATE.update(ok=False, message=f"update waiting: {len(edits)} file(s) changed on this computer and not committed ("
+                          + ", ".join(edits[:4]) + (", …" if len(edits) > 4 else "") + "). Commit them, then restart Agents HQ.", at=now)
+            print("update not applied:", UPDATE["message"]); return
+        # only the brain changed here: back it up, set it aside, update, then merge it back
         dirty = [l[3:].strip().strip('"') for l in git("status", "--porcelain", "--untracked-files=no").stdout.splitlines() if l.strip()]
         saved = {}
         if dirty:
@@ -2058,6 +2070,8 @@ def office_quiet():
 
 
 def newer_version_waiting():
+    if local_edits():                                      # unfinished work here: don't restart for an update it would wait for
+        return False
     if git("fetch", "--quiet").returncode != 0 or git("rev-parse", "--abbrev-ref", "@{u}").returncode != 0:
         return False
     return git("merge-base", "--is-ancestor", "@{u}", "HEAD").returncode != 0
