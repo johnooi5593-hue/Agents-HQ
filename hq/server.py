@@ -41,6 +41,7 @@ from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no
 from sermon_design import DesignError  # noqa: E402
 from video_package import Packages  # noqa: E402  (each video's steps: video, caption, thumbnails → READY)
 from thumbnail_design import ThumbnailDesignBridge  # noqa: E402
+from thumbnail_design import small_image as thumbnail_preview, send_preview as thumbnail_send_preview  # noqa: E402
 
 PORT = int(os.environ.get("HQ_PORT", "7331"))
 HOST = os.environ.get("HQ_HOST", "127.0.0.1")
@@ -420,7 +421,7 @@ accounts = publish.Accounts(ROOT)
 def post_scheduled(folder, when, platforms):
     """A scheduled post becomes a dated "post" task on the board, so it shows in the Calendar."""
     t = time.localtime(int(when))
-    names = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube"}
+    names = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube", "tiktok": "TikTok"}
     code, r = task_action({"action": "add", "title": "Post: " + os.path.relpath(folder, os.path.join(ROOT, "approved")).replace(os.sep, " / "),
                            "team": "Social", "kind": "post", "status": "todo", "date": time.strftime("%Y-%m-%d", t),
                            "time": time.strftime("%H:%M", t), "note": ", ".join(names.get(p, p) for p in platforms)})
@@ -535,6 +536,27 @@ def approved_dir(folder, areas=("approved",)):
     return d if d and os.path.isdir(d) else None
 
 
+TT_BACK = {"url": None, "at": 0}
+
+
+def tiktok_redirect():
+    """The https address TikTok returns to after sign-in: this computer's Tailscale name on port 8443 (which serves Agents
+    HQ), e.g. https://<computer>.<tailnet>.ts.net:8443/oauth/tiktok. HQ_TIKTOK_REDIRECT overrides it. None without one."""
+    if os.environ.get("HQ_TIKTOK_REDIRECT"):
+        return os.environ["HQ_TIKTOK_REDIRECT"]
+    if TT_BACK["url"] is None or time.time() - TT_BACK["at"] > 600:
+        url = ""
+        try:
+            out = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=15,
+                                 creationflags=0x08000000 if os.name == "nt" else 0).stdout
+            name = (json.loads(out).get("Self") or {}).get("DNSName", "").rstrip(".")
+            url = f"https://{name}:8443/oauth/tiktok" if name else ""
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        TT_BACK.update(url=url, at=time.time())
+    return TT_BACK["url"] or None
+
+
 def accounts_action(body, redirect):
     """POST /api/accounts: connect Meta, start the YouTube sign-in, or disconnect, for one channel. Returns (http code, payload)."""
     act, ch = body.get("action"), str(body.get("channel") or "")
@@ -546,7 +568,12 @@ def accounts_action(body, redirect):
             return 200, {**r, "accounts": accounts.summary(ch)}
         if act == "youtube":
             return 200, {"url": accounts.youtube_begin(body.get("client_json"), redirect, ch)}
-        if act == "disconnect" and body.get("which") in ("meta", "youtube"):
+        if act == "tiktok":                              # TikTok only returns to an https address: the Tailscale link
+            back = tiktok_redirect()
+            if not back:
+                return 409, {"error": "TikTok needs an https return address. Turn on phone access (Tailscale) for Agents HQ first, then connect again."}
+            return 200, {"url": accounts.tiktok_begin(body.get("client_key"), body.get("client_secret"), back, ch)}
+        if act == "disconnect" and body.get("which") in ("meta", "youtube", "tiktok"):
             accounts.disconnect(body["which"], ch)
             return 200, {"accounts": accounts.summary(ch)}
     except publish.PostError as e:
@@ -574,13 +601,28 @@ def after_run(run):
         return
     res = next((e for e in reversed(run.events) if e.get("type") == "result"), None)
     err = next((e for e in reversed(run.events) if e.get("type") == "error"), None)
+    if getattr(run, "stopped", False):
+        with TASK_LOCK:
+            db = load_tasks()
+            for t in db["tasks"]:
+                if t.get("id") in run.tasks:
+                    add_chat(t, "lead", "Stopped by you. What was already made stays in its folder; press Run again to start this task over.")
+                    t["asks"], t["updated"] = False, now_iso()
+            save_tasks(db)
+        return
     text = (res or {}).get("text") or ("The lead stopped before it finished: " + err["text"][-400:] if err else "")
     if not text.strip():
         return
     failed = not res or bool(res.get("is_error"))
+    # the reply names the video folder it made (out/<name>/): link the task to it, so the board shows one card per video
+    # and approving the video's card also closes this task
+    named = next((m for m in re.findall(r"out/([A-Za-z0-9][A-Za-z0-9._()\-]{0,120})/", text)
+                  if not m.startswith(("thumbnail-final-", "sermon-studio-")) and os.path.isdir(os.path.join(ROOT, "out", m))), None)
     with TASK_LOCK:
         db = load_tasks()
         for t in db["tasks"]:
+            if t.get("id") in run.tasks and named and len(run.tasks) == 1 and not re.search(r"(?:^|\s)out:", t.get("note") or ""):
+                t["note"] = ((t.get("note") or "") + " out:" + named).strip()
             if t.get("id") in run.tasks:
                 add_chat(t, "lead", text, error=failed)
                 t["asks"] = failed or bool(ASKS.search(text[-500:]))
@@ -588,8 +630,43 @@ def after_run(run):
         save_tasks(db)
 
 
+def remove_group(body):
+    """One whole card: every task to Deleted, every folder off the board, and (studio) its Codex Studio projects to the
+    Studio's Trash. Returns (http code, what was done)."""
+    ids = [i for i in (body.get("ids") or []) if isinstance(i, str) and re.match(r"^t\d+$", i)]
+    folders = [f for f in (body.get("folders") or []) if isinstance(f, str) and SAFE_NAME.match(f)]
+    if not ids and not folders:
+        return 400, {"error": "nothing to delete"}
+    removed = 0
+    for i in ids:
+        code, _ = task_action({"action": "remove", "id": i})
+        removed += code == 200
+    if folders:
+        task_action({"action": "folder-hide", "folders": folders})
+    trashed, failed = [], []
+    if body.get("studio") is True:
+        notes = " ".join(t.get("note") or "" for t in (load_tasks().get("deleted") or []) if t.get("id") in ids)
+        pids = sorted(set(re.findall(r"sermon-studio-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", notes + " " + " ".join(folders))))
+        for pid in pids:
+            try:
+                code, _, raw = sermon_design._request("GET", f"/api/sermon-design/projects/{pid}")
+                proj = (json.loads(raw or b"{}") or {}).get("project") or {}
+                if code == 404 or proj.get("deletedAt"):
+                    continue                                 # gone already or in Trash already
+                # clean: the Studio's own cleanup, which removes only the pictures it generated (uploads are kept) to free space
+                act = {"management": {"action": "trash-clean-generated" if body.get("clean") is True else "trash"}, "expectedRevision": proj.get("revision")}
+                code, _, raw = sermon_design._request("POST", f"/api/sermon-design/projects/{pid}", json.dumps(act).encode(), {"Content-Type": "application/json"})
+                (trashed if code < 300 else failed).append(pid)
+            except Exception as e:                           # the Studio is off: the board part still happened
+                sys.stderr.write(f"studio trash {pid}: {e}\n")
+                failed.append(pid)
+    return 200, {"removed": removed, "folders": len(folders), "studioTrashed": len(trashed), "studioFailed": len(failed), "cleaned": body.get("clean") is True}
+
+
 def task_action(body):
     """Use the same bridge→task lock order as thumbnail delivery callbacks."""
+    if body.get("action") == "remove-group":
+        return remove_group(body)
     bridge = globals().get("thumbnail_design")
     if bridge:
         with bridge.lock:
@@ -683,6 +760,14 @@ def _task_action(body):
                 with open(os.path.join(d, "channel.txt"), "w", encoding="utf-8") as f:
                     f.write(ch)
             return 200, {"folders": names, "channel": ch}
+        if action == "team":                        # a task moves to another department (e.g. the Studios' tasks to Design)
+            if not task:
+                return 404, {"error": "no such task"}
+            name = str(body.get("team") or "")
+            if name not in {t["name"] for t in teams_payload()}:
+                return 400, {"error": "choose an existing team"}
+            task["team"], task["updated"] = name, now_iso(); save_tasks(db)
+            return 200, {"team": task}
         if action == "channel":                     # the owner files a task under a channel (None: worked out again)
             if not task:
                 return 404, {"error": "no such task"}
@@ -914,8 +999,19 @@ def status_payload():
         t["ch"] = task_channel(t)
     s["waiting_for_approval"] = [n for n in s["waiting_for_approval"] if n not in hidden]
     live = desk.working_on()
+    try:
+        thumb_jobs = thumbnail_design._load()["jobs"]
+    except Exception:
+        thumb_jobs = {}
+    posted_cache = {}
     for t in tasks:                                        # Final: the video, the thumbnail and the caption are all there
         t["live"] = live.get(t["id"])                       # the lead is on it right now ("working"), or it waits in line ("queued")
+        t["video"] = task_video(t, thumb_jobs)              # the video it belongs to: the board groups a project's tasks by it
+        if t["video"] and t["status"] == "done":
+            if t["video"] not in posted_cache:
+                sched = {}
+                posted_cache[t["video"]] = (posted_platforms(t["video"], sched), sched or None)
+            t["posted"], t["scheduled"] = posted_cache[t["video"]]   # out already: purple; waiting for its time: SCHEDULED
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
         t["ch"] = task_channel(t)                           # its channel (key, "" main) or None: the whole office
@@ -1385,6 +1481,7 @@ class Run:
     def __init__(self, prompt, tasks=()):
         self.id, self.prompt, self.events, self.done, self.ok = uuid.uuid4().hex[:8], prompt, [], False, None
         self.tasks, self.started, self.started_at = list(dict.fromkeys(tasks)), False, None
+        self.proc, self.stopped = None, False                # the claude process, and whether the owner pressed Stop
         self._link(prompt)
 
     def _link(self, text):
@@ -1454,6 +1551,17 @@ FRESH_AFTER_CONTEXT = int(os.environ.get("HQ_LEAD_MAX_CONTEXT", "120000"))  # to
 FRESH_AFTER_COST = float(os.environ.get("HQ_LEAD_MAX_COST", "3"))           # dollars spent in one conversation
 
 
+def end_process_tree(p):
+    """End a lead job's claude process and everything it started (on Windows claude.cmd runs node, which runs tools)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, timeout=30, creationflags=0x08000000)
+        else:
+            p.kill()
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.stderr.write(f"could not stop process {p.pid}: {e}\n")
+
+
 class Desk:
     """One lead conversation. Each message resumes it, so "OK" and corrections keep their context. To save tokens a new
     conversation starts after a long pause, or once the old one grew big or expensive (the brain and the files carry over).
@@ -1501,7 +1609,10 @@ class Desk:
             self.gate.acquire()
         run.started, run.started_at = True, time.time()
         try:
-            self._run(run)
+            if run.stopped:                                  # stopped while it waited for a free slot
+                run.ok, run.done = False, True
+            else:
+                self._run(run)
         finally:
             if self.gate:
                 self.gate.release()
@@ -1539,7 +1650,7 @@ class Desk:
             run.add({"type": "system", "text": f"new conversation to save tokens ({why}); the brain and files carry over"})
         for attempt in (1, 2):
             # one line: claude.cmd on Windows cuts -p at the first newline and drops the flags after it
-            prompt = re.sub(r"\s*\n+\s*", " / ", run.prompt.strip())
+            prompt = re.sub(r"\s*\n+\s*", " / ", with_skills(run.prompt).strip())
             cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model_for(prompt)]
             allowed = allow_list()
             if allowed:
@@ -1549,7 +1660,7 @@ class Desk:
             cmd += ["--resume", self.session_id] if self.resumable else ["--session-id", self.session_id]
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             try:
-                p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=env)
+                p = run.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=env)
             except OSError as e:
                 run.add({"type": "error", "text": f"could not start claude: {e}. Is Claude Code installed? (npm install -g @anthropic-ai/claude-code)"})
                 break
@@ -1570,6 +1681,10 @@ class Desk:
                     run.add(ev)
             err = p.stderr.read().strip()
             p.wait()
+            if run.stopped:                                  # the owner pressed Stop: no retry, no error to explain
+                run.ok = False
+                run.add({"type": "system", "text": "stopped by you"})
+                break
             if got_result:
                 run.ok = not any(e.get("is_error") for e in run.events if e["type"] == "result")
                 self.resumable = True
@@ -1583,6 +1698,30 @@ class Desk:
             break
         self.last_at = time.time()
         run.done = True
+
+    def stop(self, match):
+        """Stop this desk's jobs that match(run): the running one is ended, waiting ones leave the line."""
+        stopped = []
+        with self.lock:
+            cur, waiting = self.current, list(self.queue)
+            for r in waiting:
+                if match(r):
+                    self.queue.remove(r)
+                    r.stopped, r.ok, r.done = True, False, True
+                    r.add({"type": "system", "text": "taken out of line by you"})
+                    stopped.append(r)
+        if cur and not cur.done and match(cur):
+            cur.stopped = True
+            if cur.proc and cur.proc.poll() is None:
+                end_process_tree(cur.proc)
+            stopped.append(cur)
+        for r in stopped:
+            if r is not cur and self.on_done:            # a job taken out of line still tells its task
+                try:
+                    self.on_done(r)
+                except Exception as e:
+                    sys.stderr.write(f"after stopping {r.id}: {e}\n")
+        return stopped
 
     def state(self):
         with self.lock:
@@ -1684,6 +1823,25 @@ class Desks:
             self.order.append(run.id)
         return run
 
+    def stop(self, task=None, run=None, everything=False):
+        """The owner's Stop: one task's jobs, one job, or everything the lead is doing. Returns the jobs stopped."""
+        match = lambda r: everything or (run and r.id == run) or (task and task in r.tasks)
+        out = []
+        for d in list(self.lanes.values()):
+            out += d.stop(match)
+        return [{"id": r.id, "tasks": r.tasks, "prompt": r.prompt[:120]} for r in out]
+
+    def progress_of(self, prefix):
+        """A lead job whose prompt starts with prefix: its estimated % (0 while it waits in line), or None when none runs."""
+        for d in list(self.lanes.values()):
+            with d.lock:
+                cur, waiting = d.current, list(d.queue)
+            if cur and not cur.done and cur.prompt.startswith(prefix):
+                return run_times.progress(d.name, cur) if cur.started else 0
+            if any(r.prompt.startswith(prefix) for r in waiting):
+                return 0
+        return None
+
     def working_on(self):
         out = {}
         for d in list(self.lanes.values()):
@@ -1711,7 +1869,8 @@ desk.on_done = lambda run: (after_run(run), notifier.refresh())
 followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "add", **task})[1]["added"])
 sermon_design = SermonDesignBridge(ROOT, task_action, load_tasks, notify=lambda: notifier.refresh())
 thumbnail_design = ThumbnailDesignBridge(ROOT, sermon_design, channels, task_action, load_tasks, notify=lambda: notifier.refresh())
-packages = Packages(ROOT, thumbnail_design, task_action, approve_folder, load_tasks, lambda prompt: desk.start(prompt))
+packages = Packages(ROOT, thumbnail_design, task_action, approve_folder, load_tasks, lambda prompt: desk.start(prompt),
+                    lambda prefix: desk.progress_of(prefix))   # a job for it: its estimated %, or None when none runs
 
 
 def on_approved(name):
@@ -1944,14 +2103,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_typed(os.path.join(HERE, "pwa", name), ctype)
         if path in ("/", "/index.html"):
             return self.guard(page=True) and self.send_page(os.path.join(HERE, "app.html"))
-        if path == "/oauth/youtube":                       # Google sends the browser back here; the one-time state is the check
+        if path in ("/oauth/youtube", "/oauth/tiktok"):     # Google / TikTok send the browser back here; the one-time state is the check
+            which = "TikTok" if path.endswith("tiktok") else "YouTube"
             try:
                 if qs.get("error"):
-                    raise publish.PostError(qs["error"][0])
-                name = accounts.youtube_finish(qs.get("state", [""])[0], qs.get("code", [""])[0])
-                msg, ok = f"YouTube is connected{(' (' + name + ')') if name else ''}. You can close this tab and go back to Agents HQ.", True
+                    raise publish.PostError((qs.get("error_description") or qs["error"])[0])
+                finish = accounts.tiktok_finish if which == "TikTok" else accounts.youtube_finish
+                name = finish(qs.get("state", [""])[0], qs.get("code", [""])[0])
+                msg, ok = f"{which} is connected{(' (' + name + ')') if name else ''}. You can close this tab and go back to Agents HQ.", True
             except publish.PostError as e:
-                msg, ok = f"YouTube was not connected: {e}", False
+                msg, ok = f"{which} was not connected: {e}", False
             page = (f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agents HQ</title>'
                     f'<body style="font:16px system-ui;background:#0f1115;color:#e8e8ea;display:grid;place-items:center;height:90vh;text-align:center">'
                     f'<p style="max-width:28em">{"✅" if ok else "⚠️"} {html_escape(msg)}</p></body>').encode()
@@ -1969,6 +2130,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(status_payload())
         if path == "/api/teams":
             return self.send_json({"teams": teams_payload(), "brain_notes": brain_notes()})
+        if path == "/api/meeting":                         # the Meeting Hall's screens and the meeting times
+            return self.send_json(meeting_payload())
+        if path == "/api/skills":                          # the / menu in the app's chat boxes
+            return self.send_json({"skills": office_slash()})
         if path == "/api/agents":
             return self.send_json(agents())
         if path == "/api/events":
@@ -1990,7 +2155,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/chatter":
             return self.send_json(chatter_payload())
         if path == "/api/accounts":
-            return self.send_json(accounts.summary(qs.get("channel", [""])[0]))
+            return self.send_json({**accounts.summary(qs.get("channel", [""])[0]), "tiktokRedirect": tiktok_redirect() or ""})
         if path == "/api/channels":
             return self.send_json(channels.payload())
         if path == "/api/publish":                         # the posting overview: also for work still waiting for the OK
@@ -2015,6 +2180,11 @@ class Handler(BaseHTTPRequestHandler):
             full = safe_join(os.path.join(ROOT, m[1]), m[2])
             if "phone" in qs and full and full.lower().endswith((".mp4", ".mov", ".m4v")) and os.path.isfile(full):
                 full = phone_copy(full) or full             # the phone plays a small copy; the original if it can't be made
+            elif "phone" in qs and full and full.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) and os.path.isfile(full):
+                st = os.stat(full)                          # the phone gets a small preview of a picture
+                small = thumbnail_preview(full, f"{os.path.abspath(full)}|{st.st_size}|{st.st_mtime_ns}")
+                if small:
+                    return thumbnail_send_preview(self, small)
             return self.send_static(full)
         if path in STATIC:
             return self.send_app_file(os.path.join(HERE, path.lstrip("/")))
@@ -2055,6 +2225,22 @@ class Handler(BaseHTTPRequestHandler):
             save_office({"leads": n})
             desk.set_limit(n)
             return self.send_json({"leads": n, "env": bool(os.environ.get("HQ_PARALLEL"))})
+        if path == "/api/meeting":                         # "OK, meeting now" (a real discussion), or the daily review on/off
+            body = self.read_json()
+            if body.get("action") == "start":
+                return self.send_json(start_meeting_review("now", str(body.get("topic") or "")[:600]))
+            if body.get("action") == "review" and isinstance(body.get("on"), bool):
+                cfg = meeting_config(); cfg["review"] = body["on"]; save_meeting_config(cfg)
+                return self.send_json(meeting_payload())
+            return self.send_json({"error": "action: start, or review with on true/false"}, 400)
+        if path == "/api/stop":                            # the owner's Stop: a task's jobs, one job, or everything
+            body = self.read_json()
+            task = body.get("task") if isinstance(body.get("task"), str) and re.match(r"^t\d+$", body.get("task")) else None
+            run = body.get("run") if isinstance(body.get("run"), str) and re.match(r"^[0-9a-f]{8}$", body.get("run")) else None
+            if not (task or run or body.get("all") is True):
+                return self.send_json({"error": "say what to stop: task, run or all"}, 400)
+            stopped = desk.stop(task=task, run=run, everything=body.get("all") is True)
+            return self.send_json({"stopped": stopped})
         if path == "/api/run":
             body = self.read_json()
             prompt = body.get("prompt") or ""
@@ -2096,7 +2282,8 @@ class Handler(BaseHTTPRequestHandler):
                     publisher.cancel(d, body["cancel"])
                     return self.send_json(publisher.payload(d))
                 chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
-                started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""), body.get("when") or None)
+                started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""), body.get("when") or None,
+                                          str(body.get("coverIg") or ""))
             except publish.PostError as e:
                 return self.send_json({"error": str(e)}, 400)
             return self.send_json({"started": started, **publisher.payload(d)}, 202)
@@ -2263,6 +2450,87 @@ def restart_office(force=False):
     return 200, {"ok": True, "stopped": busy}
 
 
+# the office's skills for the / menu: the editing styles first (a /name in a message makes the worker use exactly that one)
+EDITING_SKILLS = ("yellow-serif", "poster-kinetic", "caption-card", "sermon-moments", "reel", "sfx", "pixel")
+SKILL_REF = re.compile(r"(?<![\w/.:-])/([a-z][a-z0-9-]{1,40})\b")
+
+
+OFFICE_COMMANDS = [{"name": "meeting", "about": "All-hands: everyone to the 6F hall; add a topic for the heads to solve", "command": True}]
+
+
+def office_skills():
+    found = []
+    base = os.path.join(ROOT, ".claude", "skills")
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        try:
+            with open(os.path.join(base, name, "SKILL.md"), encoding="utf-8") as f:
+                head = f.read(4000)
+        except OSError:
+            continue
+        m = re.search(r"^description:\s*(.+)$", head, re.M)
+        desc = (m[1].strip().strip('"') if m else "")
+        short = re.split(r"\s+-\s+|[.。]\s", desc, maxsplit=1)[0][:90]
+        found.append({"name": name, "about": short, "editing": name in EDITING_SKILLS})
+    order = {n: i for i, n in enumerate(EDITING_SKILLS)}
+    return sorted(found, key=lambda x: (not x["editing"], order.get(x["name"], 99), x["name"]))
+
+
+def office_slash():
+    """The app's / menu: the office commands, then the skills."""
+    return [dict(c) for c in OFFICE_COMMANDS] + office_skills()
+
+
+def with_skills(prompt):
+    """A /skill the owner typed (e.g. /poster-kinetic): tell the lead to use exactly that skill for this work."""
+    names = {x["name"] for x in office_skills()}
+    picked = [n for n in dict.fromkeys(SKILL_REF.findall(prompt or "")) if n in names]
+    if not picked:
+        return prompt
+    return prompt + " / The owner picked " + ", ".join("/" + n for n in picked) + ": use exactly " + ("that skill" if len(picked) == 1 else "those skills") + \
+        " for this work (read .claude/skills/<name>/SKILL.md and its guide, and pass it to every worker), instead of the default style."
+
+
+def task_video(t, thumb_jobs):
+    """The video folder a task belongs to: its out:<name>; a Codex thumbnail package's own video; New footage's clip name."""
+    m = re.search(r"out:([^\s,;]+)", t.get("note") or "")
+    name = m[1].strip("/").split("/")[0] if m else ""
+    if name.startswith("thumbnail-final-"):
+        folder = (thumb_jobs.get(name[len("thumbnail-final-"):]) or {}).get("folder") or ""
+        name = folder[4:] if folder.startswith("out/") else name   # a post cover made without a video keeps its own name
+    if not name:
+        m = re.match(r"New footage\s*·\s*(.+)$", t.get("title") or "")
+        name = os.path.splitext(m[1].strip())[0] if m else ""
+    if not name:                                          # a title that names the folder, e.g. "Redo post copy: <folder>"
+        for slug in re.findall(r"[a-z0-9]+(?:-[a-z0-9]+){2,}", t.get("title") or ""):
+            if any(os.path.isdir(os.path.join(ROOT, area, slug)) for area in ("out", "approved")):
+                name = slug
+                break
+    return re.sub(r"-v\d+$", "", name)
+
+
+def posted_platforms(name, scheduled=None):
+    """Where approved/<name> (or one of its topics) went out: the platforms whose post finished. scheduled, a dict, also
+    gets the platforms still waiting for their time and the earliest one: {"platforms": [...], "when": unix time}."""
+    base = os.path.join(ROOT, "approved", name)
+    if not SAFE_NAME.match(name) or not os.path.isdir(base):
+        return []
+    found = []
+    for folder in [base] + [os.path.join(base, d) for d in sorted(os.listdir(base)) if os.path.isdir(os.path.join(base, d))]:
+        try:
+            with open(os.path.join(folder, "posted.json"), encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        found += [p for p in publish.PLATFORMS if isinstance(rec.get(p), dict) and rec[p].get("state") == "posted" and p not in found]
+        if scheduled is not None:
+            for p in publish.PLATFORMS:
+                e = rec.get(p) if isinstance(rec.get(p), dict) else {}
+                if e.get("state") in ("scheduled", "uploading") and e.get("when"):
+                    scheduled.setdefault("platforms", []).append(p)
+                    scheduled["when"] = min(scheduled.get("when") or e["when"], e["when"])
+    return found
+
+
 def office_quiet():
     """No lead job running or waiting, nothing being posted, and the owner hasn't clicked anything for a while."""
     return not desk.state()["busy"] and not publisher.busy and time.time() - LAST_ACTION[0] > QUIET_FOR
@@ -2300,6 +2568,215 @@ def watch_for_updates(httpd):
     threading.Thread(target=loop, daemon=True).start()
 
 
+STUDIO_REF = re.compile(r"sermon-studio-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+
+
+def studio_trash_sync():
+    """Open board tasks whose Codex Studio project is in the Studio's Trash: off the board, into Deleted. Returns how many."""
+    db = load_tasks()
+    by_pid = {}
+    for t in db["tasks"]:
+        if t.get("status") in ("todo", "doing", "review"):
+            for pid in set(STUDIO_REF.findall(t.get("note") or "")):
+                by_pid.setdefault(pid, []).append(t["id"])
+    gone = []
+    for pid, ids in by_pid.items():
+        try:
+            code, _, raw = sermon_design._request("GET", f"/api/sermon-design/projects/{pid}")
+            if code == 200 and ((json.loads(raw or b"{}") or {}).get("project") or {}).get("deletedAt"):
+                gone += ids
+        except Exception:
+            return 0                                          # the Studio is off: try again later, change nothing
+    for i in dict.fromkeys(gone):
+        task_action({"action": "remove", "id": i})
+    return len(set(gone))
+
+
+MEETING_DIR = os.path.join(ROOT, "work", "meetings")
+MEETING_CFG = os.path.join(HERE, "meeting.json")
+MEETING_LIVE = {"until": 0, "label": ""}
+
+
+def meeting_config():
+    """The meeting times and whether the daily written review runs (hq/meeting.json, the owner's switch)."""
+    cfg = {"schedule": ["09:00", "14:00", "20:00"], "minutes": 15, "review": True, "review_at": "20:00"}
+    try:
+        with open(MEETING_CFG, encoding="utf-8") as f:
+            cfg.update({k: v for k, v in json.load(f).items() if k in cfg})
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def save_meeting_config(cfg):
+    with open(MEETING_CFG, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=1)
+
+
+def latest_review():
+    """The newest meeting notes in work/meetings/: the date, the top actions and one tip per team, for the projector."""
+    try:
+        files = sorted(f for f in os.listdir(MEETING_DIR) if re.match(r"\d{4}-\d{2}-\d{2}.*\.md$", f))
+    except OSError:
+        return None
+    if not files:
+        return None
+    text = open(os.path.join(MEETING_DIR, files[-1]), encoding="utf-8").read()
+    sections, cur = {}, None
+    for line in text.splitlines():
+        m = re.match(r"^##\s+(.+)$", line)
+        if m:
+            cur = m[1].strip(); sections[cur] = []
+        elif cur and re.match(r"^\s*(?:[-*]|\d+\.)\s+", line):
+            sections[cur].append(re.sub(r"^\s*(?:[-*]|\d+\.)\s+|\*\*", "", line).strip())
+    actions = next((v for k, v in sections.items() if re.search(r"top|action|行动", k, re.I)), [])
+    teams = [{"team": re.sub(r"^improve\s*[·:-]\s*", "", k, flags=re.I), "tip": v[0]} for k, v in sections.items() if re.match(r"improve", k, re.I) and v]
+    return {"date": files[-1][:10], "file": "work/meetings/" + files[-1], "actions": actions[:5], "teams": teams[:9]}
+
+
+def meeting_payload():
+    """Everything the hall's screens show, for the main channel (NLRCC) only, the owner's wish: numbers with a 7-day
+    spark, the latest videos and designs, the review's actions and the meeting times. Other channels stay off the hall."""
+    cfg, now = meeting_config(), time.time()
+    chans = [{"key": c["key"], "name": c.get("name") or "NLRCC"} for c in channels.payload()["channels"] if not c["key"]]
+    known = {c["key"] for c in chans}
+    per = {c["key"]: {"days": [0] * 7, "videos": [], "designs": [], "pipeline": 0} for c in chans}
+    base = os.path.join(ROOT, "approved")
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        d = os.path.join(base, name)
+        try:
+            rec = json.load(open(os.path.join(d, "posted.json"), encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        plats = [p for p in publish.PLATFORMS if isinstance(rec.get(p), dict) and rec[p].get("state") in ("posted", "scheduled")]
+        if not plats:
+            continue
+        ch = channels_mod.folder_channel(d)
+        if ch not in known:
+            continue
+        P = per[ch]
+        at = max(int(rec[p].get("at") or 0) for p in plats)
+        for p in plats:
+            if rec[p].get("state") == "posted":
+                ago = int((now - int(rec[p].get("at") or 0)) // 86400)
+                if 0 <= ago < 7:
+                    P["days"][6 - ago] += 1
+        cover = next((c for c in ("cover-codex.png", "cover.jpg") if os.path.isfile(os.path.join(d, c))), "")
+        video = next((v for v in ("edit.mp4", "edit-sfx.mp4") if os.path.isfile(os.path.join(d, v))), "")
+        title = ""
+        try:
+            opts = publish.drafts(d)["options"]
+            pk = json.load(open(os.path.join(d, "package.json"), encoding="utf-8")) if os.path.isfile(os.path.join(d, "package.json")) else {}
+            title = (opts[pk.get("caption") or 0] if opts else {}).get("title") or ""
+        except Exception:
+            pass
+        state = "posted" if any(rec[p].get("state") == "posted" for p in plats) else "scheduled"
+        P["videos"].append({"name": name, "title": title or name.replace("-", " "), "state": state, "at": at, "ch": ch,
+                            "platforms": ", ".join(x.capitalize() for x in plats), "cover": f"/files/approved/{name}/{cover}" if cover else "",
+                            "video": f"/files/approved/{name}/{video}" if video else ""})
+    try:
+        jobs = sorted((j for j in thumbnail_design._load()["jobs"].values() if j.get("status") == "delivered"), key=lambda j: j.get("approvedAt") or j.get("createdAt") or 0, reverse=True)
+        for j in jobs:
+            P = per.get(j.get("channel") or "")
+            if P is not None and len(P["designs"]) < 6:
+                P["designs"] += [{"url": o["url"], "ch": j.get("channel") or ""} for o in (thumbnail_design._public_job(j).get("options") or [])[:2] if o.get("url")]
+    except Exception:
+        pass
+    tasks = load_tasks()["tasks"]
+    hidden = {h.get("name") if isinstance(h, dict) else h for h in (load_tasks().get("hidden_out") or [])}
+    outd = os.path.join(ROOT, "out")
+    for n in (os.listdir(outd) if os.path.isdir(outd) else []):
+        if n not in hidden and not n.startswith(("thumbnail-final-", "sermon-studio-")) and any(f.lower().endswith(".mp4") for _, _, fs in os.walk(os.path.join(outd, n)) for f in fs):
+            ch = channels_mod.folder_channel(os.path.join(outd, n))   # videos still being made or waiting
+            if ch in known:
+                per[ch]["pipeline"] += 1
+    for c in chans:
+        P = per[c["key"]]
+        P["videos"].sort(key=lambda v: v["at"], reverse=True)
+        c["numbers"] = [
+            {"label": "posts out\nthis week", "value": sum(P["days"]), "spark": P["days"]},
+            {"label": "videos out\n(all time)", "value": sum(1 for v in P["videos"] if v["state"] == "posted")},
+            {"label": "scheduled\nto go out", "value": sum(1 for v in P["videos"] if v["state"] == "scheduled")},
+            {"label": "videos in\nthe pipeline", "value": P["pipeline"]},
+        ]
+        c["videos"], c["designs"] = P["videos"][:6], P["designs"][:6]
+    days = [sum(per[c["key"]]["days"][k] for c in chans) for k in range(7)]
+    numbers = [
+        {"label": "posts out\nthis week", "value": sum(days), "spark": days},
+        {"label": "videos out\n(all time)", "value": sum(c["numbers"][1]["value"] for c in chans)},
+        {"label": "scheduled\nto go out", "value": sum(c["numbers"][2]["value"] for c in chans)},
+        {"label": "videos in\nthe pipeline", "value": sum(c["numbers"][3]["value"] for c in chans)},
+        {"label": "waiting for\nyour OK", "value": sum(1 for t in tasks if t.get("status") == "review" and (t.get("channel") or "") in known | {"main", "@office"})},
+        {"label": "lessons the\noffice learned", "value": len((brain_entities().get("Lessons") or []))},
+    ]
+    mixed = lambda key, n: [x for row in __import__("itertools").zip_longest(*[c[key] for c in chans]) for x in row if x][:n]
+    review = latest_review()
+    lines = [("✅ " + a)[:60] for a in (review or {}).get("actions", [])[:5]]
+    return {"schedule": cfg["schedule"], "minutes": cfg["minutes"], "reviewOn": cfg["review"], "reviewAt": cfg["review_at"],
+            "next": " · ".join(cfg["schedule"]), "numbers": numbers, "channels": chans, "videos": mixed("videos", 6), "designs": mixed("designs", 6),
+            "review": review, "lines": lines, "live": dict(MEETING_LIVE) if MEETING_LIVE["until"] > now else None}
+
+
+def start_meeting_review(when, topic=""):
+    """A real discussion: the heads go through the latest videos, posts, designs and numbers and write how to improve.
+    One lead job. when: "now" (the owner's button or /meeting) or "daily" (8 pm); topic: what the owner wants discussed."""
+    topic = re.sub(r"\s+", " ", topic or "").strip()
+    today = time.strftime("%Y-%m-%d")
+    os.makedirs(MEETING_DIR, exist_ok=True)
+    out = f"work/meetings/{today}{'' if when == 'daily' else time.strftime('-%H%M')}.md"
+    MEETING_LIVE.update(until=time.time() + 15 * 60, label="meeting now" if when == "now" else "daily review")
+    code, r = task_action({"action": "add", "title": f"All-hands meeting · {today} {time.strftime('%H:%M')}", "team": "Analytics", "status": "doing",
+                           "kind": "meeting", "note": "the whole office · " + (topic[:120] if topic else "how to improve"), "channel": "@office"})
+    tid = (r.get("added") or {}).get("id")
+    prompt = (f"All-hands meeting ({'the owner pressed OK, meeting now' if when == 'now' else 'the daily 8 pm review'}). Run it as the chief of staff with the team heads: "
+              "look at what actually happened, then solve problems, don't just report. Read the brain (Company, Brand rules, Lessons, and each channel's entities), "
+              "the latest videos in approved/ (their post.md, notes.md, posted.json: what went out, when, where), what waits in out/ and on the board (hq/tasks.json), "
+              "any CSVs in inbox/stats/, and the newest work/social, work/analytics and work/design files. Then write " + out + " in exactly this layout: "
+              "'# All-hands · <date>', '## Numbers' (3-5 bullets with real figures from the files, never invented), '## What worked' (3 bullets), "
+              "This meeting is about NLRCC (the main channel) only: skip other channels' work (folders whose channel.txt holds a key such as pong-gospel, and their board tasks). "
+              "one '## Improve · <Team>' section for each team that has something to fix (Creative, Design, Social, Scripts, Research, Analytics, Shop, Inbox, Dev: 1-3 bullets each, "
+              "each a concrete fix tied to a real video, post or task), and '## Top 3 actions' (numbered, the three most useful things for this week, with who does them). "
+              "Short sentences, plain words. Propose changes; don't make them, don't start other jobs, don't edit skills or agents, and nothing is posted or sent. ")
+    if topic:
+        prompt += (f"The owner called this meeting about: \"{topic}\". Discuss that first: put a '## The owner\'s question' section right after the title, "
+                   "with each relevant head's answer (1-2 bullets each, named) and a clear recommendation. ")
+    if tid:
+        prompt += f"When done, move board task {tid} to review with: node hq/tasks.js move {tid} review"
+    run = desk.start(prompt, tasks=[tid] if tid else ())
+    return {"started": True, "task": tid, "run": run.id, "file": out, "live": dict(MEETING_LIVE)}
+
+
+def keep_meeting_review():
+    """The daily written review at review_at (8 pm), once a day, while it is switched on."""
+    def loop():
+        done_on = None
+        while True:
+            try:
+                cfg = meeting_config()
+                if cfg["review"] and time.strftime("%H:%M") == cfg["review_at"] and done_on != time.strftime("%Y-%m-%d"):
+                    done_on = time.strftime("%Y-%m-%d")
+                    if not os.path.isfile(os.path.join(MEETING_DIR, done_on + ".md")):
+                        start_meeting_review("daily")
+            except Exception as e:
+                sys.stderr.write(f"meeting review: {e}" + chr(10))
+            time.sleep(20)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def keep_studio_in_sync():
+    def loop():
+        time.sleep(30)
+        while True:
+            try:
+                n = studio_trash_sync()
+                if n:
+                    print(f"Agents HQ: {n} board task(s) left with their Codex Studio project (in the Studio's Trash)", flush=True)
+            except Exception as e:
+                sys.stderr.write(f"studio sync: {e}" + chr(10))
+            time.sleep(300)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def keep_notifying():
     """Phone notifications go out even when no screen is open (the bell is normally refreshed by the app's polls)."""
     def loop():
@@ -2333,6 +2810,8 @@ def main():
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()
     watch_for_updates(httpd)
     keep_notifying()
+    keep_studio_in_sync()                # a poster deleted in Codex Studio leaves the board too
+    keep_meeting_review()                # the all-hands' daily written review (8 pm; meeting.json switches it off)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

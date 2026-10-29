@@ -41,15 +41,15 @@
   // The Tower. Floor f stands at y = f * FLOOR_H; floor 0 is the lobby, FLOORS - 1 the roof. Each team floor holds two
   // rooms, slot 0 on the left (x = -ROOM_X) and slot 1 on the right, backs to the building's back wall; a corridor runs
   // along the glass front (z = CZ); the core between the rooms has the spiral stairs and the lift.
-  const FLOOR_H = 15, FLOORS = 6, ROOF = FLOORS - 1;
+  const FLOOR_H = 15, FLOORS = 8, ROOF = FLOORS - 1, HALL = 6;   // lobby, 5 team floors (the top one holds Design), the Meeting Hall, roof
   const WX = 60, DZ = 16;                        // half the building's width and depth
   const ROOM_X = 30, CZ = 13.5;                  // the rooms' centre offset; the corridor line along the front
   const STAIR = { x: -6, z: -6, r: 3, hole: 4.2 };   // the spiral stairs (and the opening in each floor above them)
   const LIFT = { x: 8, z: -10, r: 2.2 };         // the glass lift (lobby to the top team floor)
   const BRAIN = new THREE.Vector3(0, 0, 50);     // the fountain in the plaza
-  const FLOOR_PLAN = { research: [1, 0], analytics: [1, 1], dev: [2, 0], inbox: [2, 1], scripts: [3, 0], shop: [3, 1], creative: [4, 0], social: [4, 1] };
-  const FLOOR_NAMES = ['Ground · Lobby & canteen', '1F', '2F', '3F', '4F', 'Roof · Terrace & game room'];
-  const FLOOR_SHORT = ['G', '1F', '2F', '3F', '4F', 'R'];
+  const FLOOR_PLAN = { research: [1, 0], analytics: [1, 1], dev: [2, 0], inbox: [2, 1], scripts: [3, 0], shop: [3, 1], creative: [4, 0], social: [4, 1], design: [5, 0] };
+  const FLOOR_NAMES = ['Ground · Lobby & canteen', '1F', '2F', '3F', '4F', '5F · Design', '6F · Meeting Hall', 'Roof · Terrace & game room'];
+  const FLOOR_SHORT = ['G', '1F', '2F', '3F', '4F', '5F', '6F', 'R'];
   // Phones (the same query as hud.css): a lower pixel ratio, half-resolution bloom (dropped if the frame rate sags),
   // fewer particles, portrait framing that fits the ring of rooms by width, double-tap on a room. Desktop is untouched.
   // ?fx=low forces the light path, ?fx=full keeps the full one on a phone.
@@ -727,7 +727,7 @@
       const g = state.floors[f], Y = f * FLOOR_H, top = Y + WALK_Y, th = 0.9, cy = top - th / 2, roof = f === ROOF, inner = FLOOR_H - th;
       const M = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 18, specular: 0x23262e }));
       const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
-      const floorC = f === 0 ? 0xcfc8bc : roof ? 0x7a7f8c : 0xc4bbad;
+      const floorC = f === 0 ? 0xe9e2d6 : roof ? 0x8a8f9c : 0xdcc7a4;               // light oak floors, a pale stone lobby
       // the floor plate, open over the spiral stairs coming up from the floor below
       if (!f) M.box(2 * WX, th, 2 * DZ, 0, cy, 0, floorC);
       else {
@@ -738,10 +738,11 @@
         for (let x = -54; x <= 54; x += 12) for (const z of [-9, 1, 10]) if (Math.abs(x - STAIR.x) > 5 || Math.abs(z - STAIR.z) > 5) GL.box(5, 0.08, 0.8, x, top - th - 0.06, z, 0xfff0d6);
       }
       // the slab edge: the lit floor line of a glass tower
-      GL.box(2 * WX + 0.4, 0.2, 0.14, 0, top - 0.3, DZ + 0.42, 0xffe2b4);
+      GL.box(2 * WX + 0.4, 0.2, 0.14, 0, top - 0.3, DZ + 0.42, f ? [0x8ab4f8, 0xf28b82, 0xfdd663, 0x81c995][f % 4] : 0xffe2b4);   // each floor's line glows in its own colour
       M.box(2 * WX + 0.4, th + 0.1, 0.3, 0, cy, DZ + 0.2, 0x2a2f3b);
       if (!roof) {
-        M.box(2 * WX, inner, 0.5, 0, top + inner / 2, -DZ - 0.25, 0x2b3242);                 // the back wall
+        M.box(2 * WX, inner, 0.5, 0, top + inner / 2, -DZ - 0.25, 0xeeeae3);                 // the back wall: warm white
+        GL.box(2 * WX, 0.22, 0.06, 0, top + inner - 0.6, -DZ + 0.02, [0x4285f4, 0xea4335, 0xfbbc05, 0x34a853][f % 4]);   // a stripe in one of the brand colours
         const gf = new THREE.Mesh(new THREE.BoxGeometry(2 * WX, inner, 0.08), glassMat); gf.position.set(0, top + inner / 2, DZ + 0.3); gf.renderOrder = 3; g.add(gf);
         for (let x = -WX; x <= WX + 0.1; x += 10) M.box(0.28, inner, 0.32, x, top + inner / 2, DZ + 0.3, 0x1c2130);   // mullions
         for (const sx of [-1, 1]) { glassBox(g, 0.08, inner, 2 * DZ, sx * WX, top + inner / 2, 0, false); M.box(0.32, inner, 0.32, sx * WX, top + inner / 2, -DZ, 0x1c2130); }
@@ -829,12 +830,234 @@
       for (const x of [-14, 18]) { M.box(3.2, 0.5, 1.4, x, top + 0.6, 10, 0xf2efe8); M.box(3.2, 0.4, 1.4, x, top + 1.05, 9.4, 0xf2efe8, { rx: -0.5 }); }   // sun loungers
       return;
     }
+    if (f === HALL) { hallProps(M, GL, g, top); return; }
     // team floors: a meeting room at one end, a nook at the other, alternating up the tower
     const mx = f % 2 ? R : L, nx = f % 2 ? L : R;
     meetingRoom(M, GL, g, mx, top);
     if (f === 2) for (const z of [-10, -4]) { glassBox(g, 3.2, 6.0, 3.6, nx, top + 3.0, z); M.box(3.2, 0.3, 3.6, nx, top + 6.15, z, 0x2a2f3c); M.box(1.4, 0.12, 0.9, nx + 0.6, top + 2.0, z, 0xe2d8c6); GL.box(1.6, 0.06, 0.3, nx, top + 5.9, z, 0xfff1d6); }
     else if (f === 3) { for (let k = 0; k < 3; k++) M.box(3.6, 6, 1.0, nx - 4 + k * 4, top + 3, -14.6, [0x8a6a4a, 0x6b4a2e, 0x8a6a4a][k]); sofa(M, nx, top, -6, 5, 0x6d5bd0, 0); tree(M, nx + 5, top, 6, 0.8); }
     else { sofa(M, nx, top, -8, 6, 0xd9cdd7, 0); M.box(2.2, 0.12, 2.2, nx, top + 0.95, -4.6, 0xc8925a); tree(M, nx - 5, top, 5, 0.85); tree(M, nx + 5, top, 5, 0.85); }
+  }
+
+  // ------------------------------------------------------------------ the Meeting Hall (6F)
+  // The right half is the auditorium: a stage, the projector screen and four vertical (9:16, like the reels) TVs on the
+  // back wall; 4 rows of 9 seats
+  // facing them. The left half is a lounge with sofas, a bar and plants. The stairs and the lift stay clear in between.
+  const HALL_ROWS = [-6.2, -2.2, 1.8, 5.8], HALL_COLS = [18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54];
+  const HALL_SCREEN = { x: 36, w: 24, h: 10.5 };
+  // the TVs: x, height, width, (with several channels: which channel, which of its videos)
+  const HALL_TVS = [[15, 6.2, 4.4, 0, 0], [20.6, 6.2, 4.4, 0, 1], [51.6, 6.2, 4.4, 1, 0], [57, 6.2, 4.4, 1, 1], [-41, 4.6, 3.6, 0, 2], [-31, 4.6, 3.6, 1, 2]];
+  function hallProps(M, GL, g, top) {
+    const S0 = HALL_SCREEN, back = -DZ + 0.02;
+    M.box(44, 0.06, 30, 36, top + 0.03, -1, 0x3b3550);                            // the auditorium carpet
+    M.box(30, 0.45, 5.2, S0.x, top + 0.22, -12.9, 0x2a2440); GL.box(30.2, 0.06, 0.08, S0.x, top + 0.47, -10.3, 0xf5c84b);   // the stage, a gold edge
+    M.box(S0.w + 1.2, S0.h + 1.2, 0.3, S0.x, top + 6.2, back + 0.15, 0x101018);   // the screen frame
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(S0.w, S0.h), new THREE.MeshBasicMaterial({ map: canvasTex(16, 8, () => {}), toneMapped: false }));
+    scr.position.set(S0.x, top + 6.2, back + 0.34); g.add(scr);
+    const tvs = HALL_TVS.map(([x, y, w]) => {
+      const h = w * 16 / 9;
+      M.box(w + 0.45, h + 0.45, 0.3, x, top + y, back + 0.15, 0x0c0c12);
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: canvasTex(9, 16, () => {}), toneMapped: false }));
+      m.position.set(x, top + y, back + 0.33); g.add(m); return m;
+    });
+    // the projector on the ceiling, its beam, the lectern
+    M.box(1.6, 0.6, 1.4, S0.x, top + 12.6, 4, 0xe9e6df); GL.box(0.5, 0.3, 0.06, S0.x, top + 12.5, 3.28, 0xbfe8ff);
+    const beam = new THREE.Mesh(new THREE.ConeGeometry(7, 17.5, 4, 1, true), new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.05, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+    beam.rotation.x = Math.PI / 2 + 0.33; beam.position.set(S0.x, top + 9.4, -4.6); g.add(beam);
+    M.box(1.6, 2.4, 1.0, S0.x, top + 1.65, -11.3, 0x6b4a2e); GL.box(1.2, 0.08, 0.06, S0.x, top + 2.7, -10.78, 0xf5c84b);
+    // 36 seats in 4 rows, colour by row (Google-office brights)
+    const rowC = [0x4285f4, 0xea4335, 0xfbbc05, 0x34a853];
+    HALL_ROWS.forEach((z, r) => HALL_COLS.forEach((x) => {
+      M.box(1.5, 0.18, 1.4, x, top + 1.05, z, rowC[r]); M.box(1.5, 1.4, 0.16, x, top + 1.75, z + 0.68, rowC[r]);
+      M.box(0.12, 0.95, 0.12, x, top + 0.5, z, 0x2a2d35);
+    }));
+    // the lounge: sofas round rugs, a bar with stools, plants, pendant lights
+    M.box(18, 0.05, 12, -36, top + 0.03, -4, 0xe9dcc8); M.box(10, 0.06, 7, -36, top + 0.06, -4, 0x6dbf9a);
+    sofa(M, -36, top, -9.5, 9, 0x4285f4, 0); sofa(M, -42.5, top, -3.5, 6, 0xfbbc05, Math.PI / 2); sofa(M, -29.5, top, -3.5, 6, 0xea4335, -Math.PI / 2);
+    M.box(4, 0.1, 2.4, -36, top + 0.9, -3.5, 0xc8925a); M.cyl(0.25, 0.85, -36, top + 0.45, -3.5, 0x2a2d35);
+    M.box(12, 2.2, 1.6, -50, top + 1.1, -12.6, 0x2b2e36); M.box(12.2, 0.12, 1.8, -50, top + 2.26, -12.6, 0xe8e2d6); GL.box(11.6, 0.08, 0.04, -50, top + 1.5, -11.78, 0x34a853);
+    for (let k = 0; k < 4; k++) { M.cyl(0.45, 0.1, -54 + k * 2.7, top + 1.6, -10.6, 0xea4335); M.cyl(0.08, 1.6, -54 + k * 2.7, top + 0.8, -10.6, 0x2a2d35); }
+    for (const [x, z] of [[-56, 8], [-24, 8], [-56, -14], [-18, -13], [12, -13], [58, -13], [58, 10], [12, 10]]) tree(M, x, top, z, 0.95);
+    for (let x = -50; x <= 54; x += 13) { if (Math.abs(x - STAIR.x) < 6 || Math.abs(x - LIFT.x) < 4) continue; GL.ball(0.5, x, top + 11.2, -2, 0xfff1d0); M.cyl(0.03, 2.6, x, top + 12.6, -2, 0x2a2d35); }
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(20, 2.4), new THREE.MeshBasicMaterial({ map: signTex('ALL-HANDS HALL', '#fbbc05'), transparent: true, depthWrite: false }));
+    sign.position.set(-36, top + 9.2, back + 0.2); g.add(sign);
+    state.hall = { screen: scr, tvs, beam, top, slide: 0, slideAt: 0, data: null, imgs: {}, videos: [], drawn: 0 };
+  }
+
+  // ---------- the hall's screens: drawn into canvases a few times a second ----------
+  const HALL_COLORS = ['#4285f4', '#ea4335', '#fbbc05', '#34a853'];
+  function hallImg(url) {                                                      // one Image per address, loaded once (phone: a small preview)
+    const H = state.hall; if (!url) return null;
+    const u = url + (state.phone && /^\/(files|api\/thumbnail-design)\//.test(url) ? (url.includes('?') ? '&' : '?') + 'phone=1' : '');
+    if (!H.imgs[u]) { const im = new Image(); im.src = u; H.imgs[u] = im; }
+    const im = H.imgs[u]; return im.complete && im.naturalWidth ? im : null;
+  }
+  function coverFit(g, im, x, y, w, h) {
+    const r = Math.max(w / im.naturalWidth, h / im.naturalHeight), iw = im.naturalWidth * r, ih = im.naturalHeight * r;
+    g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); g.drawImage(im, x + (w - iw) / 2, y + (h - ih) / 2, iw, ih); g.restore();
+  }
+  const CH_COLORS = ['#4285f4', '#34a853', '#fbbc05', '#ea4335'];
+  function hallChannels(D) { return (D.channels || []).length ? D.channels : [{ key: '', name: 'NLRCC', numbers: D.numbers || [], videos: D.videos || [], designs: D.designs || [] }]; }
+  function hallSlides(D) {
+    const slides = ['numbers'];
+    hallChannels(D).forEach((c, k) => { if ((c.videos || []).length || (c.numbers || []).some((n) => +n.value)) slides.push('ch' + k); });
+    if ((D.review && (D.review.actions || []).length) || (D.review && (D.review.teams || []).length)) slides.push('improve');
+    if ((D.designs || []).length) slides.push('designs');
+    return slides;
+  }
+  function drawScreen(t) {
+    const H = state.hall, D = H.data || {}, mesh = H.screen;
+    let c = mesh.material.map.image;
+    if (c.width !== 1280) { c = document.createElement('canvas'); c.width = 1280; c.height = 560; mesh.material.map = new THREE.CanvasTexture(c); mesh.material.needsUpdate = true; }
+    const g = c.getContext('2d'), W = c.width, Hh = c.height, slides = hallSlides(D);
+    if (t - H.slideAt > 9) { H.slide = (H.slide + 1) % slides.length; H.slideAt = t; }
+    const kind = slides[H.slide % slides.length] || 'numbers', u = clamp((t - H.slideAt) / 1.4, 0, 1), live = MEET.on;
+    const bg = g.createLinearGradient(0, 0, W, Hh); bg.addColorStop(0, '#0d1424'); bg.addColorStop(1, '#1b1033'); g.fillStyle = bg; g.fillRect(0, 0, W, Hh);
+    for (let k = 0; k < 4; k++) { g.fillStyle = HALL_COLORS[k]; g.fillRect(k * W / 4, 0, W / 4, 8); }       // the four brand colours
+    g.fillStyle = '#fff'; g.font = '700 34px Inter, system-ui, sans-serif'; g.textBaseline = 'middle';
+    g.fillText(live ? 'ALL-HANDS MEETING' : 'MEETING HALL', 40, 50);
+    g.font = '500 20px ' + MONO; g.fillStyle = '#9fb0cc';
+    g.fillText(live ? (MEET.label || '') : 'next: ' + (D.next || '9:00 · 14:00 · 20:00'), 40, 86);
+    if (live) { const on = Math.sin(t * 5) > 0; g.fillStyle = on ? '#ff4d5e' : '#7a2430'; g.beginPath(); g.arc(W - 120, 50, 9, 0, 7); g.fill(); g.fillStyle = '#fff'; g.font = '700 22px ' + MONO; g.fillText('LIVE', W - 102, 51); }
+    const head = (txt) => { g.fillStyle = '#ffd77a'; g.font = '700 26px Inter, system-ui, sans-serif'; g.fillText(txt, 40, 136); };
+    if (kind === 'numbers') {
+      head('This week in the office');
+      const N = (D.numbers || []).slice(0, 6), tw = (W - 80 - 5 * 20) / 6;
+      N.forEach((n, i) => {
+        const x = 40 + i * (tw + 20), y = 180, val = Math.round((+n.value || 0) * ease(u));
+        g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(x, y, tw, 300);
+        g.fillStyle = HALL_COLORS[i % 4]; g.fillRect(x, y, tw, 6);
+        const glow = 0.5 + 0.5 * Math.sin(t * 3 + i); g.shadowColor = HALL_COLORS[i % 4]; g.shadowBlur = 18 * glow;
+        g.fillStyle = '#fff'; g.font = '800 78px Inter, system-ui, sans-serif'; g.fillText(String(val), x + 18, y + 120); g.shadowBlur = 0;
+        g.fillStyle = '#c9d3e6'; g.font = '600 20px Inter, system-ui, sans-serif';
+        String(n.label || '').split('\n').forEach((ln, k) => g.fillText(ln, x + 18, y + 200 + k * 26));
+        // a little bar chart under each number
+        const bars = n.spark || []; const mx = Math.max(1, ...bars);
+        bars.forEach((b, k) => { const bh = 46 * (b / mx) * ease(u); g.fillStyle = HALL_COLORS[i % 4]; g.fillRect(x + 18 + k * 18, y + 286 - bh, 12, bh); });
+      });
+    } else if (kind.startsWith('ch')) {                                      // one channel: its numbers and its latest reels
+      const k = +kind.slice(2), C = hallChannels(D)[k] || {}, col = CH_COLORS[k % 4];
+      g.fillStyle = col; g.fillRect(40, 118, 10, 36); g.fillStyle = '#fff'; g.font = '800 30px Inter, system-ui, sans-serif'; g.fillText(C.name || '', 62, 136);
+      g.fillStyle = '#9fb0cc'; g.font = '600 20px Inter, system-ui, sans-serif'; g.fillText('this week · latest videos', 74 + g.measureText(C.name || '').width * 1.25, 137);
+      (C.numbers || []).slice(0, 4).forEach((n, i) => {
+        const x = 40 + (i % 2) * 262, y = 172 + Math.floor(i / 2) * 176, val = Math.round((+n.value || 0) * ease(u));
+        g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(x, y, 246, 160); g.fillStyle = col; g.fillRect(x, y, 246, 5);
+        const glow = 0.5 + 0.5 * Math.sin(t * 3 + i); g.shadowColor = col; g.shadowBlur = 16 * glow;
+        g.fillStyle = '#fff'; g.font = '800 64px Inter, system-ui, sans-serif'; g.fillText(String(val), x + 16, y + 62); g.shadowBlur = 0;
+        g.fillStyle = '#c9d3e6'; g.font = '600 18px Inter, system-ui, sans-serif'; String(n.label || '').split('\n').forEach((ln, j) => g.fillText(ln, x + 16, y + 112 + j * 22));
+        const bars = n.spark || [], mx = Math.max(1, ...bars);
+        bars.forEach((b, j) => { const bh = 34 * (b / mx) * ease(u); g.fillStyle = col; g.fillRect(x + 150 + j * 12, y + 150 - bh, 8, bh); });
+      });
+      const vids = (C.videos || []).slice(0, 3);
+      vids.forEach((v, i) => {                                                  // vertical tiles, 9:16 like the reels
+        const x = 596 + i * 216, y = 160, w = 196, h = 348, im = hallImg(v.cover), pop = clamp(u * 3 - i, 0, 1);
+        g.globalAlpha = pop; g.fillStyle = '#000'; g.fillRect(x, y, w, h); if (im) coverFit(g, im, x, y, w, h);
+        g.fillStyle = 'rgba(0,0,0,0.62)'; g.fillRect(x, y + h - 58, w, 58);
+        g.fillStyle = '#fff'; g.font = '600 16px Inter, "PingFang SC", "Microsoft YaHei", sans-serif'; g.fillText(shorten(v.title || v.name, 13), x + 8, y + h - 38);
+        g.fillStyle = v.state === 'scheduled' ? '#7fb0ff' : '#b8a2ff'; g.font = '700 13px ' + MONO; g.fillText((v.state || '').toUpperCase(), x + 8, y + h - 14);
+        g.globalAlpha = 1;
+      });
+      if (!vids.length) { g.fillStyle = '#c9d3e6'; g.font = '600 22px Inter, system-ui, sans-serif'; g.fillText('No videos posted yet', 620, 320); }
+    } else if (kind === 'improve') {
+      head('How we improve · ' + ((D.review && D.review.date) || 'today'));
+      const acts = (D.review && D.review.actions) || [], teams = (D.review && D.review.teams) || [];
+      g.font = '600 24px Inter, "PingFang SC", "Microsoft YaHei", sans-serif';
+      acts.slice(0, 3).forEach((a, k) => { const pop = clamp(u * 3 - k, 0, 1); g.globalAlpha = pop; g.fillStyle = HALL_COLORS[k % 4]; g.fillRect(40, 176 + k * 60, 10, 40); g.fillStyle = '#fff'; g.fillText((k + 1) + '. ' + shorten(a, 62), 64, 197 + k * 60); g.globalAlpha = 1; });
+      g.font = '500 19px Inter, "PingFang SC", "Microsoft YaHei", sans-serif';
+      teams.slice(0, 6).forEach((tm, k) => { const x = 40 + (k % 3) * 400, y = 380 + Math.floor(k / 3) * 70; g.fillStyle = '#ffd77a'; g.fillText(tm.team, x, y); g.fillStyle = '#c9d3e6'; g.fillText(shorten(tm.tip || '', 34), x, y + 28); });
+      if (!acts.length && !teams.length) { g.fillStyle = '#c9d3e6'; g.fillText('The first review is written at 8 pm.', 40, 200); }
+    } else {
+      head('Latest designs');
+      const chs = hallChannels(D);
+      (D.designs || []).slice(0, 6).forEach((d0, i) => {
+        const d = typeof d0 === 'string' ? { url: d0 } : d0, x = 40 + i * 202, y = 170, im = hallImg(d.url), k = Math.max(0, chs.findIndex((c) => c.key === (d.ch || '')));
+        g.fillStyle = '#000'; g.fillRect(x, y, 186, 330); if (im) coverFit(g, im, x, y, 186, 330);
+        g.fillStyle = CH_COLORS[k % 4]; g.fillRect(x, y + 336, 186, 4); g.fillStyle = '#c9d3e6'; g.font = '600 16px Inter, system-ui, sans-serif'; g.fillText((chs[k] || {}).name || '', x, y + 358);
+      });
+    }
+    mesh.material.map.needsUpdate = true;
+  }
+  function tvPick(D, i) {                                                     // which channel and video a TV shows
+    const chs = hallChannels(D), [, , , side, slot] = HALL_TVS[i];
+    if (chs.length < 2) return { c: chs[0] || {}, k: 0, v: (D.videos || [])[i] };
+    const k = side % chs.length, c = chs[k];
+    const vids = c.videos || [];
+    return { c, k, v: vids[slot] || vids[slot % Math.max(1, vids.length)] };   // fewer videos than TVs: they repeat
+  }
+  function drawTV(i, t) {
+    const H = state.hall, D = H.data || {}, { c: C, k, v } = tvPick(D, i), mesh = H.tvs[i], W = 288, Hh = 512;
+    let c = mesh.material.map.image;
+    if (c.width !== W) { c = document.createElement('canvas'); c.width = W; c.height = Hh; mesh.material.map = new THREE.CanvasTexture(c); mesh.material.needsUpdate = true; }
+    const g = c.getContext('2d'), col = CH_COLORS[k % 4];
+    g.fillStyle = '#05060a'; g.fillRect(0, 0, W, Hh); g.textBaseline = 'middle';
+    if (v) {
+      const vid = hallVideo(i, v), playing = vid && !vid.paused && vid.readyState >= 2;
+      if (playing) { const r = Math.max(W / vid.videoWidth, Hh / vid.videoHeight); const w = vid.videoWidth * r, h = vid.videoHeight * r; g.drawImage(vid, (W - w) / 2, (Hh - h) / 2, w, h); }
+      else { const im = hallImg(v.cover); if (im) coverFit(g, im, 0, 0, W, Hh); }
+      g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(0, Hh - 52, W, 52); g.fillStyle = '#fff'; g.font = '600 17px Inter, "PingFang SC", "Microsoft YaHei", sans-serif'; g.fillText(shorten(v.title || v.name, 15), 10, Hh - 26);
+    } else { g.fillStyle = '#3a4152'; g.font = '600 20px Inter, sans-serif'; g.fillText('No video yet', 82, Hh / 2); }
+    g.fillStyle = col; g.fillRect(0, 0, W, 30); g.fillStyle = '#fff'; g.font = '800 16px Inter, system-ui, sans-serif'; g.fillText(C.name || '', 10, 16);   // the channel on top
+    mesh.material.map.needsUpdate = true;
+  }
+  function hallVideo(i, v) {                                                   // the TVs play the latest videos, muted, only while the hall is in use
+    const H = state.hall; if (state.phone || !v.video) return null;
+    let el = H.videos[i];
+    if (!el || el.dataset.src !== v.video) { if (el) el.pause(); el = document.createElement('video'); el.muted = true; el.loop = true; el.playsInline = true; el.preload = 'none'; el.dataset.src = v.video; el.src = v.video + (v.video.includes('?') ? '&' : '?') + 'phone=1'; H.videos[i] = el; }
+    const want = MEET.on || state.floorView === HALL;
+    if (want && el.paused) el.play().catch(() => {}); else if (!want && !el.paused) el.pause();
+    return el;
+  }
+  async function loadHall() {
+    try {
+      const r = await fetch('/api/meeting', { cache: 'no-store' });
+      if (r.ok && state.hall) {
+        const D = state.hall.data = await r.json();
+        MEET.schedule = D.schedule || MEET.schedule; MEET.minutes = D.minutes || MEET.minutes; MEET.lines = (D.lines || []).concat(MEET_LINES);
+        if (D.live && !MEET.on && D.live.until * 1000 > Date.now() + 60000) startMeeting((D.live.until * 1000 - Date.now()) / 60000, D.live.label);   // another device pressed OK, meeting now
+      }
+    } catch (e) { /* the hall keeps its last picture */ }
+  }
+  function updateHall(t) {
+    const H = state.hall; if (!H) return;
+    const every = state.phone ? 1 : (MEET.on || state.floorView === HALL ? 0.12 : 0.6);
+    if (t - H.drawn < every) return;
+    H.drawn = t; drawScreen(t); H.tvs.forEach((_, i) => drawTV(i, t));
+    H.beam.material.opacity = MEET.on ? 0.07 + Math.sin(t * 2) * 0.015 : 0.035;
+  }
+
+  // ---------- meetings: the schedule, everyone walking in, listening, walking back ----------
+  const MEET_LINES = ['Hook in the first 2 seconds 👀', 'More church-life Shorts 🙌', 'Never skip the Saturday invite 📣', 'Both thumbnail sizes, every time ✓',
+    'Same-age views, not lifetime 📊', 'Pick the style per video 🎨', 'Shorter captions win on IG?', 'Let’s test a question title ❓', 'Great job on the 1024 kids video 👏', 'Fix the profile links this week 🔗'];
+  const MEET = { on: false, endMs: 0, label: '', schedule: ['09:00', '14:00', '20:00'], minutes: 15, lastSlot: '', lines: MEET_LINES.slice(), talkAt: 0 };
+  function meetingSlot(now) {                                                  // the scheduled meeting this minute falls in, if any
+    const d = new Date(now), mins = d.getHours() * 60 + d.getMinutes();
+    for (const hm of MEET.schedule) { const [h, m] = hm.split(':').map(Number), st = h * 60 + m; if (mins >= st && mins < st + MEET.minutes) return { key: d.toDateString() + ' ' + hm, endMs: now + (st + MEET.minutes - mins) * 60000 - d.getSeconds() * 1000, label: hm + ' all-hands' }; }
+    return null;
+  }
+  function startMeeting(minutes, label) {
+    MEET.on = true; MEET.endMs = Date.now() + (minutes || MEET.minutes) * 60000; MEET.label = label || 'all-hands';
+    emitLife({ type: 'meeting', on: true, label: MEET.label, until: MEET.endMs });
+    return true;
+  }
+  function endMeeting() { if (!MEET.on) return false; MEET.on = false; emitLife({ type: 'meeting', on: false }); return true; }
+  function actMeeting(L) {
+    const seatId = LIFE.hall && freeSpot(LIFE.hall.seats);
+    if (seatId == null || !reserve(L, seatId)) return false;
+    runSteps(L, [S_RISE(), S_WALK(seatId, HURRY_SPEED * 1.35), S_FACE(faceNode), S_PERCH(0), S_CALL((A) => { A.anim = 'listen'; A.inMeeting = true; }),
+      S_WAIT(2, 'listen', () => !MEET.on, 3600), S_CALL((A) => { A.anim = null; A.inMeeting = false; }), S_PERCH(1), S_WALK(L.stand), S_SIT()], 'meeting');
+    return true;
+  }
+  function meetingTick(run) {
+    const now = Date.now(), slot = meetingSlot(now);
+    if (slot && !MEET.on && MEET.lastSlot !== slot.key) { MEET.lastSlot = slot.key; startMeeting(Math.max(1, (slot.endMs - now) / 60000), slot.label); }
+    if (MEET.on && now >= MEET.endMs) endMeeting();
+    if (!MEET.on) return;
+    for (const L of LIFE.actors) if (L.mode === 'seated' && !run[L.name] && !L.reservedBy && !L.inMeeting && now < MEET.endMs - 60000) actMeeting(L);
+    if (LIFE.time > MEET.talkAt) {                                             // someone in the hall speaks up now and then
+      MEET.talkAt = LIFE.time + 4 + Math.random() * 4;
+      const here = LIFE.actors.filter((L) => L.inMeeting && !L.sayText); const L = here[Math.floor(Math.random() * here.length)];
+      if (L) say(L, MEET.lines[Math.floor(Math.random() * MEET.lines.length)], 3.6);
+    }
   }
 
   // ------------------------------------------------------------------ the commons (lobby floor and roof)
@@ -1281,6 +1504,18 @@
         for (let k = 1; k < 12; k++) { const a = Math.PI / 2 + k * Math.PI / 6, id = lnode(STAIR.x + Math.cos(a) * WR, y + k / 12 * FLOOR_H, STAIR.z + Math.sin(a) * WR); ledge(prev, id); prev = id; }
         last = prev;
       }
+    }
+    {
+      const hy = HALL * FLOOR_H + WALK_Y, seats = [], aisle = { L: [], R: [] };
+      HALL_ROWS.forEach((z, r) => {
+        const lane = HALL_COLS.map((x) => lnode(x, hy, z + 1.9));
+        for (let k = 1; k < lane.length; k++) ledge(lane[k - 1], lane[k]);
+        aisle.L.push(lnode(14.8, hy, z + 1.9)); aisle.R.push(lnode(57.6, hy, z + 1.9));
+        ledge(aisle.L[r], lane[0]); ledge(aisle.R[r], lane[lane.length - 1]);
+        HALL_COLS.forEach((x, k) => { const id = lnode(x, hy, z + 0.1, { spot: true, faceTo: new THREE.Vector3(x, hy, -60) }); LIFE.nodes[id].sit = true; ledge(id, lane[k]); seats.push(id); });
+      });
+      for (const side of ['L', 'R']) { const a = aisle[side]; for (let k = 1; k < a.length; k++) ledge(a[k - 1], a[k]); ledge(a[a.length - 1], corrAt(HALL, side === 'L' ? 14 : 52)); }
+      LIFE.hall = { seats };
     }
     for (const room of state.roomList) {
       const lay = room.big ? LIFE_LAYOUT.creative : LIFE_LAYOUT.normal, h = room.half, cx = room.center.x, cz = room.center.z, key = room.key, F = room.y + SLAB_H;
@@ -1815,7 +2050,8 @@
       else if (on && L.reservedBy) L.reservedBy = null;                       // a reserved host got work: the visitor finds them busy
     }
     updateTalks(dt);
-    if (LIFE.on && LIFE.auto) for (const L of LIFE.actors) {
+    if (LIFE.on) meetingTick(run);
+    if (LIFE.on && LIFE.auto && !MEET.on) for (const L of LIFE.actors) {
       if (L.mode !== 'seated' || L.running || L.reservedBy) continue;
       L.next -= dt;
       if (L.next <= 0) { if (active < LIFE.max && startAction(L)) active += L.action === 'chat' ? 2 : 1; else L.next = 4 + Math.random() * 9; }
@@ -2087,7 +2323,7 @@
       const c = (t * 0.035) % 1, u = c < 0.4 ? ease(c / 0.4) : c < 0.5 ? 1 : c < 0.9 ? 1 - ease((c - 0.5) / 0.4) : 0;
       state.lift.car.position.y = WALK_Y + u * (state.lift.top - WALK_Y);
     }
-    animateWalkers(t, dt); animateSubs(t); updateLabels();
+    animateWalkers(t, dt); animateSubs(t); updateLabels(); updateHall(t);
     if (state.selectRing && state.selectRing.visible) {
       state.selectRing.material.opacity = 0.6 + Math.sin(t * 4) * 0.3;
       const sel = state.seats[state.selected];                                  // the ring follows an agent who walked away from the desk
@@ -2128,7 +2364,7 @@
     // the plan first, then any other team in a free slot of floors 1-4
     const used = {}, place = {};
     for (const t of teams) { const pl = FLOOR_PLAN[t.key]; if (pl && !used[pl.join()]) { used[pl.join()] = true; place[t.key] = pl; } }
-    const free = []; for (let f = 1; f < ROOF; f++) for (const c of [0, 1]) if (!used[f + ',' + c]) free.push([f, c]);
+    const free = []; for (let f = 1; f < HALL; f++) for (const c of [0, 1]) if (!used[f + ',' + c]) free.push([f, c]);
     for (const t of teams) if (!place[t.key]) { if (free.length) place[t.key] = free.shift(); else console.warn('office3d: no room left for', t.key); }
     resize();
     buildBrain();
@@ -2138,6 +2374,7 @@
     buildPaths();
     buildCity();
     try { buildLife(); } catch (e) { console.warn('office3d: office life is off', e); LIFE.ready = false; }
+    loadHall(); setInterval(loadHall, 60000);
     state.built = true;
     placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
     state.userActiveUntil = performance.now() + 5000;
@@ -2157,6 +2394,7 @@
     labelRules: (rules) => Object.assign(state.labelRules, rules || {}),
     pause: (on) => { state.paused = !!on; }, fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
     teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size, floor: r.floor })),
+    meeting: (what, minutes) => (what === 'start' ? startMeeting(minutes, 'meeting now') : what === 'end' ? endMeeting() : { on: MEET.on, until: MEET.endMs, label: MEET.label, schedule: MEET.schedule, inHall: LIFE.actors.filter((L) => L.inMeeting).length }),
     life: (on) => lifeSwitch(on), lifeOf: (n) => lifeOf(n), lifeState: () => lifeState(), lifeDebug: (o) => lifeDebug(o), lifeTalkers: () => LIFE.talkers,
     _three: () => ({ scene, camera, renderer, composer, controls, state }),
   });

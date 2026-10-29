@@ -3,6 +3,7 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(python3 hq/status.py:*)",
+      "Bash(python3 hq/meeting.py:*)",
       "Bash(node hq/tasks.js:*)",
       "Bash(ffprobe:*)",
       "Bash(python3 .claude/skills/reel/scripts/cut.py:*)",

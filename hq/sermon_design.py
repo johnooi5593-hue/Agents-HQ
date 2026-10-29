@@ -475,7 +475,7 @@ class SermonDesignBridge:
                 task_id = prior["id"]
             else:
                 code, result = self.task_action({"action": "add", "title": ("XHS Sermon Recap Pro" if project.get("kind") == "xhs" else "Sermon Title 16:9") + " · " + str(project.get("titles", {}).get("chinese") or project.get("name") or pid),
-                    "team": "Creative", "agent": "thumbnail-designer", "status": "review", "kind": "approval", "note": marker + " Native Design Studio renderer; user OK required.",
+                    "team": "Design", "agent": "sermon-designer", "status": "review", "kind": "approval", "note": marker + " Native Design Studio renderer; user OK required.",
                     "subtitle": "Independent artwork + saved source · awaiting your OK"})
                 if code != 201 or not result.get("added", {}).get("id"):
                     raise DesignError("Files were copied, but the HQ review task could not be registered. Retry opening the project; no model task was started.", 502)

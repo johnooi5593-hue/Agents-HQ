@@ -36,6 +36,8 @@
           <button class="menu-item" id="menu-lead" type="button">Open the lead log</button>
           <button class="menu-item" id="menu-accounts" type="button">Channels &amp; accounts</button>
           <button class="menu-item" id="menu-push" type="button">Phone notifications</button>
+          <button class="menu-item" id="menu-meeting" type="button" title="Everyone walks to the 6F Meeting Hall and the heads discuss how to improve">All-hands meeting now</button>
+          <button class="menu-item" id="menu-review" type="button" title="The daily written review at 8 pm (one AI job a day)">Daily review at 8 pm: …</button>
           <button class="menu-item" id="menu-restart" type="button" title="Start HQ again with its latest code, like Restart engine in the tray">Restart HQ</button>
           <form method="post" action="/logout" id="logout-form" hidden><button class="menu-item" type="submit">Log out</button></form>
         </div>
@@ -53,7 +55,7 @@
       <form id="ask-any" class="ask ia" autocomplete="off">
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <span class="who" id="ask-who"></span>
-        <input id="ask-input" type="text" placeholder="Ask any agent…" aria-label="Ask any agent" enterkeyhint="send">
+        <input id="ask-input" type="text" placeholder="Ask any agent… (type / for a skill)" aria-label="Ask any agent" enterkeyhint="send">
         <button class="mic" id="ask-mic" type="button" title="Talk to the office" data-voice><svg class="i" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <kbd id="ask-kbd">⌘K</kbd>
         <button class="ask-send" id="ask-send" type="submit" title="Send" aria-label="Send"><svg class="i" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
@@ -102,9 +104,9 @@
 
   <!-- the lead's log drawer (collapsed console) -->
   <div id="lead-log">
-    <div class="bar" id="lead-bar"><i class="dot"></i><span class="lt" id="lead-text">Lead · idle</span><span class="car">▴</span><button class="xbtn lead-x" id="lead-close" type="button" title="Close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+    <div class="bar" id="lead-bar"><i class="dot"></i><span class="lt" id="lead-text">Lead · idle</span><button class="btn sm stop-btn" id="lead-stop" type="button" title="Stop everything the lead is doing" hidden>■ Stop</button><span class="car">▴</span><button class="xbtn lead-x" id="lead-close" type="button" title="Close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
     <div class="con" id="lead-con"><div class="ev system">waiting for the first message</div></div>
-    <form id="lead-form"><input id="lead-input" type="text" placeholder="Tell the lead anything, for example: OK, or: make the hook shorter" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>
+    <form id="lead-form"><input id="lead-input" type="text" placeholder="Tell the lead anything, e.g. OK, or: redo it in /poster-kinetic (type / for a skill)" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>
   </div>
 
   <!-- voice: a small orb button when idle, the full listening overlay when open -->

@@ -18,11 +18,11 @@ SUBAGENT_SECONDS = 15 * 60   # an unfinished sub-agent whose log moved within th
 TAIL_BYTES = 96 * 1024
 
 # a skill or a script tells us which desk in the office is doing the work
-SKILL_AGENT = {"reel": "clip-editor", "yellow-serif": "clip-editor", "poster-kinetic": "clip-editor", "sermon-moments": "clip-editor", "caption-card": "clip-editor","pixel": "thumbnail-designer", "quill": "script-writer",
+SKILL_AGENT = {"reel": "clip-editor", "yellow-serif": "clip-editor", "poster-kinetic": "clip-editor", "sermon-moments": "clip-editor", "caption-card": "clip-editor", "neon-glow": "clip-editor","pixel": "thumbnail-designer", "quill": "script-writer",
                "radar": "trend-scout", "relay": "copywriter", "pulse": "data-analyst", "edit-clips": "creative-director",
                "script": "script-writer", "whats-next": "trend-scout", "post-copy": "copywriter", "stats": "data-analyst",
                "research": "research-director", "campaign": "social-media-manager", "brief": "chief of staff"}
-SCRIPT_AGENT = [(re.compile(r"skills[\\/](reel|yellow-serif|poster-kinetic|sermon-moments|caption-card)[\\/]"), "clip-editor"),
+SCRIPT_AGENT = [(re.compile(r"skills[\\/](reel|yellow-serif|poster-kinetic|sermon-moments|caption-card|neon-glow)[\\/]"), "clip-editor"),
                 (re.compile(r"skills[\\/]pixel[\\/]"), "thumbnail-designer"),
                 (re.compile(r"\bffmpeg\b|\bffprobe\b"), "clip-editor"),
                 (re.compile(r"hq[\\/]tasks\.js"), "chief of staff")]

@@ -20,3 +20,4 @@ Every sound was found with the Openverse API (license=cc0). CC0 is public domain
 | pop_2.wav | pop | Bubble Pop | Mafon2 | CC0 1.0 | https://freesound.org/people/Mafon2/sounds/253956 |
 | rain_1.wav | rain | Rain Storm | mycompasstv | CC0 1.0 | https://freesound.org/people/mycompasstv/sounds/477032 |
 | shutter_1.wav | shutter | Nikon D750 single shoot.wav | hmilleo | CC0 1.0 | https://freesound.org/people/hmilleo/sounds/412543 |
+| thunder_1.wav | thunder | thunder2.wav | nednednerb | CC0 1.0 | https://freesound.org/people/nednednerb/sounds/38245 |

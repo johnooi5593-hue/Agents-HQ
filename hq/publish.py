@@ -10,6 +10,9 @@ office folder: on this computer only, never committed, never read by the agents 
     YouTube: a Google Cloud OAuth client of type "Desktop app". The owner pastes its client_secret.json, signs in
         once in the browser, and we keep the refresh token. Google keeps uploads from a new, unaudited API project
         private until the project passes Google's audit; the app says so after each upload.
+    TikTok: a TikTok developer app (developers.tiktok.com) with Login Kit and the Content Posting API (video.upload). The
+        owner pastes its Client key and Client secret, signs in once, and we keep the refresh token (365 days). A post
+        goes to the account's TikTok drafts (inbox): the owner opens the TikTok notification, adds the caption and posts.
 
 Stdlib only. Every post writes approved/<name>/posted.json as it goes, so the app shows progress and links.
 """
@@ -19,8 +22,11 @@ from channels import folder_channel
 
 GRAPH = "https://graph.facebook.com/v23.0"
 YT_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
-PLATFORMS = ("facebook", "instagram", "youtube")
+PLATFORMS = ("facebook", "instagram", "youtube", "tiktok")
+TT_API = "https://open.tiktokapis.com/v2"
+TT_SCOPES = "user.info.basic,video.upload"                      # drafts: the video lands in the TikTok inbox, the owner posts it
 VIDEO_EXT = (".mp4", ".mov", ".m4v")
+COVER_IG = "cover-codex-ig.png"                                # Instagram's 3:4 Codex cover, next to the 9:16 cover-codex.png
 
 
 class PostError(Exception):
@@ -191,12 +197,13 @@ class Accounts:
     def summary(self, channel=""):
         """What the app may show: names only, never a token."""
         a = self.section(self.load(), channel)
-        m, y = a.get("meta") or {}, a.get("youtube") or {}
+        m, y, t = a.get("meta") or {}, a.get("youtube") or {}, a.get("tiktok") or {}
         return {
             "facebook": {"connected": bool(m.get("page_token")), "name": m.get("page_name", "")},
             "instagram": {"connected": bool(m.get("page_token") and m.get("ig_id")), "name": ("@" + m["ig_username"]) if m.get("ig_username") else "",
                           "problem": "" if not m.get("page_token") or m.get("ig_id") else "no Instagram professional account is linked to this Facebook Page"},
             "youtube": {"connected": bool(y.get("refresh_token")), "name": y.get("channel", ""), "client": bool(y.get("client_id"))},
+            "tiktok": {"connected": bool(t.get("refresh_token")), "name": t.get("name", ""), "client": bool(t.get("client_key")), "mode": "drafts"},
         }
 
     # ---------------------------------------------------------------- Meta
@@ -258,25 +265,25 @@ class Accounts:
 
     def youtube_finish(self, state, code):
         got = self.pending.pop(state, None) if state else None
-        if not got or time.time() - got[3] > 900:
+        if not got or len(got) != 5 or time.time() - got[3] > 900:
             raise PostError("this sign-in link expired; press Connect YouTube again")
         cid, csec, redirect, _, channel = got
         _, _, j = http("POST", "https://oauth2.googleapis.com/token", data={
             "code": code, "client_id": cid, "client_secret": csec, "redirect_uri": redirect, "grant_type": "authorization_code"})
         if not j.get("refresh_token"):
             raise PostError("Google gave no refresh token; remove Agents HQ at myaccount.google.com/permissions and connect again")
-        channel = ""
+        title = ""
         try:
             _, _, c = http("GET", "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
                            headers={"Authorization": "Bearer " + j["access_token"]})
-            channel = ((c.get("items") or [{}])[0].get("snippet") or {}).get("title", "")
+            title = ((c.get("items") or [{}])[0].get("snippet") or {}).get("title", "")
         except PostError:
             pass
         with self.lock:
             a = self.load()
-            self.slot(a, channel)["youtube"] = {"client_id": cid, "client_secret": csec, "refresh_token": j["refresh_token"], "channel": channel, "at": int(time.time())}
+            self.slot(a, channel)["youtube"] = {"client_id": cid, "client_secret": csec, "refresh_token": j["refresh_token"], "channel": title, "at": int(time.time())}
             self.save(a)
-        return channel
+        return title
 
     def youtube_token(self, channel=""):
         y = self.get("youtube", channel)
@@ -284,6 +291,59 @@ class Accounts:
             raise PostError("YouTube is not connected")
         _, _, j = http("POST", "https://oauth2.googleapis.com/token", data={
             "client_id": y["client_id"], "client_secret": y["client_secret"], "refresh_token": y["refresh_token"], "grant_type": "refresh_token"})
+        return j["access_token"]
+
+    # ---------------------------------------------------------------- TikTok
+    def tiktok_begin(self, client_key, client_secret, redirect, channel=""):
+        """Start the TikTok sign-in. Without a key and secret the channel's (or the main channel's) TikTok app is used
+        again. redirect must be an https address registered in the app's Login Kit. Returns the URL to open."""
+        t = self.get("tiktok", channel) or self.get("tiktok")
+        key, sec = str(client_key or "").strip() or t.get("client_key", ""), str(client_secret or "").strip() or t.get("client_secret", "")
+        if not (key and sec):
+            raise PostError("paste the Client key and Client secret of your TikTok app first")
+        if not str(redirect or "").startswith("https://"):
+            raise PostError("TikTok needs an https return address; turn on phone access (Tailscale) so Agents HQ has one")
+        state = secrets.token_urlsafe(16)
+        self.pending = {state: (key, sec, redirect, time.time(), channel, "tiktok")}
+        return "https://www.tiktok.com/v2/auth/authorize/?" + urllib.parse.urlencode({
+            "client_key": key, "response_type": "code", "scope": TT_SCOPES, "redirect_uri": redirect, "state": state})
+
+    def tiktok_finish(self, state, code):
+        got = self.pending.pop(state, None) if state else None
+        if not got or len(got) < 6 or got[5] != "tiktok" or time.time() - got[3] > 900:
+            raise PostError("this sign-in link expired; press Connect TikTok again")
+        key, sec, redirect, _, channel, _ = got
+        _, _, j = http("POST", TT_API + "/oauth/token/", data={
+            "client_key": key, "client_secret": sec, "code": code, "grant_type": "authorization_code", "redirect_uri": redirect})
+        if not j.get("refresh_token"):
+            raise PostError(j.get("error_description") or "TikTok gave no refresh token")
+        name = ""
+        try:
+            _, _, u = http("GET", TT_API + "/user/info/?fields=open_id,display_name", headers={"Authorization": "Bearer " + j["access_token"]})
+            name = ((u.get("data") or {}).get("user") or {}).get("display_name", "")
+        except PostError:
+            pass
+        with self.lock:
+            a = self.load()
+            self.slot(a, channel)["tiktok"] = {"client_key": key, "client_secret": sec, "refresh_token": j["refresh_token"], "open_id": j.get("open_id", ""),
+                                               "scope": j.get("scope", ""), "name": name, "at": int(time.time())}
+            self.save(a)
+        return name
+
+    def tiktok_token(self, channel=""):
+        """A fresh access token (they last 24 hours); TikTok may hand back a new refresh token, which replaces the old one."""
+        t = self.get("tiktok", channel)
+        if not t.get("refresh_token"):
+            raise PostError("TikTok is not connected")
+        _, _, j = http("POST", TT_API + "/oauth/token/", data={
+            "client_key": t["client_key"], "client_secret": t["client_secret"], "grant_type": "refresh_token", "refresh_token": t["refresh_token"]})
+        if not j.get("access_token"):
+            raise PostError(j.get("error_description") or "TikTok did not renew the sign-in; connect TikTok again")
+        if j.get("refresh_token") and j["refresh_token"] != t["refresh_token"]:
+            with self.lock:
+                a = self.load()
+                self.slot(a, channel).setdefault("tiktok", {})["refresh_token"] = j["refresh_token"]
+                self.save(a)
         return j["access_token"]
 
     def disconnect(self, which, channel=""):
@@ -359,7 +419,7 @@ def drafts(folder):
     common = s.get("options") or []
     if not common and not any(s.get(k) for k in ("youtube", "instagram", "facebook")):
         common = s.get("other") or []                         # an older post.md: its sections are the options
-    plat = {k: s.get(k) or [] for k in ("youtube", "instagram", "facebook")}
+    plat = {k: s.get(k) or [] for k in ("youtube", "instagram", "facebook", "tiktok")}
     count = max([len(common)] + [max([e["n"] or 0 for e in v] + [len(v)]) for v in plat.values()])
 
     def pick(entries, i):
@@ -379,14 +439,15 @@ def drafts(folder):
         yt_title, yt_body = split_title(yt_src, base_title) if yt_src else (base_title, base)
         ig = clean(pick(plat["instagram"], i) or "") or base
         fb = clean(pick(plat["facebook"], i) or "") or base or ig
+        tt = clean(pick(plat["tiktok"], i) or "") or base or ig
         desc = yt_body or base or ig
         if "#shorts" not in (yt_title + desc).lower():
             desc = (desc + "\n#Shorts").strip()
         options.append({"title": yt_title, "caption": base or ig or fb,
                         "youtube": {"title": yt_title, "description": desc[:4900]},
-                        "instagram": {"caption": ig[:2200]}, "facebook": {"caption": fb}})
+                        "instagram": {"caption": ig[:2200]}, "facebook": {"caption": fb}, "tiktok": {"caption": tt[:2200]}})
     first = options[0]
-    return {"options": options, "youtube": first["youtube"], "instagram": first["instagram"], "facebook": first["facebook"]}
+    return {"options": options, "youtube": first["youtube"], "instagram": first["instagram"], "facebook": first["facebook"], "tiktok": first["tiktok"]}
 
 
 LINKED = re.compile(r"((?:approved|out)/[^\s`'\"()<>]+?\.(?:mp4|mov|m4v))", re.I)
@@ -515,9 +576,10 @@ class Publisher:
                 "videos": f["video"], "covers": f["image"], "linked": sorted(f["abs"]), "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
                 "busy": folder in self.busy}
 
-    def start(self, folder, chosen, video_name="", cover_name="", when=None):
+    def start(self, folder, chosen, video_name="", cover_name="", when=None, cover_ig_name=""):
         """chosen: {platform: {text fields}}; video_name / cover_name: the files the owner picked in the folder;
-        when: a unix time to publish at, or None for now. Works in the background; returns the platforms started."""
+        cover_ig_name: Instagram's own cover (3:4), when it has one; when: a unix time to publish at, or None for now.
+        Works in the background; returns the platforms started."""
         video, cover = media(folder)
         files = media_files(folder)
         if video_name:
@@ -530,6 +592,15 @@ class Publisher:
             cover = os.path.join(folder, cover_name)
         if not video:
             raise PostError("no video in this folder")
+        # Instagram: the 3:4 Codex cover next to the 9:16 one (owner, 2026-10-28), unless the owner picked another picture
+        cover_ig = cover
+        if cover_ig_name:
+            if cover_ig_name not in files["image"]:
+                raise PostError("that Instagram thumbnail is not in this folder")
+            cover_ig = os.path.join(folder, cover_ig_name)
+        elif os.path.isfile(os.path.join(folder, COVER_IG)) and (not cover_name or cover_name == "cover-codex.png"):
+            cover_ig = os.path.join(folder, COVER_IG)
+        cover_of = lambda p: cover_ig if p == "instagram" else cover
         if when is not None:
             try:
                 when = int(when)
@@ -556,7 +627,7 @@ class Publisher:
         rel = lambda path: (os.path.relpath(path, folder).replace(os.sep, "/") if os.path.dirname(os.path.abspath(path)).startswith(os.path.abspath(folder)) else os.path.relpath(path, office_root(folder) or folder).replace(os.sep, "/")) if path else ""
         for p in todo:
             self.note(folder, p, state="waiting", error="", warning="", when=when or 0, job=None, link=done.get(p, {}).get("link", ""),
-                      video=rel(video), cover=rel(cover))
+                      video=rel(video), cover=rel(cover_of(p)))
         if when and self.on_schedule:
             try:
                 self.note(folder, "_task", value=self.on_schedule(folder, when, todo))
@@ -565,12 +636,12 @@ class Publisher:
 
         def one(p):                                             # every platform at the same time
             if when and p not in NATIVE_SCHEDULE:               # Instagram: wait here, the scheduler posts it when due
-                self.note(folder, p, state="scheduled", job={"text": chosen[p], "video": rel(video), "cover": rel(cover)})
+                self.note(folder, p, state="scheduled", job={"text": chosen[p], "video": rel(video), "cover": rel(cover_of(p))})
                 return
             self.note(folder, p, state="posting" if not when else "uploading", error="", progress=0, step="starting")
             PROGRESS.report = self.reporter(folder, p)
             try:
-                link, extra = self.send(p, video, cover, chosen[p], when, channel)
+                link, extra = self.send(p, video, cover_of(p), chosen[p], when, channel)
                 self.note(folder, p, state="scheduled" if when else "posted", link=link, error="", **extra)
             except Exception as e:                              # one platform failing never stops the others
                 self.note(folder, p, state="failed", error=str(e)[:400])
@@ -676,7 +747,7 @@ class Publisher:
                 r = self.record(folder)
                 stuck = [p for p in PLATFORMS if (r.get(p) or {}).get("state") in ("waiting", "posting", "uploading")]
                 for p in stuck:
-                    name = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube"}[p]
+                    name = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube", "tiktok": "TikTok"}[p]
                     self.note(folder, p, state="failed", error=f"Agents HQ stopped while this was posting, so it never finished. It may still have "
                                                                f"gone out: check {name} first, and if it isn't there, tick it and post again.")
             if stuck:
@@ -879,6 +950,43 @@ class Publisher:
         except PostError:
             pass
         return link, extra
+
+    # TikTok draft: init an inbox upload → PUT the file in chunks → wait until TikTok has it in the account's inbox
+    def post_tiktok(self, video, cover, text, when=None, channel=""):
+        tok = self.accounts.tiktok_token(channel)
+        auth = {"Authorization": "Bearer " + tok, "Content-Type": "application/json; charset=UTF-8"}
+        size = os.path.getsize(video)
+        # one piece up to 64 MB; above that 10 MB pieces, the rest joined to the last (TikTok: 5–64 MB each, the last up to 128 MB)
+        chunk = size if size <= 64 * 1024 * 1024 else 10 * 1024 * 1024
+        count = max(1, size // chunk)
+        progress(3, "starting the TikTok upload")
+        _, _, j = http("POST", TT_API + "/post/publish/inbox/video/init/", headers=auth, body=json.dumps(
+            {"source_info": {"source": "FILE_UPLOAD", "video_size": size, "chunk_size": chunk, "total_chunk_count": count}}).encode())
+        err = (j.get("error") or {}) if isinstance(j, dict) else {}
+        data = (j.get("data") or {}) if isinstance(j, dict) else {}
+        if err.get("code") not in (None, "", "ok") or not data.get("upload_url"):
+            raise PostError("TikTok refused the upload: " + (err.get("message") or err.get("code") or "no upload address"))
+        ctype = "video/quicktime" if video.lower().endswith(".mov") else "video/mp4"
+        with open(video, "rb") as f:
+            for i in range(count):
+                first = i * chunk
+                last = size - 1 if i == count - 1 else first + chunk - 1
+                f.seek(first)
+                part = f.read(last - first + 1)
+                progress(5 + 80 * (i + 1) / count, "uploading the video to TikTok")
+                http("PUT", data["upload_url"], body=part, timeout=1800,
+                     headers={"Content-Type": ctype, "Content-Length": str(len(part)), "Content-Range": f"bytes {first}-{last}/{size}"})
+        for i in range(60):                                    # up to 5 minutes for TikTok to put it in the inbox
+            progress(86 + 12 * (1 - math.exp(-i / 10)), "TikTok is processing the video")
+            _, _, st = http("POST", TT_API + "/post/publish/status/fetch/", headers=auth, body=json.dumps({"publish_id": data["publish_id"]}).encode())
+            d = (st.get("data") or {}) if isinstance(st, dict) else {}
+            if d.get("status") in ("SEND_TO_USER_INBOX", "PUBLISH_COMPLETE"):
+                return "", {"warning": "Sent to your TikTok drafts. Open TikTok, tap the notification in your inbox, paste the caption (copy it on the "
+                                       "posting screen), add a sound if you like, and post."}
+            if d.get("status") == "FAILED":
+                raise PostError("TikTok could not take the video: " + str(d.get("fail_reason") or "no reason given"))
+            time.sleep(5)
+        return "", {"warning": "TikTok is still processing the video. It should appear in your TikTok inbox soon; check the TikTok app."}
 
     # YouTube Short: resumable upload (vertical and short is what makes it a Short), then the cover as thumbnail
     def post_youtube(self, video, cover, text, when=None, channel=""):

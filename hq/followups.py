@@ -56,6 +56,11 @@ class FollowUps:
             spec = self._load(name)
             if not spec or spec.get("queued_at"):
                 return False
+            if self._package_done(name):                    # the card already made its caption and thumbnails: nothing to add
+                spec["skipped_at"], spec["queued_at"] = now_iso(), now_iso()
+                spec["skipped"] = "the video's package already picked its caption and thumbnails"
+                self._save(name, spec)
+                return False
             output = spec.get("output") or f"{name}-cover-post"
             ids = []
             for i, step in enumerate(spec["steps"]):
@@ -68,6 +73,16 @@ class FollowUps:
             self._save(name, spec)
         self.kick()
         return True
+
+    def _package_done(self, name):
+        """True when approved/<name> came through a video package with captions (Video + caption or Full set): the old
+        cover + post-copy follow-up would only make a second, competing version."""
+        try:
+            with open(os.path.join(self.root, "approved", name, "package.json"), encoding="utf-8") as f:
+                pkg = json.load(f)
+        except (OSError, ValueError):
+            return False
+        return isinstance(pkg, dict) and pkg.get("preset") in ("caption", "full")
 
     def prompt(self, name, spec):
         lines = [f'The owner approved the video in approved/{name}/ ({", ".join(sorted(os.listdir(os.path.join(self.root, "approved", name))))}).',

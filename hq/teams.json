@@ -288,6 +288,12 @@
           "skill": "caption-card"
         },
         {
+          "name": "neon-glow",
+          "note": "霓虹发光字: chrome Chinese typed with the speech + one neon-yellow word that switches on with the measured four-layer glow",
+          "agent": "clip-editor",
+          "skill": "neon-glow"
+        },
+        {
           "name": "sound-effects",
           "note": "音效: real CC0 sounds (Openverse) for every move and hit, each peaking on the exact frame of its motion",
           "agent": "clip-editor",
@@ -525,6 +531,57 @@
         }
       ],
       "accent": "#f69a4f"
+    },
+    {
+      "key": "design",
+      "name": "Design",
+      "color": "#e0883a",
+      "color_light": "#f6d6b8",
+      "color_wall": "#7a4a22",
+      "icon": "🎨",
+      "tagline": "Codex thumbnails · sermon artwork · posters",
+      "lead": "design-director",
+      "tools": [
+        {
+          "name": "Codex Thumbnail Studio",
+          "via": "skill",
+          "status": "connected",
+          "script": "hq/thumbnail_design.py",
+          "url": "/thumbnail-studio.html"
+        },
+        {
+          "name": "Codex Sermon Design Studio",
+          "via": "skill",
+          "status": "connected",
+          "script": "hq/sermon_design.py",
+          "url": "/sermon-studio.html"
+        }
+      ],
+      "skills": [
+        {
+          "name": "codex-thumbnails",
+          "note": "9:16 for YouTube + Facebook, 3:4 for Instagram: style, title rows, feeling, reference, 4 real options",
+          "agent": "codex-graphic-designer",
+          "skill": "pixel"
+        },
+        {
+          "name": "sermon-title-16x9",
+          "note": "four 3840 × 2160 sermon title options in Sermon Design Studio",
+          "agent": "sermon-designer",
+          "skill": "sermon-poster"
+        },
+        {
+          "name": "xhs-sermon-recap",
+          "note": "Main + Cover 1080 × 1440 from the poster the owner picked",
+          "agent": "sermon-designer",
+          "skill": "xhs-sermon-recap"
+        },
+        {
+          "name": "event-posters",
+          "note": "events, announcements, service times, seasonal posters, quote cards, every size",
+          "agent": "poster-designer"
+        }
+      ]
     }
   ]
 }

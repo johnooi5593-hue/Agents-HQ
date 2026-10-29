@@ -97,7 +97,7 @@ class BridgeTests(unittest.TestCase):
         second = self.bridge.register(copy.deepcopy(project))
         self.assertEqual(first, second); self.assertEqual(len(self.tasks), 1)
         task = self.tasks[0]
-        self.assertEqual((task["team"], task["agent"], task["status"], task["kind"]), ("Creative", "thumbnail-designer", "review", "approval"))
+        self.assertEqual((task["team"], task["agent"], task["status"], task["kind"]), ("Design", "sermon-designer", "review", "approval"))
         self.assertIn("Native Design Studio", task["note"])
         out = self.office / "out" / first["folder"]
         for row in project["lastExport"]["files"]:

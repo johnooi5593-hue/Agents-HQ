@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hq-maint-test",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-3", "C:/Users/John Ooi/Documents/Agents-HQ-maint/hq/server.py", "--no-browser"],
+      "env": { "HQ_PORT": "7342", "HQ_NO_UPDATE": "1" },
+      "port": 7342
+    }
+  ]
+}

@@ -190,5 +190,17 @@
   "landing": "https://freesound.org/people/hmilleo/sounds/412543",
   "openverse_id": "043daf6b-093a-46fc-9d21-3a0f35fc951b",
   "source_file": "https://cdn.freesound.org/previews/412/412543_3482955-hq.mp3"
+ },
+ "thunder_1": {
+  "category": "thunder",
+  "file": "thunder_1.wav",
+  "peak_s": 0.30365,
+  "duration": 2.8,
+  "title": "thunder2.wav",
+  "creator": "nednednerb",
+  "license": "CC0 1.0",
+  "landing": "https://freesound.org/people/nednednerb/sounds/38245",
+  "openverse_id": "47c2b055-bd95-434c-9fa2-08d3d0aa8139",
+  "source_file": "https://cdn.freesound.org/previews/38/38245_66959-hq.mp3"
  }
 }

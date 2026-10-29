@@ -1,6 +1,6 @@
 # Org chart
 
-31 agents in 8 teams around the Brain, led by the chief of staff (your Claude Code session, with its instructions in `CLAUDE.md`). Each agent is one file in `.claude/agents/`. Everyone runs on Opus 5.5; Fable only when the owner asks for it. Team heads plan, merge and review; workers do one job each.
+35 agents in 9 teams around the Brain, led by the chief of staff (your Claude Code session, with its instructions in `CLAUDE.md`). Each agent is one file in `.claude/agents/`. Everyone runs on Opus 5.5; Fable only when the owner asks for it. Team heads plan, merge and review; workers do one job each.
 
 | # | Agent | Team | Role | Job |
 |---|---|---|---|---|
@@ -36,6 +36,10 @@
 | 29 | `analytics-lead` | Analytics | head | Head of Analytics |
 | 30 | `data-analyst` | Analytics | worker | Cleans exported data, computes the metrics and trends, shows the work, and turns analytics CSVs into lessons (pulse skill) |
 | 31 | `strategist` | Analytics | worker | Turns a goal into options, a recommendation and the first three steps |
+| 32 | `design-director` | Design | head | Head of Design: routes every Codex picture job (thumbnails, sermon artwork, posters) and reviews it with brand-checker |
+| 33 | `codex-graphic-designer` | Design | worker | Prepares Codex video thumbnails and post covers (9:16 YouTube + Facebook, 3:4 Instagram): style, title rows, feeling, reference |
+| 34 | `sermon-designer` | Design | worker | Sermon title artwork in Sermon Design Studio: Sermon Title 16:9, XHS Sermon Recap, service editions |
+| 35 | `poster-designer` | Design | worker | Event, announcement, service-time, seasonal and social posters in every size, on the Codex engine |
 
 ## How a request moves
 

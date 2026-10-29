@@ -28,6 +28,41 @@ DIMENSIONS = [[1920, 1080], [1080, 1920], [1080, 1440]]
 VIDEOS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 
 
+PREVIEWS = Path(__file__).resolve().parent / ".phone-previews"
+
+
+def small_image(source, key):
+    """A phone-sized JPEG preview (480 px wide) of a picture, made once per version (key) and kept in hq/.phone-previews/.
+    A full-size Codex PNG is 2–4 MB, too slow for a phone over Tailscale or mobile data. None when ffmpeg can't make it."""
+    out = PREVIEWS / (hashlib.sha1(str(key).encode()).hexdigest()[:24] + ".jpg")
+    if out.is_file():
+        return out
+    ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if not ff:
+        return None
+    PREVIEWS.mkdir(exist_ok=True)
+    tmp = out.with_suffix(".part.jpg")
+    try:
+        subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-i", str(source), "-frames:v", "1", "-vf", "scale='min(480,iw)':-2", "-q:v", "4", str(tmp)],
+                       capture_output=True, timeout=60, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
+        os.replace(tmp, out)
+        return out
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def send_preview(handler, file, method="GET"):
+    """Send a preview JPEG; it never changes for its key, so the phone may keep it."""
+    data = Path(file).read_bytes()
+    handler.send_response(200)
+    handler.send_header("Content-Type", "image/jpeg")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "private, max-age=86400")
+    handler.end_headers()
+    if method != "HEAD":
+        handler.wfile.write(data)
+
+
 def digest(file):
     with open(file, "rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -305,7 +340,7 @@ class ThumbnailDesignBridge:
         return source
 
     def _public_job(self, row):
-        result = {key: row[key] for key in ("id", "mode", "status", "progress", "folder", "taskId", "channel", "title", "subtitle", "instructions", "templateId", "templateRevision", "videoPath", "videoSha256", "sourceFrameAvailable", "sourceVideo", "warnings", "approvedAt", "createdAt", "deadlineAt", "error", "delivery", "width", "height") if key in row}
+        result = {key: row[key] for key in ("id", "mode", "status", "progress", "folder", "taskId", "channel", "title", "subtitle", "instructions", "templateId", "templateRevision", "videoPath", "videoSha256", "sourceFrameAvailable", "referenceName", "sourceVideo", "warnings", "approvedAt", "createdAt", "deadlineAt", "error", "delivery", "width", "height") if key in row}
         result.setdefault("mode", "video")
         result["selectedOption"] = (row.get("selection") or {}).get("name")
         result["reviewUrl"] = "/?task=" + quote(row["delivery"]["taskId"]) if row.get("delivery", {}).get("taskId") else None
@@ -428,24 +463,7 @@ class ThumbnailDesignBridge:
         request_key = body.get("idempotencyKey", body.get("requestKey", ""))
         if not isinstance(request_key, str) or (request_key and not re.fullmatch(ID, request_key)):
             raise DesignError("Use a bounded thumbnail request key.", 400)
-        source = body.get("sourceImage")
-        source_bytes, source_mime, source_name = None, None, None
-        if source is not None:
-            if not isinstance(source, dict):
-                raise DesignError("Choose a PNG, JPG or WebP post reference.", 400)
-            source_name = text(source.get("name", "post-reference"), 180, "post reference name", True)
-            encoded = source.get("dataUrl")
-            match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)", encoded or "") if isinstance(encoded, str) and len(encoded) < 22 * 1024 * 1024 else None
-            if not match:
-                raise DesignError("Use a PNG, JPG or WebP post reference up to 15 MB.", 400)
-            try:
-                source_bytes = base64.b64decode(match[2], validate=True)
-            except ValueError:
-                raise DesignError("The post reference encoding is invalid.", 400)
-            source_mime = match[1]
-            valid = (source_mime == "image/png" and source_bytes.startswith(b"\x89PNG\r\n\x1a\n")) or (source_mime == "image/jpeg" and source_bytes.startswith(b"\xff\xd8\xff")) or (source_mime == "image/webp" and source_bytes.startswith(b"RIFF") and source_bytes[8:12] == b"WEBP")
-            if not valid or not 16 <= len(source_bytes) <= 15 * 1024 * 1024:
-                raise DesignError("The post reference bytes do not match its image format.", 400)
+        source_bytes, source_mime, source_name = self._parse_source(body.get("sourceImage"), "post reference")
         with self.lock:
             if linked:
                 linked = self._linked_source(body["sourceVideo"], channel)
@@ -510,9 +528,34 @@ class ThumbnailDesignBridge:
             self._save(data); self.resume_pending()
             return {"job": self._public_job(row)}
 
+    @staticmethod
+    def _parse_source(source, label):
+        """The owner's reference picture (a person or subject the thumbnails must follow), as (bytes, mime, name);
+        (None, None, None) when there is none."""
+        if source is None:
+            return None, None, None
+        if not isinstance(source, dict):
+            raise DesignError(f"Choose a PNG, JPG or WebP {label}.", 400)
+        name = text(source.get("name", label.replace(" ", "-")), 180, label + " name", True)
+        encoded = source.get("dataUrl")
+        match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)", encoded or "") if isinstance(encoded, str) and len(encoded) < 22 * 1024 * 1024 else None
+        if not match:
+            raise DesignError(f"Use a PNG, JPG or WebP {label} up to 15 MB.", 400)
+        try:
+            data = base64.b64decode(match[2], validate=True)
+        except ValueError:
+            raise DesignError(f"The {label} encoding is invalid.", 400)
+        mime = match[1]
+        valid = (mime == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n")) or (mime == "image/jpeg" and data.startswith(b"\xff\xd8\xff")) or (mime == "image/webp" and data.startswith(b"RIFF") and data[8:12] == b"WEBP")
+        if not valid or not 16 <= len(data) <= 15 * 1024 * 1024:
+            raise DesignError(f"The {label} bytes do not match its image format.", 400)
+        return data, mime, name
+
     def approve_video(self, body):
         if body.get("approval") is not True:
             raise DesignError("Use Approve video & create thumbnails to approve this exact video version.", 400)
+        # the owner's own reference picture, if any: it replaces the frame taken from the video as the subject reference
+        source_bytes, source_mime, source_name = self._parse_source(body.get("sourceImage"), "thumbnail reference")
         title = text(body.get("title", ""), 200, "the exact thumbnail title", "sourceVideo" not in body)
         subtitle = text(body.get("subtitle", ""), 200, "subtitle")
         direction = text(body.get("instructions", ""), 2000, "video art direction")
@@ -543,13 +586,19 @@ class ThumbnailDesignBridge:
             template_file = inside(self.base / "templates", template["path"])
             if digest(template_file) != template["sha256"]:
                 raise DesignError("The saved template changed. Upload a new version.", 409)
+            size = [body.get("width", template["width"]), body.get("height", template["height"])]   # 9:16 for YouTube + Facebook, 3:4 for Instagram
+            if size not in DIMENSIONS:
+                raise DesignError("Choose 1080×1920, 1080×1440 or 1920×1080.", 400)
             identity = {"folder": body["folder"], "taskId": task.get("id") if task else None, "video": video, "templateId": template["id"], "title": title, "subtitle": subtitle, "direction": direction, "channel": channel}
+            if size != [template["width"], template["height"]]: identity["size"] = size
             if linked: identity["sourceVideo"] = {k: linked[k] for k in ("sourceId", "titleRevision")}
+            if source_bytes: identity["reference"] = hashlib.sha256(source_bytes).hexdigest()   # a new reference picture is a new request
             signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
             prior = next((j for j in data["jobs"].values() if j.get("signature") == signature), None)
             if prior and not (body.get("retry") is True and prior["status"] == "failed"):
                 return {"job": self._public_job(prior)}
-            if any(j["folder"] == body["folder"] and j["status"] in ("dispatching", "watching", "delivery-error", "uncertain") for j in data["jobs"].values()):
+            if any(j["folder"] == body["folder"] and j["status"] in ("dispatching", "watching", "delivery-error", "uncertain")
+                   and [j.get("width"), j.get("height")] in (size, [None, None]) for j in data["jobs"].values()):   # one request per size at a time
                 raise DesignError("This video already has an accepted or uncertain thumbnail request. Open its status first.", 409)
             self.engine.ensure_engine()
             caps = self._request("GET", BASE + "/capabilities")
@@ -562,15 +611,22 @@ class ThumbnailDesignBridge:
             shutil.copyfile(template_file, frozen_template)
             if digest(frozen_template) != template["sha256"]:
                 raise DesignError("Template changed while freezing this request.", 409)
-            row = {"id": ident, "status": "dispatching", "progress": 0, "signature": signature, "folder": body["folder"], "taskId": task.get("id") if task else None, "channel": channel, "title": title, "templateId": template["id"], "templateRevision": template["revision"], "templateSha256": template["sha256"], "videoPath": video["path"], "videoSha256": video["sha256"], "videoSize": video["size"], "approvedAt": time.time(), "deadlineAt": time.time() + self.watch_seconds}
+            row = {"id": ident, "status": "dispatching", "progress": 0, "signature": signature, "folder": body["folder"], "taskId": task.get("id") if task else None, "channel": channel, "title": title, "templateId": template["id"], "templateRevision": template["revision"], "templateSha256": template["sha256"], "videoPath": video["path"], "videoSha256": video["sha256"], "videoSize": video["size"], "approvedAt": time.time(), "deadlineAt": time.time() + self.watch_seconds, "width": size[0], "height": size[1]}
             row.update(subtitle=subtitle, instructions=direction)
-            payload = {"requestId": ident, "title": title, "subtitle": subtitle, "width": template["width"], "height": template["height"], "instructions": template["instructions"] + ("\nVideo-specific direction: " + direction if direction else ""), "template": {"name": template["name"], "dataUrl": "data:" + template["mimeType"] + ";base64," + base64.b64encode(frozen_template.read_bytes()).decode()}, "provenance": {k: row[k] for k in ("folder", "taskId", "channel", "templateId", "templateRevision", "templateSha256", "videoPath", "videoSha256", "approvedAt")}}
+            payload = {"requestId": ident, "title": title, "subtitle": subtitle, "width": size[0], "height": size[1], "instructions": template["instructions"] + ("\nVideo-specific direction: " + direction if direction else ""), "template": {"name": template["name"], "dataUrl": "data:" + template["mimeType"] + ";base64," + base64.b64encode(frozen_template.read_bytes()).decode()}, "provenance": {k: row[k] for k in ("folder", "taskId", "channel", "templateId", "templateRevision", "templateSha256", "videoPath", "videoSha256", "approvedAt")}}
             if linked:
                 row["sourceVideo"] = linked
                 payload["provenance"]["sourceVideo"] = linked
             if len(payload["instructions"]) > 3000:
                 raise DesignError("Keep combined template and video direction under 3000 characters.", 400)
-            frame = self._frame(base / video["path"], frozen / "source-frame.jpg")
+            if source_bytes:                                  # the owner's reference picture stands in for the video frame
+                reference = frozen / ("reference." + {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[source_mime])
+                reference.write_bytes(source_bytes)
+                row.update(sourceImagePath=str(reference), sourceImageSHA256=hashlib.sha256(source_bytes).hexdigest(), referenceName=source_name)
+                payload["provenance"]["referenceSha256"] = row["sourceImageSHA256"]
+                frame = {"name": source_name, "dataUrl": "data:" + source_mime + ";base64," + base64.b64encode(source_bytes).decode()}
+            else:
+                frame = self._frame(base / video["path"], frozen / "source-frame.jpg")
             if frame:
                 payload["sourceFrame"] = frame
             row["sourceFrameAvailable"] = bool(frame)
@@ -687,7 +743,7 @@ class ThumbnailDesignBridge:
         marker = "out:" + folder
         task = next((t for t in self.load_tasks().get("tasks", []) if marker in (t.get("note") or "").split()), None)
         if not task:
-            code, result = self.task_action({"action": "add", "title": "Post cover · " + row["title"], "team": "Creative", "agent": "thumbnail-designer", "status": "review", "kind": "approval", "note": marker + " thumbnail-request:" + row["id"] + (" channel:" + row["channel"] if row["channel"] else ""), "subtitle": "4 separate post cover choices · choose one, then final OK"})
+            code, result = self.task_action({"action": "add", "title": "Post cover · " + row["title"], "team": "Design", "agent": "poster-designer", "status": "review", "kind": "approval", "note": marker + " thumbnail-request:" + row["id"] + (" channel:" + row["channel"] if row["channel"] else ""), "subtitle": "4 separate post cover choices · choose one, then final OK"})
             if code != 201 or not result.get("added", {}).get("id"):
                 raise DesignError("Post files are ready but the review task could not be registered.", 502)
             task = result["added"]
@@ -768,7 +824,7 @@ class ThumbnailDesignBridge:
         marker = "out:" + folder
         task = next((t for t in self.load_tasks().get("tasks", []) if marker in (t.get("note") or "").split()), None)
         if not task:
-            code, result = self.task_action({"action": "add", "title": "Final · " + row["title"], "team": "Creative", "agent": "thumbnail-designer", "status": "review", "kind": "approval", "note": marker + " thumbnail-request:" + row["id"] + (" source-task:" + row["taskId"] if row.get("taskId") else ""), "subtitle": "Approved video + 4 Codex thumbnail options · final OK required"})
+            code, result = self.task_action({"action": "add", "title": "Final · " + row["title"], "team": "Design", "agent": "codex-graphic-designer", "status": "review", "kind": "approval", "note": marker + " thumbnail-request:" + row["id"] + (" source-task:" + row["taskId"] if row.get("taskId") else ""), "subtitle": "Approved video + 4 Codex thumbnail options · final OK required"})
             if code != 201:
                 raise DesignError("Files are ready, but the final review task could not be registered.", 502)
             task = result["added"]
@@ -853,7 +909,11 @@ class ThumbnailDesignBridge:
                 except Exception:
                     return "The selected post thumbnail or its verified package changed. Reopen the current version before final OK."
                 return None
-            newer = any(j["folder"] == row["folder"] and j["videoPath"] == row["videoPath"] and j["approvedAt"] > row["approvedAt"] for j in jobs.values())
+            # only a newer request of the same size replaces this one: a video has a 9:16 set and a 3:4 set side by side
+            templates = self._load()["templates"]
+            size = lambda j: [j.get("width"), j.get("height")] if j.get("width") else [(templates.get(j.get("templateId")) or {}).get(k) for k in ("width", "height")]
+            newer = any(j["folder"] == row["folder"] and j.get("videoPath") == row["videoPath"] and (j.get("approvedAt") or 0) > row["approvedAt"]
+                        and size(j) == size(row) and j.get("status") != "failed" for j in jobs.values())
             if newer:
                 return "A newer thumbnail revision was requested for this video. Review that version before final approval."
             destination = self.root / "out" / name
@@ -980,6 +1040,11 @@ class ThumbnailDesignBridge:
                     content = file.read_bytes()
                     if hashlib.sha256(content).hexdigest() != item["sha256"]:
                         raise DesignError("The thumbnail changed while it was opened.", 409)
+                if query.get("phone") == ["1"] and query.get("download") != ["1"]:
+                    small = small_image(file, item["sha256"])     # keyed by the verified bytes: a changed file gets a new preview
+                    if small:
+                        send_preview(handler, small, method)
+                        return True
                 handler.send_response(200)
                 handler.send_header("Content-Type", "image/png")
                 handler.send_header("Content-Length", str(len(content)))
@@ -999,6 +1064,10 @@ class ThumbnailDesignBridge:
                 file = inside(self.base / "templates", row["path"])
                 if digest(file) != row["sha256"]:
                     raise DesignError("Template changed; upload a new version.", 409)
+                small = small_image(file, row["sha256"]) if query.get("phone") == ["1"] else None
+                if small:
+                    send_preview(handler, small, method)
+                    return True
                 handler.send_static(str(file))
                 return True
             else:

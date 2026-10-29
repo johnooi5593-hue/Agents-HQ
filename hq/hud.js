@@ -60,6 +60,7 @@
     mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
     send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
     close: '<path d="M18 6 6 18M6 6l12 12"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     list: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     check: '<path d="m5 12 5 5L20 7"/>',
@@ -219,6 +220,8 @@
     try {
       const [s, t] = await Promise.all([getJSON("/api/status"), getJSON("/api/teams")]);
       state.status = s; state.teams = t.teams || state.teams;
+      // an open video card follows its package live: Codex's progress, delivered thumbnails, READY
+      if (rv.open && rv.pkgName && JSON.stringify(((s.out || {})[rv.pkgName] || {}).pkg || null) !== JSON.stringify(rv.pkg || null)) setTimeout(renderReview, 0);
       if (s.boot && state.boot && s.boot !== state.boot && !state.reloadDue) state.reloadDue = true;   // HQ restarted: load its new app
       state.boot = state.boot || s.boot;
       if (state.reloadDue) {                                // not in the middle of something: typing, an upload, a video, voice
@@ -296,6 +299,40 @@
     const key = t ? t.key : /chief|lead|office/i.test(String(team)) ? "chief" : /brain/i.test(String(team)) ? "brain" : String(team || "office").toLowerCase();
     addNotif({ id: "l" + Date.now(), ts: Date.now(), team: t ? t.name : String(team || "Office"), teamKey: key, title: title || (t ? t.name : String(team || "Agents HQ")), body: body || "", kind: opt.kind || "info", bad: !!opt.bad }, true);
   }
+  // a whole card, or a sermon poster task: tasks to Deleted, folders off the board, its Codex Studio projects to the
+  // Studio's Trash, and (if the owner says so) the Studio's generated pictures removed to free space
+  function deleteGroup(c) {
+    const nT = c.ids.length, nF = c.folders.length;
+    const what = [nT && `${nT} task${nT === 1 ? "" : "s"}`, nF && `${nF} folder${nF === 1 ? "" : "s"}`].filter(Boolean).join(" and ");
+    if (!confirm(`Delete “${c.title}”?\n\n${what} go to the Deleted tab (Restore brings them back).` + (c.studio ? "\nIts Codex Studio projects go to the Studio's Trash." : ""))) return;
+    const clean = c.studio && confirm("Also free the space in Codex Studio?\n\nOK: the pictures Codex generated for these posters are deleted for good (the photos and references you uploaded are kept). This can't be undone.\nCancel: keep them in the Studio's Trash.");
+    postJSON("/api/tasks", { action: "remove-group", ids: c.ids, folders: c.folders, studio: c.studio, clean }).then((r) => {
+      toast("chief", "Deleted", `${r.removed} task${r.removed === 1 ? "" : "s"} to Deleted${r.folders ? `, ${r.folders} folder${r.folders === 1 ? "" : "s"} off the board` : ""}${c.studio ? `, ${r.studioTrashed} Studio project${r.studioTrashed === 1 ? "" : "s"} ${clean ? "trashed and cleaned" : "to the Studio's Trash"}` : ""}.`
+        + (r.studioFailed ? ` ${r.studioFailed} couldn't be trashed (is the Studio running?).` : ""), r.studioFailed ? { bad: true } : {});
+      refresh();
+    }).catch((e) => toast("chief", "Delete", e.message || "could not delete", { bad: true }));
+  }
+  function deleteTask(id) {                                 // no "are you sure" from ⋯: the toast has Undo instead
+    const tk = ((state.status && state.status.tasks) || []).find((x) => x.id === id);
+    if (tk && /sermon-studio-/.test(tk.note || "")) {         // a sermon poster: its Studio project goes too (asks first)
+      const older = (state.older || {})[id] || [];
+      deleteGroup({ ids: [id, ...older.filter((x) => x.task).map((x) => x.task)], folders: older.filter((x) => !x.task).map((x) => x.name), title: taskTitle(tk), studio: true });
+      return;
+    }
+    if (state.openDetail === id) state.openDetail = null;
+    const older = (state.older || {})[id] || [], ids = [id, ...older.filter((x) => x.task).map((x) => x.task)], folders = older.filter((x) => !x.task).map((x) => x.name);
+    (async () => {                                          // the task, and every older version of the same project with it
+      let r = null; for (const x of ids) r = (await postJSON("/api/tasks", { action: "remove", id: x }).catch(() => null)) || r;
+      if (folders.length) await postJSON("/api/tasks", { action: "folder-hide", folders }).catch(() => null);
+      await refresh();
+      const all = ids.length + folders.length;
+      if (r) undoToast(`Deleted${all > 1 ? ` all ${all} versions of` : ""} "${shortTask(r.task.title, 44)}". It is in the Deleted tab; files were not touched.`, async () => {
+        for (const x of ids) await postJSON("/api/tasks", { action: "restore", id: x }).catch(() => null);
+        if (folders.length) await postJSON("/api/tasks", { action: "folder-show", folders }).catch(() => null);
+        await refresh(); toast("chief", "Board", "It is back on the board.");
+      });
+    })();
+  }
   function trimToasts(host) {                              // the oldest go first; an upload's card stays until it is done
     const rest = [...host.children].filter((n) => !n.classList.contains("upload"));
     rest.slice(isPhone() ? 2 : 3).forEach((n) => n.remove());
@@ -359,6 +396,7 @@
     $("#logout-form").hidden = !(st && st.auth);
     const lb = $("#lead-log"), busy = !!((st && st.desk && st.desk.busy) || state.run.id);
     lb.classList.toggle("busy", busy); $("#tab-lead").classList.toggle("busy", busy);
+    const stopAll = $("#lead-stop"); if (stopAll) stopAll.hidden = !(st && st.desk && st.desk.busy);
     const outside = state.activity && state.activity["chief of staff"];   // Claude working in another window or folder
     if (!state.run.id) $("#lead-text").textContent = busy ? "Lead · working…" : outside ? "Lead · working: " + shortTask(outside, 60) : state.lastReply ? "Lead · " + shortTask(state.lastReply, 60) : "Lead · idle";
   }
@@ -686,9 +724,32 @@
   function taskTitle(t) { return t ? t.title : ""; }
   // a video's package: which steps it needs, the picks, READY (the server's video_package.py)
   const PKG_STEPS = { video: "Video", caption: "Title + caption", thumbnail: "Thumbnail" };
+  // quick feelings for the thumbnail step: one tap adds the words to the feeling box
+  const PK_MOODS = [["warm and hopeful", "暖心 Warm"], ["joyful and fun, bright colours", "欢乐 Joyful"], ["calm and peaceful, soft light", "平静 Calm"],
+    ["emotional and touching", "感人 Touching"], ["bold and powerful, high contrast", "有力 Bold"], ["serious and reflective, darker tones", "深思 Reflective"],
+    ["cute and playful, for families and children", "可爱 Playful"], ["faith and worship, light from above", "信仰 Faith"]];
   const PKG_PRESETS = [["video", "Video only"], ["caption", "Video + caption"], ["full", "Full set"]];
-  const pkgSteps = (pkg) => pkg.stages.map((s, i) => `<span class="pk-step ${pkg.done[s] ? "ok" : ""}">${pkg.done[s] ? svg("check") : `<i>${i + 1}</i>`}${PKG_STEPS[s]}</span>`).join("");
+  // a step being made or remade: a spinner, what is happening, its % and a bar that fills (an estimate says "about")
+  const pkgProg = (label, pct, estimate) => { const p = Math.max(1, Math.min(99, Math.round(pct || 0))); return `<div class="pk-prog"><div class="pk-prog-top"><span class="spin"></span><span>${label}</span><b>${estimate ? "about " : ""}${p}%</b></div><div class="up-bar"><i style="width:${p}%"></i></div></div>`; };
+  // a step's tag: green when done; Thumbnail turns orange once Codex has delivered and the owner still has to pick one
+  const pkgSteps = (pkg) => pkg.stages.map((s, i) => {
+    const ts = Object.values(pkg.thumbs || { main: pkg.thumb }).filter(Boolean), busyT = ts.filter((x) => ["watching", "dispatching"].includes(x.status));
+    const picking = s === "thumbnail" && !pkg.done[s] && !busyT.length && ts.some((x) => x.status === "delivered" && !x.picked);
+    const making = pkg.done[s] ? null : (s === "caption" ? (pkg.captionsBusy ? pkg.captionsProgress || 0 : null) : s === "thumbnail" && busyT.length ? Math.min(...busyT.map((x) => x.progress || 0)) : null);
+    if (making != null) return `<span class="pk-step making" style="--p:${Math.max(3, Math.round(making))}%"><span class="spin"></span>${PKG_STEPS[s]} · ${Math.round(making)}%</span>`;
+    return `<span class="pk-step ${pkg.done[s] ? "ok" : picking ? "pick" : ""}" ${picking ? 'title="Thumbnails are ready: open the video and pick one"' : ""}>${pkg.done[s] ? svg("check") : `<i>${i + 1}</i>`}${PKG_STEPS[s]}${picking ? " · pick one" : ""}</span>`;
+  }).join("");
   const readyTag = '<span class="ready-tag">READY</span>';
+  // board cards are closed until the owner opens one; the ones opened stay open on this device (also after a reload)
+  function openCards() {
+    if (!state.openCards) { let saved = []; try { saved = JSON.parse(localStorage.getItem("hq-open-cards") || "[]"); } catch (e) { /* private window */ } state.openCards = new Set(Array.isArray(saved) ? saved : []); }
+    return state.openCards;
+  }
+  function saveOpenCards() { try { localStorage.setItem("hq-open-cards", JSON.stringify([...openCards()].slice(-200))); } catch (e) { /* private window */ } }
+  const postedTag = '<span class="posted-tag" title="Posted to social media">POSTED</span>';
+  const PLAT_NAME = { facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
+  const schedWhen = (s) => { const d = new Date(s.when * 1000); return `${DOW[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} ${fmtTime(pad2(d.getHours()) + ":" + pad2(d.getMinutes()))}`; };
+  const schedTag = (s) => `<span class="sched-tag" title="Scheduled: ${esc(s.platforms.map((p) => PLAT_NAME[p] || p).join(", "))}">SCHEDULED · ${esc(schedWhen(s))}</span>`;
   function editChooser(t) {                                 // Edit on new footage: the owner picks the package first
     return `<div class="task-detail edit-pick"><div class="td-l">What does this video need?</div><div class="ep-opts">${PKG_PRESETS.map(([k, l]) => `<button class="btn sm ${k === "full" ? "primary" : ""}" data-edit-go="${esc(t.id)}:${k}" type="button">${l}</button>`).join("")}</div>
       <div class="hint">Video only: just the edit. Video + caption: 3 title + caption sets to pick from. Full set: then Codex thumbnails from the title you pick. You can change it later on the video's card.</div>
@@ -705,23 +766,27 @@
       if (live === "working") {                             // the team's own % when it reports one, else HQ's estimate from similar jobs
         const own = t.progress != null && t.progress < 100 ? t.progress : null, p = Math.max(own || 0, t.live.progress || 0);
         glyph = '<span class="spin"></span>'; meta = `working · ${p}% · ` + (t.live.step || t.subtitle || "the lead is on it");
-        act = `<span title="${own != null ? "As reported by the team" : "About this far, from how long similar jobs took"}">${ring(p)}</span>`;
+        act = `<span title="${own != null ? "As reported by the team" : "About this far, from how long similar jobs took"}">${ring(p)}</span><button class="btn sm stop-btn" data-stop-task="${esc(t.id)}" type="button" title="Stop this job">■ Stop</button>`;
       }
-      else if (live === "queued") { glyph = '<span class="wait-g" title="Waiting for the lead">…</span>'; meta = "waiting in line · starts when a slot is free or its video's earlier job is done"; act = '<span class="chev">›</span>'; }
+      else if (live === "queued") { glyph = '<span class="wait-g" title="Waiting for the lead">…</span>'; meta = "waiting in line · starts when a slot is free or its video's earlier job is done"; act = `<button class="btn sm stop-btn" data-stop-task="${esc(t.id)}" type="button" title="Take it out of line">■ Stop</button>`; }
       else { glyph = '<span class="stop-g" title="Nothing is working on this now">❚❚</span>'; meta = "stopped · nothing is working on it" + (t.subtitle ? " · last note: " + t.subtitle : ""); act = `<button class="btn sm blue" data-run="${esc(t.id)}" type="button" title="Start this task again">Run again</button>`; cls = "stopped"; }
     }
     else if (t.status === "review" && /(?:^|\s)Blocked:/.test(t.note || "")) {   // the lead parked it as blocked: Run again once the block is lifted
       glyph = '<span class="stop-g" title="The lead could not finish this">❚❚</span>'; meta = "blocked · " + t.note.split(/(?:^|\s)Blocked:/).pop().trim().replace(/\s+/g, " "); cls = "stopped";
       act = `<button class="btn sm blue" data-run="${esc(t.id)}" type="button" title="Start this task again">Run again</button>`;
     }
-    else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : ""; }
-    else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = t.subtitle || timeAgo(t.done_at || t.updated); act = canReedit(t) ? `<button class="btn sm" data-reedit="${esc(t.id)}" type="button" title="Make changes: a new version goes back to the team">Re-edit</button>` : '<span class="chev">›</span>'; }
+    else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : "";
+      // a plain work task (no video folder): approving it just marks it done, so it gets its own Approve next to Review
+      if (!["approval", "post"].includes(t.kind) && !/(?:^|\s)out:/.test(t.note || "")) act += `<button class="btn primary sm" data-approve="${esc(t.id)}" type="button" title="Approve: this task is done">Approve</button>`; }
+    else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = (t.scheduled ? `scheduled ${schedWhen(t.scheduled)} on ${t.scheduled.platforms.map((x) => PLAT_NAME[x] || x).join(", ")} · ` : "") + ((t.posted || []).length ? "posted to " + t.posted.map((x) => ({ facebook: "Facebook", instagram: "Instagram", youtube: "YouTube" })[x] || x).join(", ") + " · " : "") + (t.subtitle || timeAgo(t.done_at || t.updated)); act = canReedit(t) ? `<button class="btn sm" data-reedit="${esc(t.id)}" type="button" title="Make changes: a new version goes back to the team">Re-edit</button>` : '<span class="chev">›</span>'; }
     else if (t.status === "cancelled") { glyph = '<span class="cx-g">✕</span>'; meta = "cancelled " + timeAgo(t.updated); act = `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore</button>`; cls = "cancelled"; }
     else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now">Edit</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
     const title = t.date && !["done", "cancelled"].includes(t.status) && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
     // every task has its own ⋯: channel, move, cancel, delete (clicking the title of a task with a video opens its review instead)
     const manage = `<button class="btn sm mng ${state.openDetail === t.id ? "on" : ""}" data-manage="${esc(t.id)}" type="button" title="Chat and manage: channel, move, cancel, delete" aria-label="Chat and manage this task" aria-expanded="${state.openDetail === t.id}">⋯</button>`;
     if (state.flash === t.id) cls += " flash";
+    if (t.status === "done" && t.scheduled) cls += " is-sched";                   // its post waits for its time: blue
+    else if (t.status === "done" && (t.posted || []).length) cls += " is-posted";   // its video went out: purple, like the card
     if (t.asks) cls += " asks";
     const ready = t.final && !["done", "cancelled"].includes(t.status);      // its video, cover and caption are all there
     if (ready) cls += " final-ready";
@@ -768,6 +833,7 @@
     const on = tool.status === "connected";
     const posting = tool.via === "posting";                 // Facebook, Instagram, YouTube: connected under Accounts for posting
     const st = on ? `Connected · ${esc(posting ? tool.detail || "posting" : tool.via || "MCP")}` : posting ? "Not connected · tap to connect" : "Not connected";
+    if (tool.url) return `<a class="tool ia" href="${esc(tool.url)}" title="Open ${esc(tool.name)}" style="text-decoration:none"><span class="ic" style="background:${bg}">${esc(glyph)}</span><div style="min-width:0;flex:1"><div class="nm">${esc(tool.name)}</div><div class="st"><i class="d"></i>Open ›</div></div></a>`;   // a Studio the team runs
     return `<div class="tool ${posting ? "ia" : ""}" title="${esc(tool.name)} · ${st}" ${posting ? "data-rv-accounts" : ""}><span class="ic" style="background:${bg}">${esc(glyph)}</span><div style="min-width:0;flex:1"><div class="nm">${esc(tool.name)}</div><div class="st ${on ? "" : "off"}"><i class="dot"></i><span class="tx">${st}</span></div></div></div>`;
   }
   function skillState(t, s, run) {                         // a skill runs while its agent runs; its % climbs 2-4 points a second
@@ -860,7 +926,7 @@
     for (const m of p.querySelectorAll(".task-detail .msgs")) m.scrollTop = !was || was.end ? m.scrollHeight : was.top;
     for (const k of saved) { const x = p.querySelector("#" + k.id); if (!x) continue; x.value = k.v; if (k.focus) { x.focus(); try { x.setSelectionRange(k.a, k.b); } catch (e) { /* not a text field */ } } }
   }
-  function renderBoard() { const p = $("#task-board"); keepTyping(p, drawBoard); }
+  function renderBoard() { if (state.swiping) return; const p = $("#task-board"); keepTyping(p, drawBoard); }   // never under a finger mid-swipe
   function drawBoard() {
     const p = $("#task-board"), st = state.status || {}, allTasks = st.tasks || [];
     if (state.chFilter !== "all" && state.chFilter !== "@office" && !chList().some((c) => c.key === state.chFilter)) state.chFilter = "all";
@@ -915,7 +981,7 @@
     const folderTitle = (g) => (g.project ? `Sermon poster · ${g.project.slice(0, 8)}` : g.name.replace(/[-_]+/g, " "));
     const folderThumb = ({ name, info }) => {               // cover.jpg, else the first picture in the folder
       const pic = info.cover ? "cover.jpg" : (info.files || []).find((f) => /\.(jpe?g|png)$/i.test(f) && !f.startsWith("_"));
-      return pic ? `<img class="thumb" src="/files/out/${encodeURIComponent(name)}/${encodeURIComponent(pic)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
+      return pic ? `<img class="thumb" src="${phoneImg(`/files/out/${encodeURIComponent(name)}/${encodeURIComponent(pic)}`)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
     };
     const approvalRow = (g, inGroup) => {
       const { name, info } = g, all = g.names.join("|"), key = "out:" + name, open = state.openDetail === key, fixed = name.startsWith("thumbnail-final-");
@@ -949,18 +1015,33 @@
         const rows = pkg ? all.filter((r) => r.t && !/(?:^|\s)thumbnail-request:/.test(r.t.note || "")) : all;
         const folder = all.find((r) => r.folder), ts = rows.filter((r) => r.t).map((r) => r.t);
         const byTitle = k.startsWith("title:"), anyReady = ts.some((t) => t.final);
-        const shut = (byTitle ? !(state.openTitles || new Set()).has(k) : (state.closedVideos || new Set()).has(k)) && !rows.some((r) => state.openDetail === (r.t ? r.t.id : "out:" + k));
+        const shut = !openCards().has(k) && !rows.some((r) => state.openDetail === (r.t ? r.t.id : "out:" + k));   // every card starts closed
         const asks = ts.filter((t) => t.asks).length, blocked = ts.filter((t) => /(?:^|\s)Blocked:/.test(t.note || "")).length;
         const meta = [rows.length && `${rows.length} task${rows.length === 1 ? "" : "s"}`, asks && `${asks} ${asks === 1 ? "asks" : "ask"} you`, blocked && `${blocked} blocked`, byTitle && anyReady && "ready to post"].filter(Boolean).join(" · ");
         const title = folder ? folderTitle(folder.folder) : byTitle ? all[0].groupTitle : k.replace(/[-_]+/g, " ");
         const glow = (pkg && pkg.ready) || (byTitle && anyReady);
-        const open = pkg ? `<button class="btn sm ${pkg.ready ? "ready" : "primary"}" data-rv-folder="out/${esc(k)}" type="button">${pkg.ready ? "Post" : "Open"}</button>` : "";
+        const sched = !glow && (ts.find((t) => t.scheduled) || {}).scheduled;
+        const posted = !glow && !sched && ts.length && ts.every((t) => t.status === "done") && ts.some((t) => (t.posted || []).length);
+        const open = (pkg ? `<button class="btn sm ${pkg.ready ? "ready" : "primary"}" data-rv-folder="out/${esc(k)}" type="button">${pkg.ready ? "Post" : "Open"}</button>` : "")
+          + `<button class="btn sm mng vg-del" data-del-card="${esc(k)}" type="button" title="Delete this whole card" aria-label="Delete this whole card">${svg("trash")}</button>`;
         const head = byTitle ? `<span class="thumb vg-count">${rows.length}</span>` : folderThumb({ name: k, info });
-        return `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? '<span class="vg-chev">›</span>' : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
+        const folderNames = [...new Set([...(st.out && st.out[k] ? [k] : []), ...all.filter((r) => r.folder).flatMap((r) => r.folder.names || [r.folder.name])])];
+        (state.cardItems ||= {})[k] = { ids: ts.map((t) => t.id), folders: folderNames, title,
+          studio: [...ts.map((t) => t.note || ""), ...folderNames].some((x) => /sermon-studio-/.test(x)) };
+        return `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${posted ? "is-posted" : ""} ${sched ? "is-sched" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : sched ? schedTag(sched) : posted ? postedTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? '<span class="vg-chev">›</span>' : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
       }).join("");
     };
-    const videoOf = (t) => { const m = /source-task:(\S+)/.exec(t.note || ""), src = m && allTasks.find((x) => x.id === m[1]); return (src && outOf(src)) || outOf(t); };   // a thumbnail package joins its video
-    const taskItems = (list) => list.map((t) => ({ key: videoOf(t), t, row: () => taskRow(t) }));
+    const videoOf = (t) => { const m = /source-task:(\S+)/.exec(t.note || ""), src = m && allTasks.find((x) => x.id === m[1]); return (src && (src.video || outOf(src))) || t.video || outOf(t); };   // a thumbnail package joins its video
+    // a task without its own video (a post cover, a loose fix) joins the project whose task has the same title after the "·"
+    const coreTitle = (t) => String(t.title || "").split("·").pop().replace(/\s*[（(][^)）]*[)）]?\s*$/, "").trim();
+    const taskItems = (list) => {
+      const items = list.map((t) => ({ key: videoOf(t), t, row: () => taskRow(t) })), loose = (k) => !k || /^thumbnail-final-/.test(k), byCore = {};
+      for (const it of items) if (!loose(it.key) && coreTitle(it.t)) byCore[coreTitle(it.t)] ||= it.key;
+      for (const it of items) if (loose(it.key) && byCore[coreTitle(it.t)]) it.key = byCore[coreTitle(it.t)];
+      const keys = [...new Set(items.map((it) => it.key).filter(Boolean))];   // "<video>" and "<video>-cover-post" are one project
+      for (const it of items) { const longer = it.key && keys.find((k) => k.startsWith(it.key + "-")); if (longer) it.key = longer; }
+      return items;
+    };
     const folderItems = (list) => list.map((g) => ({ key: g.name, folder: g, row: (inGroup) => approvalRow(g, inGroup) }));
     const deletedRow = (title, ch, when, restore, extra = "") => `<div class="trow cancelled"><span class="g"><span class="cx-g">✕</span></span><div class="tt"><div class="title">${esc(title)}</div><div class="meta">${chPill(ch)}<span>deleted ${esc(when ? timeAgo(when) : "")}${extra}</span></div></div><div class="act"><button class="btn sm" ${restore} type="button">Restore</button></div></div>`;
     const scrollTop = p.querySelector(".pbody") ? p.querySelector(".pbody").scrollTop : 0;
@@ -999,6 +1080,14 @@
     if ($("#task-team") && state.addTeam) $("#task-team").value = state.addTeam;
     p.querySelector(".pbody").scrollTop = scrollTop;
   }
+  async function stopLead(body, what) {                   // the owner's Stop: a task's job, or everything the lead is doing
+    if (!confirm(`Stop ${what}?\n\nWhat it has already made stays in its folder. The rest won't be finished; you can press Run again later.`)) return;
+    try {
+      const r = await postJSON("/api/stop", body);
+      toast("chief", "Stopped", r.stopped.length ? `${r.stopped.length} job${r.stopped.length === 1 ? "" : "s"} stopped.` : "Nothing was running.");
+    } catch (e) { toast("chief", "Stop", e.message || "could not stop", { bad: true }); }
+    await refresh();
+  }
   async function taskAction(body, okText) {
     try { const r = await postJSON("/api/tasks", body); if (okText) toast("chief", "Board", okText); if (r.warning) toast("chief", "Board", r.warning, { bad: true }); await refresh(); return r; }
     catch (e) { toast("chief", "Board", e.message || "could not update the board", { bad: true }); }
@@ -1007,6 +1096,23 @@
     try { await postJSON("/api/approve", { name }); toast("creative", "Approved", `${name} is in approved/ for you to publish.`); await refresh(); }
     catch (e) { toast("creative", "Approve", e.message || "could not approve", { bad: true }); }
   }
+  // All-hands meeting now (user menu): everyone walks to the hall and the heads really discuss how to improve (one AI job)
+  async function meetingNow(topic, typed) {                 // typed: the owner wrote /meeting, so no extra question
+    closeMenus();
+    if (!typed && !confirm("Start an all-hands meeting now?\n\nEveryone walks to the 6F Meeting Hall, and the team heads go through your latest videos, posts and designs and write how to improve. That's one AI job (about one small task's worth of tokens). Nothing is posted.")) return;
+    try {
+      const r = await postJSON("/api/meeting", { action: "start", topic: topic || "" });
+      const O = window.HQ_OFFICE; if (O && O.meeting) { O.meeting("start", 15); if (O.showFloor) O.showFloor(6); }
+      toast("chief", "Meeting started", `The heads are discussing. Their notes go up on the hall's projector and into ${r.file}.`);
+      refresh();
+    } catch (e) { toast("chief", "Meeting", e.message || "could not start the meeting", { bad: true }); }
+  }
+  async function reviewSwitch() {
+    try { const cur = await getJSON("/api/meeting"); const r = await postJSON("/api/meeting", { action: "review", on: !cur.reviewOn }); toast("chief", "Daily review", r.reviewOn ? `On: the heads write how to improve every day at ${r.reviewAt}.` : "Off: no written review; the walk-in meetings still happen."); setReviewLabel(r); }
+    catch (e) { toast("chief", "Daily review", e.message || "could not change it", { bad: true }); }
+  }
+  function setReviewLabel(m) { const b = $("#menu-review"); if (b && m) b.textContent = `Daily review at ${m.reviewAt || "20:00"}: ${m.reviewOn ? "on" : "off"}`; }
+  getJSON("/api/meeting").then(setReviewLabel).catch(() => {});
   // Restart HQ (user menu): the server stops and its launcher starts it again with the latest code; the page waits and reloads
   async function restartHQ() {
     closeMenus();
@@ -1082,6 +1188,90 @@
     }
     await refresh();
   }
+
+  // ---------- swipe on the board (touch): left deletes, right opens the review ----------
+  (() => {
+    let sw = null;
+    const target = (e) => e.target.closest && e.target.closest("#task-board .vgroup > .vg-head, #task-board .trow");
+    document.addEventListener("touchstart", (e) => {
+      const el = target(e); if (!el || e.touches.length !== 1 || e.target.closest("input, textarea, select")) { sw = null; return; }
+      sw = { el, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, on: false };
+    }, { passive: true });
+    document.addEventListener("touchmove", (e) => {
+      if (!sw) return;
+      const dx = e.touches[0].clientX - sw.x, dy = e.touches[0].clientY - sw.y;
+      if (!sw.on) { if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { sw = null; return; } if (Math.abs(dx) < 12) return; sw.on = true; state.swiping = true; }
+      e.preventDefault();
+      sw.dx = Math.max(-140, Math.min(140, dx));
+      sw.el.style.transform = `translateX(${sw.dx}px)`;
+      sw.el.classList.toggle("sw-del", sw.dx < -30); sw.el.classList.toggle("sw-open", sw.dx > 30);
+      sw.el.classList.toggle("sw-go", Math.abs(sw.dx) >= 90);
+    }, { passive: false });
+    const end = () => {
+      if (!sw) return;
+      const { el, dx, on } = sw; sw = null;
+      el.style.transition = "transform .18s ease"; el.style.transform = "";
+      setTimeout(() => { el.style.transition = ""; el.classList.remove("sw-del", "sw-open", "sw-go"); state.swiping = false; }, 200);
+      if (!on || Math.abs(dx) < 90) { if (on) setTimeout(() => (state.swiping = false), 200); return; }
+      const card = el.closest(".vgroup") && el.classList.contains("vg-head") ? el.closest(".vgroup") : null;
+      const press = (sel) => { const b = (card || el).querySelector(sel); if (b) b.click(); return !!b; };
+      if (dx < 0) {                                         // delete: the whole card, or this one task (it asks first / has Undo)
+        if (card) press("[data-del-card]");
+        else if (el.dataset.task) deleteTask(el.dataset.task);                 // the toast offers Undo (a sermon poster asks first)
+        else press("[data-del-out]") || press("[data-manage]");
+      } else {                                              // review: the card's Open, or the task's own review
+        if (card) press("[data-rv-folder].btn") || press("[data-rv-folder]") || press("[data-vgroup]");
+        else press("[data-review]") || press("[data-rv-folder]") || press("[data-open]");
+      }
+    };
+    document.addEventListener("touchend", end); document.addEventListener("touchcancel", end);
+  })();
+
+  // ---------- the / menu: type / in a chat box, pick one of the office's skills (editing styles first) ----------
+  const SLASH_BOXES = "#ask-input, #lead-input, #say-text, #rv-change-text, #pk-capnote, #pk-mood";
+  const slash = { list: null, box: null, items: [], at: 0, start: 0 };
+  async function slashSkills() {
+    if (!slash.list) { try { slash.list = (await getJSON("/api/skills")).skills || []; } catch (e) { slash.list = []; } }
+    return slash.list;
+  }
+  function slashClose() { const m = $("#slash-menu"); if (m) m.remove(); slash.box = null; slash.items = []; }
+  async function slashOpen(box) {
+    const caret = box.selectionStart || 0, before = box.value.slice(0, caret), m = /(^|\s)\/([a-z0-9-]*)$/.exec(before);
+    if (!m) return slashClose();
+    const q = m[2], all = await slashSkills();
+    const items = all.filter((x) => x.name.includes(q)).slice(0, 10);
+    if (!items.length) return slashClose();
+    slash.box = box; slash.items = items; slash.start = caret - q.length - 1; slash.at = Math.min(slash.at, items.length - 1);
+    let menuEl = $("#slash-menu");
+    if (!menuEl) { menuEl = el('<div id="slash-menu" class="slash-menu ia" role="listbox" aria-label="Skills"></div>'); document.body.appendChild(menuEl); }
+    let html = "", group = null;
+    items.forEach((x, i) => {
+      const g = x.command ? "Office commands" : x.editing ? "Editing styles" : "Other skills";
+      if (g !== group) { html += `<div class="sl-grp">${g}</div>`; group = g; }
+      html += `<button type="button" class="sl-item ${i === slash.at ? "on" : ""}" data-slash="${i}" role="option"><b>/${esc(x.name)}</b><span>${esc(x.about)}</span></button>`;
+    });
+    menuEl.innerHTML = html + '<div class="sl-foot">↑↓ choose · Enter or Tab picks · Esc closes</div>';
+    const r = box.getBoundingClientRect(), h = Math.min(menuEl.scrollHeight, 340), below = window.innerHeight - r.bottom > h + 12;
+    menuEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - Math.min(420, window.innerWidth - 16) - 8)) + "px";
+    menuEl.style.top = (below ? r.bottom + 6 : Math.max(8, r.top - h - 6)) + "px";
+  }
+  function slashPick(i) {
+    const x = slash.items[i], box = slash.box; if (!x || !box) return;
+    const caret = box.selectionStart || 0, text = "/" + x.name + " ";
+    box.value = box.value.slice(0, slash.start) + text + box.value.slice(caret);
+    const at = slash.start + text.length; box.focus(); box.setSelectionRange(at, at);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    slashClose();
+  }
+  document.addEventListener("input", (e) => { if (e.target.matches && e.target.matches(SLASH_BOXES)) { slash.at = 0; slashOpen(e.target); } });
+  document.addEventListener("keydown", (e) => {                // capture: Enter picks a skill instead of sending
+    if (!slash.box || e.target !== slash.box || !$("#slash-menu")) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); slash.at = (slash.at + (e.key === "ArrowDown" ? 1 : -1) + slash.items.length) % slash.items.length; slashOpen(slash.box); }
+    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopImmediatePropagation(); slashPick(slash.at); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); slashClose(); }
+  }, true);
+  document.addEventListener("mousedown", (e) => { const b = e.target.closest && e.target.closest("[data-slash]"); if (b) { e.preventDefault(); slashPick(+b.dataset.slash); } else if (!e.target.closest("#slash-menu")) slashClose(); }, true);
+  document.addEventListener("focusout", (e) => { if (e.target === slash.box) setTimeout(() => { if (document.activeElement !== slash.box) slashClose(); }, 150); });
 
   // ---------- the calendar ----------
   async function loadCalendar() { try { const r = await getJSON(`/api/calendar?month=${state.calMonth}`); state.calDays = r.days || {}; } catch (e) { state.calDays = {}; } renderCalendar(); }
@@ -1265,6 +1455,8 @@
     return "/sermon-studio.html?" + query.toString();
   }
   async function send(prompt, task) {                      // HQ.send(prompt): one message to the lead (task: the board task it is about)
+    const mt = !task && /(?:^|:\s)\/meeting(?:\s+([\s\S]*))?$/i.exec(String(prompt || "").trim());
+    if (mt) return meetingNow((mt[1] || "").trim(), true);   // /meeting <topic>: everyone to the hall, the heads discuss it
     prompt = String(prompt || "").trim(); if (!prompt) return null;
     const studio = studios() && sermonDesignRoute(prompt);   // only where AI OFFICE runs the studio
     if (studio) { window.location.assign(studio); return null; }
@@ -1307,6 +1499,10 @@
     return text ? `<p class="agent-card-life">${text}${l.topic && l.action === "visit" ? ` · about: ${esc(shortTask(l.topic, 120))}` : ""}</p>` : "";
   }
   function lifeEvent(ev) {                                 // from the scene: a visitor shared a lesson with another team
+    if (ev && ev.type === "meeting") {                      // everyone is walking to the hall (or back)
+      if (ev.on) toast("chief", "All-hands meeting", "Everyone is walking to the 6F Meeting Hall. Open 6F to watch.", { kind: "meeting" });
+      return;
+    }
     if (!ev || ev.type !== "tip" || !ev.from || !ev.to) return;
     if (Date.now() - state.lifeTipAt < 120000 || document.hidden) return;   // at most one every 2 minutes
     if (isPhone() && state.view !== "office") return;
@@ -1370,6 +1566,7 @@
     if (!host) {
       host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host);
       host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
+      host.addEventListener("input", (e) => { if (e.target.id === "pk-mood") rv.pkgMood = e.target.value; if (e.target.id === "pk-capnote") rv.capNote = e.target.value; });
       host.addEventListener("change", (e) => { const k = e.target.dataset && e.target.dataset.pubSel; if (k) { rv.sel[k] = e.target.checked; renderReview(); } });
     }
     return host;
@@ -1379,7 +1576,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null });
+      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1406,7 +1603,7 @@
     if (rv.open && rv.folder === folder) { rv.cover = cover; renderReview(); }
   }
   // ---- posting: the overview of what goes where, and the owner's Approve & post (the only thing that posts)
-  const PUB = [["facebook", "Facebook"], ["instagram", "Instagram"], ["youtube", "YouTube Shorts"]];
+  const PUB = [["facebook", "Facebook"], ["instagram", "Instagram"], ["youtube", "YouTube Shorts"], ["tiktok", "TikTok (drafts)"]];
   const PUB_URL = "/api/" + "publish";
   // what can be posted: the folder itself, or each topic of a long talk (a subfolder with its own post.md)
   const pubTargets = () => ((rv.data && rv.data.files) || []).filter((f) => /^post\.md$/i.test(f.name) && f.path.split("/").length <= 2).map((f) => f.path.split("/").slice(0, -1).join("/"));
@@ -1417,6 +1614,7 @@
     if (sub != null) rv.pubSub = sub; else if (!targets.includes(rv.pubSub)) rv.pubSub = targets[0];
     if (sub != null) { rv.sel = null; rv.edits = {}; rv.pick = {}; }
     try { rv.pub = await getJSON(`${PUB_URL}?folder=${encodeURIComponent(pubFolder())}`); } catch (e) { rv.pub = null; }
+    if (rv.pub && !rv.sel && !rv.whenVal && channelSlot(rv.pub.channel)) { rv.whenOn = true; rv.whenVal = channelSlot(rv.pub.channel); }   // its own slot is the default
     if (rv.pub && !rv.sel) { rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && !["posted", "scheduled"].includes((rv.pub.posted[k] || {}).state); }
     const pk = rv.pkg, o = rv.pub && pk && pk.caption != null && rv.pick.caption == null && ((rv.pub.drafts || {}).options || [])[pk.caption];
     if (o) { for (const [k] of PUB) for (const [f, v] of Object.entries(o[k] || {})) rv.edits[k + "." + f] = v; rv.pick.caption = pk.caption; }   // the set picked on the card
@@ -1455,7 +1653,15 @@
   // ---- scheduling: a local date and time from the picker, sent as a unix time
   const pad = (n) => String(n).padStart(2, "0");
   const localInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  function defaultWhen() { const d = new Date(Date.now() + 86400000); d.setHours(20, 0, 0, 0); return localInput(d); }   // tomorrow 8 pm
+  // a channel's own posting slot (owner, 2026-10-29: Pong+Gospel goes out Saturdays at 10 am); otherwise tomorrow 8 pm
+  const CHANNEL_SLOT = { "pong-gospel": { day: 6, hour: 10 } };
+  function channelSlot(ch) {
+    const slot = CHANNEL_SLOT[ch || ""]; if (!slot) return null;
+    const d = new Date(); d.setHours(slot.hour, 0, 0, 0); d.setDate(d.getDate() + ((slot.day - d.getDay() + 7) % 7));
+    if (d.getTime() < Date.now() + 15 * 60000) d.setDate(d.getDate() + 7);     // this week's slot is past (or too close): next week
+    return localInput(d);
+  }
+  function defaultWhen() { const own = channelSlot(rv.pub && rv.pub.channel); if (own) return own; const d = new Date(Date.now() + 86400000); d.setHours(20, 0, 0, 0); return localInput(d); }
   const whenUnix = () => (rv.whenOn && rv.whenVal ? Math.floor(new Date(rv.whenVal).getTime() / 1000) : null);
   const fmtWhen = (u) => new Date(u * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   function whenSay() { const u = whenUnix(); if (!u) return ""; const m = Math.round((u * 1000 - Date.now()) / 60000); return m < 10 ? "Pick a time at least 10 minutes from now." : `Goes out ${fmtWhen(u)}.`; }
@@ -1474,6 +1680,7 @@
     if (!Object.keys(platforms).length) return;
     const when = whenUnix();
     const body = { folder, platforms, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover, when };
+    if (rv.pkg && rv.pkg.coverIg && (rv.pub.covers || []).includes(rv.pkg.coverIg)) body.coverIg = rv.pkg.coverIg;   // Instagram: the 3:4 one
     const names = Object.keys(platforms).map((k) => PUB.find((p) => p[0] === k)[1]).join(", ");
     try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", when ? "Scheduled" : "Posting", when ? `${names} · ${fmtWhen(when)}` : names); }
     catch (e) { toast("social", "Post", e.message || "could not post", { bad: true }); }
@@ -1500,9 +1707,11 @@
       ${vUrl ? `<video class="fin-video" src="${esc(phoneSrc(vUrl))}" ${cf ? `poster="${esc(cf.url)}"` : ""} controls playsinline preload="metadata"></video>` : ""}</div>`;
     // 1. the thumbnail: one for every platform
     const covers = (p.covers || []).filter((n) => !(rv.pkg && rv.pkg.cover) || n === rv.pkg.cover).map((n) => ({ n, f: fileOf(n) })).filter((x) => x.f);   // a package posts the Codex pick
-    if (covers.length) h += `<div class="pub-h">1 · Thumbnail <span>${covers.length > 1 ? "tap the one you want, it goes on every platform" : "used on every platform"}</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<button class="pub-thumb ${n === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(f.url)}" alt="" loading="lazy">${n === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
+    const igCover = rv.pkg && rv.pkg.coverIg && fileOf(rv.pkg.coverIg);    // a package's 3:4 cover goes to Instagram
+    if (covers.length && igCover) h += `<div class="pub-h">1 · Thumbnails <span>9:16 on YouTube + Facebook, 3:4 on Instagram</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<div class="pub-thumb-l"><button class="pub-thumb on" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(phoneImg(f.url))}" alt="" loading="lazy"><i>${svg("check")}</i></button><span>YouTube + Facebook</span></div>`).join("")}<div class="pub-thumb-l"><button class="pub-thumb on r34" type="button" tabindex="-1"><img src="${esc(phoneImg(igCover.url))}" alt="" loading="lazy"><i>${svg("check")}</i></button><span>Instagram</span></div></div>`;
+    else if (covers.length) h += `<div class="pub-h">1 · Thumbnail <span>${covers.length > 1 ? "tap the one you want, it goes on every platform" : "used on every platform"}</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<button class="pub-thumb ${n === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(phoneImg(f.url))}" alt="" loading="lazy">${n === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
     // 2. the caption: one choice fills Facebook, Instagram and YouTube
-    if (opts.length) h += `<div class="pub-h">2 · Caption <span>${opts.length > 1 ? "tap one, it fills every platform" : "used on every platform"}</span></div><div class="pub-caps">${opts.map((o, i) => `<button class="pub-cap ${i === cap ? "on" : ""}" data-pub-pick="caption" data-pub-val="${i}" type="button">${i === cap ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title || "")}</b><span>${esc(o.caption || "")}</span></button>`).join("")}</div>`;
+    if (opts.length) h += `<div class="pub-h">2 · Caption <span>${opts.length > 1 ? "tap one, it fills every platform" : "used on every platform"}</span></div><div class="pub-caps">${opts.map((o, i) => `<button class="pub-cap ${i === cap ? "on" : ""} ${capOpen("pub", i) ? "full" : ""}" data-pub-pick="caption" data-pub-val="${i}" type="button">${i === cap ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title || "")}</b><span>${esc(o.caption || "")}</span>${capMore("pub", i, o.caption)}</button>`).join("")}</div>`;
     // 3. the video: only when there is more than one version
     if ((p.videos || []).length > 1) h += `<div class="pub-h">Video <span>which version to post</span></div><div class="rv-chips">${p.videos.map((n) => `<button class="rv-chip ${n === vSel ? "on" : ""}" data-pub-pick="video" data-pub-val="${esc(n)}" type="button">${n === vSel ? svg("check") : svg("play")}${esc(prettyName(n))}</button>`).join("")}</div>`;
     else if (!p.videos || !p.videos.length) h += '<div class="pub-warn">No video found in this folder yet, so there is nothing to post.</div>';
@@ -1510,7 +1719,8 @@
     h += `<div class="pub-h">${opts.length ? "3" : "2"} · Post to</div>`;
     for (const [k, label] of PUB) {
       const acc = p.accounts[k] || {}, done = (p.posted || {})[k] || {}, ticked = on.includes(k);
-      const st = done.state === "posted" ? `<a class="pub-ok" href="${esc(done.link || "#")}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
+      const st = done.state === "posted" && k === "tiktok" ? `<span class="pub-ok">${svg("check")} Sent to TikTok drafts · finish it in the TikTok app</span>`
+        : done.state === "posted" ? `<a class="pub-ok" href="${esc(done.link || "#")}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
         : done.state === "failed" ? `<span class="pub-bad">Failed: ${esc(done.error || "")}</span>`
         : done.state === "scheduled" ? `<span class="pub-sched">${svg("cal")} Scheduled · ${esc(fmtWhen(done.when))}${done.job ? ` <button class="rv-copy" data-pub-cancel="${k}" type="button">Cancel</button>` : ""}</span>`
         : done.state === "cancelled" ? '<span class="pub-acc">Schedule cancelled</span>'
@@ -1519,6 +1729,7 @@
         <span class="pub-acc">${acc.connected ? esc(acc.name || "connected") : acc.problem ? esc(acc.problem) : "not connected"}</span></label>${st}`;
       if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts="${esc(p.channel || "")}" type="button">Connect</button>`;
       if (done.warning) h += `<div class="pub-warn">${esc(done.warning)}</div>`;
+      if (k === "tiktok" && acc.connected && (ticked || done.state === "posted")) h += `<div class="pub-note">TikTok gets the video in its drafts; you add the caption and post it in the TikTok app. <button class="rv-copy" data-tt-copy="" type="button">Copy TikTok caption</button></div>`;
       if (ticked && rv.pubEdit) h += k === "youtube"
         ? `<input class="pub-in" data-pub-field="youtube.title" maxlength="100" value="${esc(pubValue(k, "title"))}" placeholder="Title"><textarea class="pub-in" rows="3" data-pub-field="youtube.description" placeholder="Description">${esc(pubValue(k, "description"))}</textarea>`
         : `<textarea class="pub-in" rows="4" data-pub-field="${k}.caption" placeholder="Caption">${esc(pubValue(k, "caption"))}</textarea>`;
@@ -1586,6 +1797,7 @@
     let body;
     if (kind === "meta") body = { action: "meta", app_id: v("acc-app-id"), app_secret: v("acc-app-secret"), token: v("acc-token"), page: v("acc-page") };
     else if (kind === "youtube") body = { action: "youtube", client_json: v("acc-yt-json") };
+    else if (kind === "tiktok") body = { action: "tiktok", client_key: v("acc-tt-key"), client_secret: v("acc-tt-secret") };
     else body = { action: "disconnect", which: kind.replace(/^off-/, "") };
     body.channel = rv.ch;
     rv.accBusy = kind; renderReview();
@@ -1593,8 +1805,9 @@
       const r = await postJSON("/api/accounts", body);
       if (r.url) {
         window.open(r.url, "_blank");
-        toast("social", "YouTube", "Sign in with Google in the browser window, then come back here.");
-        let n = 0; const t = setInterval(async () => { n++; await loadAccounts(); if ((rv.acc && rv.acc.youtube && rv.acc.youtube.connected) || n > 100 || !rv.open) clearInterval(t); }, 3000);
+        const who = kind === "tiktok" ? "tiktok" : "youtube";
+        toast("social", who === "tiktok" ? "TikTok" : "YouTube", who === "tiktok" ? "Sign in to TikTok in the browser window and allow, then come back here." : "Sign in with Google in the browser window, then come back here.");
+        let n = 0; const t = setInterval(async () => { n++; await loadAccounts(); if ((rv.acc && rv.acc[who] && rv.acc[who].connected) || n > 100 || !rv.open) clearInterval(t); }, 3000);
       } else {
         if (r.accounts) rv.acc = r.accounts;
         if (kind === "meta") toast("social", "Connected", `Facebook Page ${r.page || ""}${r.instagram ? " and Instagram @" + r.instagram : " (no Instagram linked)"}` +
@@ -1604,7 +1817,7 @@
     rv.accBusy = ""; if (rv.open) renderReview();
   }
   function accountsCard() {
-    const a = rv.acc || {}, fb = a.facebook || {}, ig = a.instagram || {}, yt = a.youtube || {}, busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
+    const a = rv.acc || {}, fb = a.facebook || {}, ig = a.instagram || {}, yt = a.youtube || {}, tt = a.tiktok || {}, busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
     const line = (ok, name, label) => `<div class="acc-line ${ok ? "ok" : ""}">${ok ? svg("check") : "○"} <b>${label}</b> ${ok ? esc(name || "connected") : "not connected"}</div>`;
     return `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
@@ -1639,7 +1852,22 @@
           <li>Press Connect YouTube, sign in and allow. Google says it hasn't verified the app: press Advanced → Go to Agents HQ (it is your own app).</li>
           <li><b>Good to know:</b> Google keeps videos uploaded by a new project <b>private</b> until the project passes its free YouTube API audit (a form in the Google Cloud console). Until then, Shorts arrive private and Agents HQ tells you so.</li></ol></details>
       </div>
-      <div class="rv-sec acc"><div class="rv-h">TikTok</div><div class="pub-note">Not yet: TikTok only allows private posts from an app until TikTok reviews it. Post TikTok by hand with the TikTok text the Social team writes.</div></div>`}
+      <div class="rv-sec acc"><div class="rv-h">TikTok <span>drafts</span></div>
+        ${line(tt.connected, tt.name, "TikTok account")}
+        <div class="pub-note">Approve &amp; post sends the video to your TikTok <b>drafts</b>. TikTok sends you a notification: open it, paste the caption (copy it on the posting screen), add a sound if you like, and post. Direct posting comes later, once TikTok has reviewed your app.</div>
+        <input class="pub-in" id="acc-tt-key" placeholder="Client key${tt.client || rv.ch ? " (leave empty to use the TikTok app you already set up)" : ""}" autocomplete="off">
+        <input class="pub-in" id="acc-tt-secret" type="password" placeholder="Client secret${tt.client || rv.ch ? " (leave empty to use the same app)" : ""}" autocomplete="off">
+        <div class="acc-row"><button class="btn primary" data-acc="tiktok" type="button" ${a.tiktokRedirect ? "" : "disabled"}>${busy("tiktok")}Connect TikTok</button>${tt.connected ? '<button class="btn" data-acc="off-tiktok" type="button">Disconnect</button>' : ""}</div>
+        ${a.tiktokRedirect ? `<div class="pub-note">Return address to put in your TikTok app (Login Kit → Redirect URI): <code>${esc(a.tiktokRedirect)}</code> <button class="rv-copy" data-copy-text="${esc(a.tiktokRedirect)}" type="button">Copy</button></div>`
+          : '<div class="pub-warn">TikTok needs an https return address. Turn on phone access (Tailscale) for Agents HQ, then come back here.</div>'}
+        <details class="acc-help"><summary>How to set it up (about 15 minutes, once)</summary><ol>
+          <li>Open <b>developers.tiktok.com</b>, log in with the TikTok account you post to, and go to <b>Manage apps → Connect an app</b>. Name it Agents HQ, type <b>Web</b>.</li>
+          <li>Fill in the app's basic details (icon, short description, terms and privacy links; your church website pages are fine).</li>
+          <li><b>Add products</b>: <b>Login Kit</b> and <b>Content Posting API</b>. In Login Kit, add the return address above as the Redirect URI (Web).</li>
+          <li><b>Scopes</b>: make sure <code>user.info.basic</code> and <code>video.upload</code> are added. Leave Direct Post off for now.</li>
+          <li>Submit the app for review if TikTok asks for it; while it waits, add your own TikTok account under <b>Sandbox</b> → Target users to test.</li>
+          <li>Copy the <b>Client key</b> and <b>Client secret</b> here and press <b>Connect TikTok</b> on this computer. Sign in and allow.</li></ol></details>
+      </div>`}
       </div><div class="rv-actions"><button class="btn" data-rv-close type="button">Done</button></div></div>`;
   }
   function closeReview(fromHistory) {
@@ -1721,37 +1949,114 @@
   function pkgPanel(pkg) {
     const has = (s) => pkg.stages.includes(s), n = (s) => pkg.stages.indexOf(s) + 1;
     const step = (s, body, locked) => `<div class="pk-sec ${pkg.done[s] ? "ok" : ""} ${locked ? "locked" : ""}"><div class="pk-h"><span class="pk-n">${pkg.done[s] ? svg("check") : n(s)}</span><b>${PKG_STEPS[s]}</b></div>${locked ? `<div class="hint">${locked}</div>` : body}</div>`;
-    let h = `<div class="rv-sec pk"><div class="rv-h">${pkg.ready ? readyTag + " Ready to post" : "Get it ready"} <span>${pkg.stages.filter((s) => pkg.done[s]).length} of ${pkg.stages.length} done</span></div>
+    let h = `<div class="rv-sec pk ${pkg.ready ? "is-ready" : ""}"><div class="rv-h">${pkg.ready ? readyTag + " Ready to post" : "Get it ready"} <span>${pkg.stages.filter((s) => pkg.done[s]).length} of ${pkg.stages.length} done</span></div>
       <div class="pk-presets" role="group" aria-label="What this video needs">${PKG_PRESETS.map(([k, l]) => `<button class="rv-chip ${pkg.preset === k ? "on" : ""}" data-pkg="preset" data-pkg-val="${k}" type="button">${pkg.preset === k ? svg("check") : ""}${l}</button>`).join("")}</div>`;
     h += step("video", pkg.done.video ? '<div class="hint">Approved. Changes now go through a re-edit.</div>' : '<div class="row pk-act"><button class="btn sm" data-rv-mode="changes" type="button">Ask for video changes</button><button class="btn sm primary" data-pkg="video-ok" type="button">Approve video</button></div>');
     if (has("caption")) {
-      const caps = (pkg.captions.length ? `<div class="pub-caps">${pkg.captions.map((o, i) => `<button class="pub-cap ${i === pkg.caption ? "on" : ""}" data-pkg="caption" data-pkg-val="${i}" type="button">${i === pkg.caption ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title)}</b><span>${esc(o.caption)}</span></button>`).join("")}</div>` : '<div class="hint">No title + caption sets yet.</div>')
-        + (pkg.captions.length < 3 ? `<div class="row pk-act"><button class="btn sm blue" data-pkg="write-captions" type="button">Ask Social for 3 ${pkg.captions.length ? "new " : ""}sets</button></div>` : "");
-      h += step("caption", (has("thumbnail") && !pkg.thumb && pkg.captions.length ? '<div class="hint">Pick one: Codex then makes the thumbnails from its title.</div>' : "") + caps, pkg.done.video ? "" : "Approve the video first.");
+      const caps = (pkg.captions.length ? `<div class="pub-caps">${pkg.captions.map((o, i) => `<button class="pub-cap ${i === pkg.caption ? "on" : ""} ${capOpen("pk", i) ? "full" : ""}" data-pkg="caption" data-pkg-val="${i}" type="button">${i === pkg.caption ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title)}</b><span>${esc(o.caption)}</span>${capMore("pk", i, o.caption)}</button>`).join("")}</div>` : '<div class="hint">No title + caption sets yet.</div>')
+        + (pkg.captionsBusy ? pkgProg(pkg.captionsProgress ? "Social is writing 3 title + caption sets" : "Waiting for a free slot, then Social writes 3 sets", pkg.captionsProgress, true) + '<div class="hint">They show up here by themselves.</div>'
+          : rv.capNew ? `<div class="pk-mood"><label for="pk-capnote">What should change? <span>optional: Social writes 3 new sets with your comment</span></label>
+              <textarea id="pk-capnote" class="field" rows="2" maxlength="800" placeholder="e.g. make them longer, speak to young couples, end with a question, add the verse">${esc(rv.capNote || "")}</textarea></div>
+              <div class="row pk-act"><button class="btn sm primary" data-pkg="write-captions" type="button" ${rv.pkgBusy === "write-captions" ? "disabled" : ""}>${rv.pkgBusy === "write-captions" ? '<span class="spin"></span> Asking Social…' : "Write 3 new sets"}</button><button class="btn sm" data-pkg="capnew-cancel" type="button">Keep these</button></div>`
+          : pkg.captions.length < 3 ? `<div class="row pk-act"><button class="btn sm blue" data-pkg="write-captions" type="button" ${rv.pkgBusy === "write-captions" ? "disabled" : ""}>${rv.pkgBusy === "write-captions" ? '<span class="spin"></span> Asking Social…' : `Ask Social for 3 ${pkg.captions.length ? "new " : ""}sets`}</button></div>`
+          : `<div class="row pk-act"><button class="btn sm" data-pkg="capnew" type="button">New captions…</button></div>`);
+      // pick a set, then confirm it: only then does the thumbnail step open (nothing starts by itself)
+      const lead = pkg.captionOk ? '<div class="hint">Confirmed. Tap another set to change it.</div>' : pkg.captions.length ? '<div class="hint">Tap the set you want, then confirm it.</div>' : "";
+      const confirm = pkg.caption != null && !pkg.captionOk ? `<div class="row pk-act"><button class="btn sm primary" data-pkg="caption-ok" type="button">Confirm this caption</button></div>` : "";
+      h += step("caption", lead + caps + confirm, pkg.done.video ? "" : "Approve the video first.");
     }
     if (has("thumbnail")) {
-      const t = pkg.thumb, picked = pkg.caption != null ? pkg.captions[pkg.caption].title : "";
+      const t = pkg.thumb, picked = pkg.caption != null ? pkg.captions[pkg.caption].title : "", ref = rv.pkgRef;
+      // the owner's reference picture (optional) and the Generate button: Codex only starts when it is pressed
+      const mood = rv.pkgMood || "", styles = pkg.templates || [];
+      // this video's own style: nothing is picked for it; the channel's saved styles, or a new one just for this video
+      const styleRow = `<div class="pk-style"><div class="pk-lbl">Style <span>${pkg.style ? "used for this video only" : "pick one for this video"}</span></div><div class="pk-styles">${styles.map((x) => `<button class="pk-tpl ${x.id === pkg.style ? "on" : ""}" data-pkg="style" data-pkg-val="${esc(x.id)}" type="button" title="${esc(x.name)} · ${x.width}×${x.height}"><img src="${esc(phoneImg(x.url))}" alt="" loading="lazy"><span>${esc(x.name)}</span>${x.id === pkg.style ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}<button class="pk-tpl add" data-pkg="style-new" type="button" ${rv.pkgStyleBusy ? "disabled" : ""}>${rv.pkgStyleBusy ? '<span class="spin"></span>' : "＋"}<span>${rv.pkgStyleBusy ? "Uploading…" : "New style"}</span></button></div></div>`;
+      const gen = (label) => styleRow + `<div class="pk-mood"><label for="pk-mood">Feeling and elements <span>optional: the mood, colours, objects or style you want</span></label>
+        <textarea id="pk-mood" class="field" rows="2" maxlength="600" placeholder="e.g. warm and hopeful, soft morning light, a lighthouse in the storm, calm blue tones">${esc(mood)}</textarea>
+        <div class="pk-moods">${PK_MOODS.map(([w, l]) => `<button class="rv-chip ${mood.includes(w) ? "on" : ""}" data-pkg="mood" data-pkg-val="${esc(w)}" type="button">${l}</button>`).join("")}</div></div>
+        <div class="pk-ref">${ref
+        ? `<img src="${esc(ref.dataUrl)}" alt=""><span>${esc(ref.name)}</span><button class="rv-copy" data-pkg="ref-clear" type="button">Remove</button>`
+        : `<button class="btn sm" data-pkg="ref" type="button">＋ Reference picture</button><span class="hint">Optional: a photo of the person or thing the thumbnails should show. Without one, Codex takes a frame from the video.</span>`}</div>
+        <div class="row pk-act"><button class="btn sm primary" data-pkg="thumbs" type="button" ${pkg.style ? "" : 'disabled title="Pick a style first"'}>${label}</button>${rv.pkgNew ? '<button class="btn sm" data-pkg="new-cancel" type="button">Keep the current ones</button>' : ""}</div>`;
+      const following = (x) => (x.style ? ` · style “${esc(shortTask(x.style, 24))}”` : "") + (x.reference ? ` · following your picture “${esc(shortTask(x.reference, 24))}”` : "") + (x.instructions ? ` · feeling: ${esc(shortTask(x.instructions, 60))}` : "");
+      // two sizes, always: 9:16 for YouTube + Facebook, 3:4 for Instagram; Generate makes both, each is picked on its own
+      const T = pkg.thumbs || { main: t }, any = T.main || T.ig, label = (k) => (pkg.sizes || {})[k] || (k === "ig" ? "3:4 · Instagram" : "9:16 · YouTube + Facebook");
+      const sizeBlock = (k) => {
+        const x = T[k], head = `<div class="pk-size"><b>${esc(label(k))}</b>${x && x.picked ? `<span class="pk-ok">${svg("check")} picked</span>` : ""}</div>`;
+        if (!x) return head + `<div class="hint">Not made yet.</div><div class="row pk-act"><button class="btn sm blue" data-pkg="thumbs" data-pkg-val="${k}" type="button" ${pkg.style ? "" : "disabled"}>Make the ${k === "ig" ? "3:4" : "9:16"} thumbnails</button></div>`;
+        if (["watching", "dispatching"].includes(x.status)) return head + pkgProg(x.status === "dispatching" ? "Sending your request to Codex" : "Codex is making 4 thumbnails", x.progress);
+        if (x.status !== "delivered") return head + `<div class="hint" style="color:#f2a7a7">${esc(x.error || "Codex could not finish the thumbnails.")}</div><div class="row pk-act"><button class="btn sm blue" data-pkg="thumbs" data-pkg-val="${k}" type="button" ${pkg.style ? "" : "disabled"}>Try again</button></div>`;
+        return head + `<div class="pk-thumbs ${k === "ig" ? "r34" : ""}">${(x.options || []).map((o) => { const on = o.name === x.selectedOption && x.picked; return `<button class="pk-thumb ${on ? "on" : ""}" data-pkg="thumb" data-pkg-val="${esc(o.name)}" data-pkg-sha="${esc(o.sha256)}" data-pkg-size="${k}" type="button"><img src="${esc(phoneImg(o.url))}" alt="" loading="lazy">${on ? `<i>${svg("check")}</i>` : ""}</button>`; }).join("")}</div>`;
+      };
       let body = "";
-      if (!t) body = `<div class="row pk-act"><button class="btn sm blue" data-pkg="thumbs" type="button">Make thumbnails from this title</button></div>`;
-      else if (["watching", "dispatching"].includes(t.status)) body = `<div class="hint live"><span class="spin"></span> Codex is making the thumbnails from “${esc(t.title)}”${t.progress ? ` · ${Math.round(t.progress)}%` : ""}. They show up here by themselves.</div>`;
-      else if (t.status !== "delivered") body = `<div class="hint" style="color:#f2a7a7">${esc(t.error || "Codex could not finish the thumbnails.")}</div><div class="row pk-act"><button class="btn sm blue" data-pkg="thumbs" type="button">Try again</button></div>`;
-      else body = `<div class="hint">Made from “${esc(t.title)}”. Tap the one you want.</div><div class="pk-thumbs">${(t.options || []).map((o) => `<button class="pk-thumb ${o.name === t.selectedOption && pkg.done.thumbnail ? "on" : ""}" data-pkg="thumb" data-pkg-val="${esc(o.name)}" data-pkg-sha="${esc(o.sha256)}" type="button"><img src="${esc(o.url)}" alt="" loading="lazy">${o.name === t.selectedOption && pkg.done.thumbnail ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`
-        + (picked && picked !== t.title ? `<div class="row pk-act"><button class="btn sm" data-pkg="thumbs" type="button">New thumbnails from “${esc(shortTask(picked, 30))}”</button></div>` : "");
-      h += step("thumbnail", body, pkg.caption == null && !t ? "Pick a title + caption first: Codex makes the thumbnails from its title." : "");
+      if (!any || rv.pkgNew) body = `<div class="hint">From “${esc(picked)}”. Makes two sets: ${esc(label("main"))} and ${esc(label("ig"))}.</div>` + gen(any ? "Generate new thumbnails" : "Generate thumbnails");
+      else body = `<div class="hint">Made from “${esc((any && any.title) || picked)}”${following(any)}. Pick one in each size.</div>` + sizeBlock("main") + sizeBlock("ig")
+        + `<div class="row pk-act"><button class="btn sm" data-pkg="new" type="button">New thumbnails${picked && any && picked !== any.title ? ` from “${esc(shortTask(picked, 30))}”` : ""}</button></div>`;
+      h += step("thumbnail", body, pkg.captionOk || any ? "" : "Confirm a title + caption first: the thumbnails are made from its title.");
     }
     return h + "</div>";
   }
-  async function pkgAction(action, val, sha) {
+  function newStyle() {
+    const pkg = rv.pkg; if (!pkg || pkg.channel == null) return;
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/png,image/jpeg,image/webp";
+    inp.onchange = () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      if (!/^image\/(png|jpeg|webp)$/.test(f.type) || f.size > 15 * 1024 * 1024) { toast("creative", "New style", "Use a PNG, JPG or WebP up to 15 MB.", { bad: true }); return; }
+      const r = new FileReader();
+      r.onload = () => {
+        const img = new Image();
+        img.onload = async () => {                          // its shape decides the thumbnail size: 9:16, 3:4 or 16:9
+          const ratio = img.naturalWidth / img.naturalHeight, size = [[1080, 1920], [1080, 1440], [1920, 1080]].sort((a, b) => Math.abs(a[0] / a[1] - ratio) - Math.abs(b[0] / b[1] - ratio))[0];
+          const name = (f.name.replace(/\.[^.]+$/, "") || "Style").slice(0, 100);
+          rv.pkgStyleBusy = true; renderReview();
+          try {
+            const cfg = await postJSON("/api/thumbnail-design/templates", { channel: pkg.channel, name, dataUrl: r.result, width: size[0], height: size[1], instructions: "", makeDefault: false });
+            const mine = ((cfg.channels || []).find((c) => c.key === pkg.channel) || {}).templates || [];
+            const added = mine.filter((t) => t.name === name).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+            rv.pkgStyleBusy = false;
+            if (added) await pkgAction("style", added.id);
+          } catch (e) { rv.pkgStyleBusy = false; toast("creative", "New style", e.message || "could not save it", { bad: true }); renderReview(); }
+        };
+        img.onerror = () => toast("creative", "New style", "That picture could not be read.", { bad: true });
+        img.src = r.result;
+      };
+      r.readAsDataURL(f);
+    };
+    inp.click();
+  }
+  // a long caption shows 4 lines first; Show all opens the whole text (tapping the set itself still picks it)
+  const capOpen = (where, i) => (rv.capOpen || new Set()).has(where + ":" + i);
+  const capMore = (where, i, text) => (String(text || "").split("\n").length > 4 || String(text || "").length > 140
+    ? `<span class="cap-more" data-cap-more="${where}:${i}" role="button" tabindex="0">${capOpen(where, i) ? "Show less ▴" : "Show all ▾"}</span>` : "");
+  function pickReference() {                               // the owner's reference picture for the thumbnails, kept in the page until Generate
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/png,image/jpeg,image/webp";
+    inp.onchange = () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      if (!/^image\/(png|jpeg|webp)$/.test(f.type) || f.size > 15 * 1024 * 1024) { toast("creative", "Reference picture", "Use a PNG, JPG or WebP up to 15 MB.", { bad: true }); return; }
+      const r = new FileReader();
+      r.onload = () => { rv.pkgRef = { name: f.name, dataUrl: r.result }; renderReview(); };
+      r.onerror = () => toast("creative", "Reference picture", "Could not read that file.", { bad: true });
+      r.readAsDataURL(f);
+    };
+    inp.click();
+  }
+  async function pkgAction(action, val, sha, size) {
     const name = rv.pkgName; if (!name) return;
     const body = { name, action };
     if (action === "preset") body.preset = val;
     if (action === "caption") body.option = +val;
-    if (action === "thumb") { body.option = val; body.sha256 = sha; }
+    if (action === "style") body.templateId = val;
+    if (action === "write-captions" && (rv.capNote || "").trim()) body.note = rv.capNote.trim();
+    if (action === "thumb") { body.option = val; body.sha256 = sha; body.size = size || "main"; }
+    if (action === "thumbs" && ["main", "ig"].includes(val)) body.size = val;
+    if (action === "thumbs" && rv.pkgRef) body.reference = rv.pkgRef;
+    if (action === "thumbs" && (rv.pkgMood || "").trim()) body.feeling = rv.pkgMood.trim();   // the owner's picture for Codex to follow
     rv.pkgBusy = action; renderReview();
     try {
       rv.pkg = await postJSON("/api/package", body);
-      if (action === "write-captions") toast("social", "Asked Social", "3 title + caption sets are on the way.");
-      if (action === "caption" && rv.pkg.thumb && ["watching", "dispatching"].includes(rv.pkg.thumb.status)) toast("creative", "Codex started", "Thumbnails from “" + shortTask(rv.pkg.captions[rv.pkg.caption].title, 40) + "”");
+      if (state.status && state.status.out && state.status.out[name]) state.status.out[name].pkg = rv.pkg;   // the card draws from the status: keep it as fresh as the reply
+      if (action === "write-captions") { toast("social", "Asked Social", "3 title + caption sets are on the way."); rv.capNew = false; rv.capNote = ""; }
+      if (action === "thumbs") { rv.pkgRef = null; rv.pkgNew = false; rv.pkgMood = ""; if (rv.pkg.thumb && ["watching", "dispatching"].includes(rv.pkg.thumb.status)) toast("creative", "Codex started", "Thumbnails from “" + shortTask(rv.pkg.captions[rv.pkg.caption].title, 40) + "”"); }
       if (rv.pkg.ready) {                                   // the picked Codex thumbnail is now in the folder: the posting overview reads it
         rv.pick = {}; rv.edits = {};
         try { rv.data = await getJSON(`/api/work?folder=${encodeURIComponent(rv.folder)}`); } catch (e) { /* keep the last */ }
@@ -1762,6 +2067,8 @@
   }
   // a phone plays a small copy the server makes (a full-quality edit is too big to stream over mobile data or Tailscale)
   const phoneSrc = (u) => (u && isPhone() && /^\/files\//.test(u) ? u + (u.includes("?") ? "&" : "?") + "phone=1" : u);
+  // a phone gets small previews of pictures (thumbnails, covers, styles) too: full-size PNGs don't load over mobile data
+  const phoneImg = (u) => (u && isPhone() && /^\/(files|api\/thumbnail-design)\//.test(u) ? u + (u.includes("?") ? "&" : "?") + "phone=1" : u);
   function renderReview() {
     const host = $("#review"); if (!host || !rv.open) return;
     if (rv.accounts) { host.innerHTML = accountsCard(); return; }
@@ -1800,10 +2107,10 @@
     }
     if (pkg) html += pkgPanel(pkg);
     if (imgs.length && !pkg) html += `<div class="rv-sec"><div class="rv-h">${artwork.native ? "Finished artwork" : "Covers and images"} <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => {
-      if (!artwork.native) return `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`;
+      if (!artwork.native) return `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(phoneImg(i.url))}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`;
       const options = [i, ...(artwork.alternatives[i.path] || [])];
       const ratio = /^XHS_/i.test(i.path) ? "3 / 4" : "16 / 9";
-      return `<div><button class="rv-img" style="width:100%" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(i.url)}" alt="${esc(prettyName(i.path))}" style="aspect-ratio:${ratio};object-fit:contain" loading="lazy"><span>${esc(prettyName(i.path))}</span></button><div style="display:flex;flex-wrap:wrap;gap:12px;padding:2px 4px">${options.map(file => `<a class="rv-dl" href="${esc(file.url)}" download="${esc(file.name)}">↓ ${/\.png$/i.test(file.path) ? "PNG" : "JPG"}</a>`).join("")}</div></div>`;
+      return `<div><button class="rv-img" style="width:100%" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(phoneImg(i.url))}" alt="${esc(prettyName(i.path))}" style="aspect-ratio:${ratio};object-fit:contain" loading="lazy"><span>${esc(prettyName(i.path))}</span></button><div style="display:flex;flex-wrap:wrap;gap:12px;padding:2px 4px">${options.map(file => `<a class="rv-dl" href="${esc(file.url)}" download="${esc(file.name)}">↓ ${/\.png$/i.test(file.path) ? "PNG" : "JPG"}</a>`).join("")}</div></div>`;
     }).join("")}</div></div>`;
     else if (artwork.native && !loading && files.length) html += '<div class="rv-sec"><div class="rv-empty">No finished artwork was found in this delivery. Supporting files are available below.</div></div>';
     if (!thumbnailStage && (!pkg || (pkg.ready && pkg.stages.includes("caption")))) html += pubSection();
@@ -1823,7 +2130,7 @@
     if (!loading && !files.length && !task) html += '<div class="rv-empty">Nothing in this folder yet.</div>';
     if (!rv.folder && task) html += `<div class="rv-sec"><div class="rv-h">Details</div><div class="md">${mdHtml([task.subtitle, task.agent ? "By " + task.agent : "", task.date ? "Date: " + task.date + (task.time ? " " + task.time : "") : "", "Created " + timeAgo(task.created)].filter(Boolean).join("\n"))}</div></div>`;
     html += "</div>";
-    if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence" required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
+    if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence. Type / to pick an editing style." required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
     else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
     else {
       const n = thumbnailStage || rv.ready === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
@@ -1840,6 +2147,8 @@
     const oldPlayer = $("#rv-player");
     const keepTime = oldPlayer && oldPlayer.getAttribute("src") === (v && phoneSrc(v.url)) ? oldPlayer.currentTime : null;
     const scroll = host.querySelector(".rv-body") ? host.querySelector(".rv-body").scrollTop : 0;
+    const typingId = document.activeElement && ["pk-mood", "pk-capnote"].includes(document.activeElement.id) ? document.activeElement.id : null;
+    const moodBox = typingId ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     // the new video and pictures are 0 tall until they load again: keep each one's old height meanwhile, or the page
     // above the scroll position shrinks and the view lands further down on every redraw
     const media = "img, video", heights = {};
@@ -1858,6 +2167,7 @@
     if (pl) { const box = pl.parentElement, sync = () => box.classList.toggle("playing", !pl.paused); pl.onplay = pl.onpause = pl.onended = sync; sync(); }
     const b = host.querySelector(".rv-body"); if (b) b.scrollTop = scroll;
     if (rv.mode === "changes") { const t = $("#rv-change-text"); if (t) t.focus(); }
+    if (moodBox) { const t = $("#" + typingId); if (t) { t.focus(); t.setSelectionRange(moodBox[0], moodBox[1]); } }
   }
   async function reviewApprove(andPost) {
     if (andPost && (rv.folder || "").startsWith("approved/")) return startPost();
@@ -1892,10 +2202,26 @@
     closeReview();
   }
   function reviewClick(e) {                                 // returns true when the click belonged to the review screen
+    const more = e.target.closest("[data-cap-more]");       // Show all / Show less: reads the caption, doesn't pick it
+    if (more) { e.preventDefault(); e.stopPropagation(); const s = (rv.capOpen ||= new Set()), k = more.dataset.capMore; if (!s.delete(k)) s.add(k); renderReview(); return true; }
+    const ct = e.target.closest("[data-copy-text]"); if (ct) { copyText(ct.dataset.copyText); toast("social", "Copied", ct.dataset.copyText); return true; }
+    if (e.target.closest("[data-tt-copy]")) { copyText(pubValue("tiktok", "caption")); toast("social", "TikTok", "Caption copied. Paste it in the TikTok app."); return true; }
     const b = e.target.closest("[data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-play], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task], [data-pkg]");
     if (!b) return false;
     const d = b.dataset;
-    if (d.pkg) { if (!rv.pkgBusy) pkgAction(d.pkg, d.pkgVal, d.pkgSha); return true; }
+    if (d.pkg === "ref") { pickReference(); return true; }
+    if (d.pkg === "style-new") { if (!rv.pkgStyleBusy) newStyle(); return true; }                          // these four stay in the page: nothing is sent
+    if (d.pkg === "mood") {
+      const w = d.pkgVal, cur = (rv.pkgMood || "").split(/\s*[,，、;；]\s*|\n+/).filter(Boolean), at = cur.indexOf(w);
+      if (at >= 0) cur.splice(at, 1); else cur.push(w);
+      rv.pkgMood = cur.join(", ").slice(0, 600); renderReview(); return true;
+    }
+    if (d.pkg === "capnew") { rv.capNew = true; renderReview(); const t = $("#pk-capnote"); if (t) t.focus(); return true; }
+    if (d.pkg === "capnew-cancel") { rv.capNew = false; rv.capNote = ""; renderReview(); return true; }
+    if (d.pkg === "ref-clear") { rv.pkgRef = null; renderReview(); return true; }
+    if (d.pkg === "new") { rv.pkgNew = true; renderReview(); return true; }
+    if (d.pkg === "new-cancel") { rv.pkgNew = false; rv.pkgRef = null; renderReview(); return true; }
+    if (d.pkg) { if (!rv.pkgBusy) pkgAction(d.pkg, d.pkgVal, d.pkgSha, d.pkgSize); return true; }
     if (d.rvAccounts != null) { openReview({ accounts: true, channel: d.rvAccounts }); return true; }
     if (d.chan != null) { pickChannel(d.chan); return true; }
     if (d.chanSave != null) { channelAction(d.chanSave); return true; }
@@ -1952,6 +2278,10 @@
       if (b.id === "menu-accounts") { openReview({ accounts: true }); return; }
       if (b.id === "menu-push") { phoneNotifications(); return; }
       if (b.id === "menu-restart") { restartHQ(); return; }
+      if (b.id === "menu-meeting") { meetingNow("", false); return; }
+      if (b.id === "menu-review") { reviewSwitch(); return; }
+      if (d.stopTask) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.stopTask); stopLead({ task: d.stopTask }, `“${shortTask(t ? taskTitle(t) : d.stopTask, 50)}”`); return; }
+      if (b.id === "lead-stop") { e.stopPropagation(); const n = (state.status && state.status.desk) || {}; stopLead({ all: true }, `everything the lead is doing (${(n.running || 0) + (n.queued || 0)} job${(n.running || 0) + (n.queued || 0) === 1 ? "" : "s"})`); return; }
       if (d.phToggle) { const k = d.phToggle === "add" ? "phAdd" : "phDrop"; state[k] = !state[k]; renderBoard(); if (state.phAdd && k === "phAdd") { const i = $("#task-title"); if (i) i.focus(); } return; }
       if (b.id === "menu-lead") { setLead(true); $("#lead-input").focus(); return; }
       if (b.id === "menu-life") { setLife(!state.life); return; }
@@ -1966,25 +2296,11 @@
       if (d.ptab) { state.panelTab = d.ptab; renderTeamPanel(); return; }
       if (d.filter) { state.filter = d.filter; renderBoard(); return; }
       if (d.chf != null) { state.chFilter = d.chf; state.openDetail = null; renderBoard(); return; }
-      if (d.vgroup != null) { const s = d.vgroup.startsWith("title:") ? (state.openTitles ||= new Set()) : (state.closedVideos ||= new Set()); if (!s.delete(d.vgroup)) s.add(d.vgroup); renderBoard(); return; }
+      if (d.vgroup != null) { const s = openCards(); if (!s.delete(d.vgroup)) s.add(d.vgroup); saveOpenCards(); renderBoard(); return; }
       if (d.manage) { state.openDetail = state.openDetail === d.manage ? null : d.manage; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is under Cancelled if you want it back."); return; }
-      if (d.del) {                                         // no "are you sure": the toast has Undo instead
-        if (state.openDetail === d.del) state.openDetail = null;
-        const id = d.del, older = (state.older || {})[id] || [], ids = [id, ...older.filter((x) => x.task).map((x) => x.task)], folders = older.filter((x) => !x.task).map((x) => x.name);
-        (async () => {                                      // the task, and every older version of the same project with it
-          let r = null; for (const x of ids) r = (await postJSON("/api/tasks", { action: "remove", id: x }).catch(() => null)) || r;
-          if (folders.length) await postJSON("/api/tasks", { action: "folder-hide", folders }).catch(() => null);
-          await refresh();
-          const all = ids.length + folders.length;
-          if (r) undoToast(`Deleted${all > 1 ? ` all ${all} versions of` : ""} "${shortTask(r.task.title, 44)}". It is in the Deleted tab; files were not touched.`, async () => {
-            for (const x of ids) await postJSON("/api/tasks", { action: "restore", id: x }).catch(() => null);
-            if (folders.length) await postJSON("/api/tasks", { action: "folder-show", folders }).catch(() => null);
-            await refresh(); toast("chief", "Board", "It is back on the board.");
-          });
-        })();
-        return;
-      }
+      if (d.del) { deleteTask(d.del); return; }
+      if (d.delCard) { const c = (state.cardItems || {})[d.delCard]; if (c) deleteGroup(c); return; }
       if (d.delOut) {                                       // one folder, or every version of one project ("a|b|c")
         const folders = d.delOut.split("|"); if (state.openDetail === "out:" + folders[0]) state.openDetail = null;
         taskAction({ action: "folder-hide", folders }).then((r) => { if (r) undoToast(`Deleted${folders.length > 1 ? ` all ${folders.length} versions` : ""}. It is in the Deleted tab; the files stay in out/.`, () => taskAction({ action: "folder-show", folders }, "It is back on the board.")); });
@@ -2073,7 +2389,7 @@
     ask.addEventListener("focus", () => { buildAskMenu(); $("#ask-menu").hidden = false; });
     ask.addEventListener("input", () => { if (ask.value.startsWith("@")) { buildAskMenu(); $("#ask-menu").hidden = false; } });
     ask.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#ask-menu").hidden = true; ask.blur(); } });
-    $("#lead-bar").addEventListener("click", () => setLead(!$("#lead-log").classList.contains("open")));
+    $("#lead-bar").addEventListener("click", (e) => { if (!e.target.closest("#lead-stop")) setLead(!$("#lead-log").classList.contains("open")); });
     $("#voice-orb").addEventListener("click", (e) => { if (e.currentTarget.classList.contains("mini")) openVoice(); });
     $("#voice-orb").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.currentTarget.classList.contains("mini")) { e.preventDefault(); openVoice(); } });
     $("#voice-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendVoice(); } });

@@ -42,3 +42,5 @@ hq/run-times.json
 hq/.phone-videos/
 hq/thumbnail-design/
 .cache/
+hq/.phone-previews/
+hq/meeting.json

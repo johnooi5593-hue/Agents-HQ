@@ -1197,3 +1197,110 @@ body.review-open { overflow: hidden; }
 .menu-leads { display: block; cursor: default; }
 .menu-leads select { margin-left: 6px; padding: 2px 6px; border-radius: 6px; background: #1b2130; color: var(--text); border: 1px solid var(--line); font: 600 12px var(--font); }
 .menu-leads span { display: block; margin-top: 4px; font-size: 10.5px; line-height: 1.35; }
+
+/* ---------- the video card: a reference picture for the thumbnails, and the READY glow that blinks ---------- */
+.pk-ref { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.pk-ref img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.pk-ref > span:not(.hint) { color: #cfd5e3; font: 12.5px Inter, sans-serif; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pk-ref .hint { flex: 1 1 200px; margin: 0; }
+.rv-sec.pk.is-ready { border-color: rgba(61, 220, 151, 0.65); animation: final-glow 1.8s ease-in-out infinite alternate;   /* same green blink as the READY card on the board */
+  background: linear-gradient(100deg, rgba(61, 220, 151, 0.2), rgba(61, 220, 151, 0.07) 60%, rgba(61, 220, 151, 0.12)); }
+@media (prefers-reduced-motion: reduce) { .rv-sec.pk.is-ready { animation: none; box-shadow: 0 0 0 1px rgba(61, 220, 151, 0.6), 0 0 18px rgba(61, 220, 151, 0.25); } }
+
+/* ---------- thumbnail step: the feeling box and its quick mood chips ---------- */
+.pk-mood { margin-top: 8px; }
+.pk-mood label { display: block; margin-bottom: 6px; color: #cfd5e3; font: 600 12.5px Inter, sans-serif; }
+.pk-mood label span { color: #7f8291; font-weight: 400; margin-left: 4px; }
+.pk-mood textarea { width: 100%; box-sizing: border-box; height: auto; min-height: 58px; padding: 8px 10px; resize: vertical; font: 13.5px/1.4 Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+.pk-moods { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pk-moods .rv-chip { min-height: 30px; padding: 0 11px; font-size: 12.5px; }
+
+/* ---------- thumbnail step: this video's style (the channel's saved templates, or a new one) ---------- */
+.pk-style { margin-top: 8px; }
+.pk-lbl { margin-bottom: 6px; color: #cfd5e3; font: 600 12.5px Inter, sans-serif; }
+.pk-lbl span { color: #7f8291; font-weight: 400; margin-left: 4px; }
+.pk-styles { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.pk-tpl { all: unset; flex: none; position: relative; width: 84px; cursor: pointer; border-radius: 10px; overflow: hidden; border: 2px solid transparent; background: #1a1d26; }
+.pk-tpl img { display: block; width: 100%; height: 112px; object-fit: cover; }
+.pk-tpl span { display: block; padding: 4px 6px; color: #b9c0cf; font: 10.5px Inter, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pk-tpl.on { border-color: #f5c84b; box-shadow: 0 0 12px rgba(245, 200, 75, 0.4); }
+.pk-tpl i { position: absolute; top: 5px; right: 5px; width: 20px; height: 20px; border-radius: 50%; background: #f5c84b; color: #1b1d22; display: grid; place-items: center; }
+.pk-tpl i svg { width: 12px; height: 12px; }
+.pk-tpl.add { height: 136px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 2px dashed rgba(255, 255, 255, 0.18); color: #cfd5e3; font-size: 22px; }
+.pk-tpl.add span { padding: 0; font-size: 11px; }
+.pk-tpl:focus-visible { outline: 2px solid #4f8cff; }
+.pk-act .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+/* ---------- a project that went out on social media: purple shine and blink, POSTED ---------- */
+.posted-tag { display: inline-block; vertical-align: 1px; margin-right: 7px; padding: 2px 8px; border-radius: 6px; font: 800 9.5px var(--mono); letter-spacing: 0.14em; color: #fff;
+  background: linear-gradient(110deg, #8b5cf6 0%, #8b5cf6 38%, #efe6ff 50%, #8b5cf6 62%, #8b5cf6 100%); background-size: 250% 100%;
+  animation: ready-shine 2.4s linear infinite, posted-glow 1.6s ease-in-out infinite alternate; }
+.vgroup.is-posted, .trow.is-posted { background: linear-gradient(100deg, rgba(139, 92, 246, 0.22), rgba(139, 92, 246, 0.07) 60%, rgba(139, 92, 246, 0.14));
+  border-color: rgba(167, 139, 250, 0.65); animation: posted-blink 1.8s ease-in-out infinite alternate; }
+.vgroup.is-posted .trow { background: rgba(28, 18, 50, 0.4); animation: none; }
+.trow.is-posted .done-g { background: #8b5cf6; color: #fff; }
+@keyframes posted-glow { from { box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.45), 0 0 6px rgba(139, 92, 246, 0.35); } to { box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.9), 0 0 16px rgba(139, 92, 246, 0.8); } }
+@keyframes posted-blink { from { box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.3), 0 0 10px rgba(139, 92, 246, 0.15); } to { box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.75), 0 0 26px rgba(139, 92, 246, 0.45); } }
+@media (prefers-reduced-motion: reduce) { .posted-tag, .vgroup.is-posted, .trow.is-posted { animation: none; } }
+.pk-step.pick { background: rgba(255, 159, 28, 0.18); color: #ffb54d; box-shadow: 0 0 0 1px rgba(255, 159, 28, 0.55); }
+.pk-step.pick i { background: #ff9f1c; color: #2a1600; }
+
+/* ---------- a step being made or remade: progress bar on the card, a filling tag on the board ---------- */
+.pk-prog { margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: rgba(79, 140, 255, 0.08); border: 1px solid rgba(79, 140, 255, 0.3); }
+.pk-prog-top { display: flex; align-items: center; gap: 8px; color: #dfe6f5; font: 600 12.5px Inter, sans-serif; }
+.pk-prog-top b { margin-left: auto; color: #fff; font: 700 13px var(--mono); }
+.pk-prog .up-bar { height: 7px; margin-top: 8px; }
+.pk-prog .up-bar i { background: linear-gradient(90deg, #4f8cff, #7b6cf6, #4f8cff); background-size: 200% 100%; animation: prog-flow 1.6s linear infinite; }
+@keyframes prog-flow { from { background-position: 0 0; } to { background-position: -200% 0; } }
+.pk-step.making { position: relative; overflow: hidden; color: #cfe0ff; box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.55);
+  background: linear-gradient(90deg, rgba(79, 140, 255, 0.35) var(--p), rgba(79, 140, 255, 0.1) var(--p)); padding-left: 6px; }
+.pk-step.making .spin { width: 9px; height: 9px; border-width: 1.5px; }
+@media (prefers-reduced-motion: reduce) { .pk-prog .up-bar i { animation: none; } }
+.pk-prog .spin { width: 14px; height: 14px; }
+
+/* ---------- the / menu: the office's skills, editing styles first ---------- */
+.slash-menu { position: fixed; z-index: 120; width: min(420px, calc(100vw - 16px)); max-height: 340px; overflow-y: auto; padding: 6px; border-radius: 12px;
+  background: #171b25; border: 1px solid rgba(255, 255, 255, 0.12); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55); }
+.slash-menu .sl-grp { padding: 6px 8px 3px; font: 600 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: #6c7384; }
+.slash-menu .sl-item { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 9px; border-radius: 8px; cursor: pointer; }
+.slash-menu .sl-item b { color: #ffd77a; font: 700 13px var(--mono); }
+.slash-menu .sl-item span { color: #9aa2b2; font: 12px Inter, "PingFang SC", "Microsoft YaHei", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slash-menu .sl-item.on, .slash-menu .sl-item:hover { background: #262d3d; }
+.slash-menu .sl-foot { padding: 6px 8px 2px; color: #5f6676; font: 10.5px Inter, sans-serif; border-top: 1px solid rgba(255, 255, 255, 0.06); margin-top: 4px; }
+.pub-cap.full span { -webkit-line-clamp: unset; display: block; overflow: visible; }
+.pub-cap .cap-more { align-self: flex-start; margin-top: 2px; padding: 3px 0; color: #9fb6ff; font: 600 12px Inter, sans-serif; cursor: pointer; }
+.pub-cap .cap-more:hover { text-decoration: underline; }
+.pub-cap span.cap-more { display: inline-block; -webkit-line-clamp: unset; overflow: visible; white-space: nowrap; }
+
+/* ---------- Stop: a running job on the board, or everything from the Lead bar ---------- */
+.btn.stop-btn { border-color: rgba(255, 77, 94, 0.45); color: #ff9aa5; background: rgba(255, 77, 94, 0.08); }
+.btn.stop-btn:hover { background: rgba(255, 77, 94, 0.2); color: #fff; }
+#lead-bar .stop-btn { height: 24px; padding: 0 9px; font-size: 11.5px; margin-left: 8px; }
+
+/* ---------- two thumbnail sizes: 9:16 for YouTube + Facebook, 3:4 for Instagram ---------- */
+.pk-size { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; color: #e6eaf3; font: 600 12.5px Inter, sans-serif; }
+.pk-size .pk-ok { display: inline-flex; align-items: center; gap: 4px; color: #7fe7b8; font-weight: 500; }
+.pk-size .pk-ok svg { width: 12px; height: 12px; }
+.pk-thumbs.r34 { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.pub-thumb-l { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
+.pub-thumb-l > span { color: #9aa2b2; font: 11px Inter, sans-serif; }
+.pub-thumb.r34 { aspect-ratio: 3 / 4; width: 120px; cursor: default; }
+
+/* ---------- a video whose post waits for its scheduled time: blue SCHEDULED tag and a calm blue glow ---------- */
+.sched-tag { display: inline-block; vertical-align: 1px; margin-right: 7px; padding: 2px 8px; border-radius: 6px; font: 800 9.5px var(--mono); letter-spacing: 0.1em; color: #fff;
+  background: linear-gradient(110deg, #2f7cf6 0%, #2f7cf6 38%, #dbe8ff 50%, #2f7cf6 62%, #2f7cf6 100%); background-size: 250% 100%; animation: ready-shine 3s linear infinite; }
+.vgroup.is-sched, .trow.is-sched { border-color: rgba(79, 140, 255, 0.6); background: linear-gradient(100deg, rgba(79, 140, 255, 0.16), rgba(79, 140, 255, 0.05) 60%, rgba(79, 140, 255, 0.1)); }
+.vgroup.is-sched .trow { background: rgba(14, 24, 48, 0.4); }
+.trow.is-sched .done-g { background: #2f7cf6; color: #fff; }
+@media (prefers-reduced-motion: reduce) { .sched-tag { animation: none; } }
+
+/* ---------- swipe on the board (touch): left = delete (red), right = review (blue) ---------- */
+#task-board .trow, #task-board .vg-head { position: relative; touch-action: pan-y; }
+.sw-del { box-shadow: inset -80px 0 50px -40px rgba(255, 77, 94, 0.55); }
+.sw-open { box-shadow: inset 80px 0 50px -40px rgba(79, 140, 255, 0.55); }
+.sw-del::after, .sw-open::after { position: absolute; top: 50%; transform: translateY(-50%); font: 700 12px Inter, sans-serif; letter-spacing: .04em; padding: 4px 9px; border-radius: 8px; pointer-events: none; }
+.sw-del::after { content: "Delete"; right: 10px; color: #ffd0d5; background: rgba(255, 77, 94, 0.35); }
+.sw-open::after { content: "Review"; left: 10px; color: #dbe8ff; background: rgba(79, 140, 255, 0.35); }
+.sw-go.sw-del::after { background: #ff4d5e; color: #fff; }
+.sw-go.sw-open::after { background: #2f7cf6; color: #fff; }
+.vg-del .i { width: 16px; height: 16px; }

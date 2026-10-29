@@ -11,6 +11,7 @@ skills:
   - yellow-serif
   - poster-kinetic
   - caption-card
+  - neon-glow
   - sermon-moments
   - sfx
   - pixel
@@ -26,6 +27,8 @@ Follow the **reel** skill step by step for the edit, then the **pixel** skill fo
 **Poster Kinetic.** When the request says Poster Kinetic, 大字海报, poster style or "the Semenyih style", follow the **poster-kinetic** skill (plan first, then render) instead.
 
 **Caption Card.** When the request says caption-card, 字卡, the IG ad / XiXi style or asks for very pro word animation, follow the **caption-card** skill: cards for every phrase, 3-4 big-type moments (hook, number, writeon, punch) each with a why.
+
+**Neon Glow.** When the request says neon-glow, 霓虹, 发光字, glow words or the exact glow, follow the **neon-glow** skill: every line typed in chrome, one neon word that switches on per chosen line.
 
 **Sermon moments.** For a sermon highlight in any style, read the **sermon-moments** skill and look for the few lines whose words call for one of its techniques: text behind the head, active-word captions, name label, question bar, grade wipe, prayer grade, wall of moments, freeze, whip pan, zoom-through, or jump-cut framing. Use one only where its trigger is in the preacher's words, with a "why" for each, within its limit. Most lines get none, and 0 is fine. List them in `moments.md` and `notes.md`.
 
