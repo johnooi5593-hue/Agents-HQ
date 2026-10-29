@@ -712,6 +712,10 @@ def _task_action(body):
             gone = next((t for t in db.get("deleted", []) if t.get("id") == body.get("id")), None)
             if not gone:
                 return 404, {"error": "that task is not in Deleted"}
+            match = re.search(r"out:([^\s,;]+)", gone.get("note") or "")
+            studio = globals().get("sermon_design")
+            if gone.get("studioPermanentlyDeleted") or (studio and match and studio.delivery_permanently_deleted(match[1])):
+                return 409, {"error": "This Studio project and its delivery were permanently deleted. Create a new project instead."}
             db["deleted"].remove(gone); gone.pop("deleted_at", None)
             db["tasks"].append(normalize_task(gone)); save_tasks(db)
             return 200, {"restored": gone}

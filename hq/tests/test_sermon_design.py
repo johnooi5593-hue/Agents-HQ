@@ -10,10 +10,14 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from PIL import Image
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sermon_design import BACK_TO_HQ_JS, BASE, HOLD_UNLOAD_JS, DesignError, SermonDesignBridge, allowed, inside
+
+_png = io.BytesIO(); Image.new("RGB", (16, 9), "navy").save(_png, format="PNG")
+PNG_FIXTURE = _png.getvalue()
 
 
 class Handler:
@@ -67,7 +71,8 @@ class BridgeTests(unittest.TestCase):
         folder = self.bridge.runtime_root / ".studio" / "jobs" / "native-task" / "attempt-1" / "export-a"
         folder.mkdir(parents=True)
         rows = []
-        for name, data, fmt in [("Sermon_Title_Design_01.png", b"independent PNG test fixture", "png"), ("fonts/OFL.txt", b"license fixture", "txt"), ("Sermon_Title_r3.zip", b"zip fixture", "zip")]:
+        png = io.BytesIO(); Image.new("RGB", (16, 9), "navy").save(png, format="PNG")
+        for name, data, fmt in [("Sermon_Title_Design_01.png", png.getvalue(), "png"), ("fonts/OFL.txt", b"license fixture", "txt"), ("Sermon_Title_r3.zip", b"zip fixture", "zip")]:
             file = folder / name; file.parent.mkdir(parents=True, exist_ok=True); file.write_bytes(data)
             rows.append({"path": str(file), "name": name, "format": fmt, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
         return {"id": "project-one", "kind": "title", "name": "Sermon", "titles": {"chinese": "认识神的声音"}, "revision": 4, "hqTaskId": "native-task", "lastExport": {"projectRevision": 4, "hqAttempt": 1, "files": rows}}
@@ -135,7 +140,7 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(DesignError, "incomplete|changed"):
             self.bridge.register(project)
         self.assertEqual(len(self.tasks), 1)
-        artifact.write_bytes(b"independent PNG test fixture")
+        artifact.write_bytes(PNG_FIXTURE)
         self.tasks.clear()
         with self.assertRaisesRegex(DesignError, "removed"):
             self.bridge.register(project)
@@ -164,7 +169,7 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("path", payload["project"]["lastExport"]["files"][0])
         download = Handler(payload["url"])
         self.bridge.handle(download)
-        self.assertEqual(download.code, 200); self.assertEqual(download.wfile.getvalue(), b"independent PNG test fixture")
+        self.assertEqual(download.code, 200); self.assertEqual(download.wfile.getvalue(), PNG_FIXTURE)
         self.assertIn("attachment", download.response_headers["Content-Disposition"])
         bad = Handler(BASE + "/download?path=.studio/jobs/other/private.txt")
         self.bridge.handle(bad); self.assertEqual(bad.code, 404)
@@ -188,7 +193,7 @@ class BridgeTests(unittest.TestCase):
         self.bridge.register(project)
         return BASE + "/download?path=" + relative
     def test_download_full_and_range_head_and_resuming(self):
-        url = self.download_url(); content = b"independent PNG test fixture"
+        url = self.download_url(); content = PNG_FIXTURE
         full = Handler(url, "HEAD")
         self.bridge.handle(full)
         self.assertEqual(full.code, 200)
@@ -214,7 +219,7 @@ class BridgeTests(unittest.TestCase):
                     request = Handler(url, method, headers={"Range": value})
                     self.bridge.handle(request)
                     self.assertEqual(request.code, 416)
-                    self.assertEqual(request.response_headers["Content-Range"], "bytes */" + str(len(b"independent PNG test fixture")))
+                    self.assertEqual(request.response_headers["Content-Range"], "bytes */" + str(len(PNG_FIXTURE)))
                     self.assertEqual(request.response_headers["Content-Length"], "0")
                     self.assertEqual(request.wfile.getvalue(), b"")
     def test_cancelled_download_never_sends_a_second_error_response(self):

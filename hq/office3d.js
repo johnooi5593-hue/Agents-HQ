@@ -4,7 +4,7 @@
 // The Tower: a glass office tower seen from the front at night, a city skyline behind it. Ground: the lobby with the
 // reception, the canteen + kitchen and the lounge. Floors 1-4: two team rooms each (floor, carpet, two back walls, trims,
 // desks, monitors, dashboards, lamps, shelves, plants, sofas) with glass meeting rooms and nooks at the ends. The roof:
-// a terrace under a pergola, the game room and a coffee bar. Spiral stairs and a glass lift join the floors. In the plaza
+// a terrace under a pergola, the game room and a coffee bar. Spiral stairs and three glass lifts join the floors. In the plaza
 // out front the Brain glows in a fountain (round platform, neon rings, a light beam, orbit rings, water jets); data wires
 // with travelling sparks run from every room to it. Chibi characters work, climb the stairs, take breaks and drop notes
 // that fly out to the Brain; ghost sub-agents; bloom on everything that glows.
@@ -40,12 +40,13 @@
   const CHAR_SCALE = 1.22;                       // characters are ~1.6 desk-heights tall in the video
   // The Tower. Floor f stands at y = f * FLOOR_H; floor 0 is the lobby, FLOORS - 1 the roof. Each team floor holds two
   // rooms, slot 0 on the left (x = -ROOM_X) and slot 1 on the right, backs to the building's back wall; a corridor runs
-  // along the glass front (z = CZ); the core between the rooms has the spiral stairs and the lift.
+  // along the glass front (z = CZ); the core between the rooms has the spiral stairs and the bank of lifts.
   const FLOOR_H = 15, FLOORS = 8, ROOF = FLOORS - 1, HALL = 6;   // lobby, 5 team floors (the top one holds Design), the Meeting Hall, roof
   const WX = 60, DZ = 16;                        // half the building's width and depth
   const ROOM_X = 30, CZ = 13.5;                  // the rooms' centre offset; the corridor line along the front
   const STAIR = { x: -6, z: -6, r: 3, hole: 4.2 };   // the spiral stairs (and the opening in each floor above them)
-  const LIFT = { x: 8, z: -10, r: 2.2 };         // the glass lift (lobby to the top team floor)
+  const LIFTS = [0, 5, 10].map((x) => ({ x, z: -10, r: 2.2 }));   // three glass lifts, lobby to the Meeting Hall
+  const LIFT_HALL_Z = -4.5, LIFT_TOP = HALL;      // the lift lobby in front of their doors on every floor; the highest stop
   const BRAIN = new THREE.Vector3(0, 0, 50);     // the fountain in the plaza
   const FLOOR_PLAN = { research: [1, 0], analytics: [1, 1], dev: [2, 0], inbox: [2, 1], scripts: [3, 0], shop: [3, 1], creative: [4, 0], social: [4, 1], design: [5, 0] };
   const FLOOR_NAMES = ['Ground · Lobby & canteen', '1F', '2F', '3F', '4F', '5F · Design', '6F · Meeting Hall', 'Roof · Terrace & game room'];
@@ -262,7 +263,7 @@
     mode: 'overview', userActiveUntil: 0, tween: null, selected: null, selectRing: null, fallbackRunning: {},
     size: { w: 0, h: 0 }, labelRules: { agentMaxDist: 110 },
     phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
-    floors: [], floorView: null, commons: [], lift: null, people: null, wires: [],
+    floors: [], floorView: null, commons: [], lifts: [], people: null, wires: [],
   };
   const floorOfY = (y) => clamp(Math.floor((y + 3) / FLOOR_H), 0, FLOORS - 1);
   const floorShown = () => true;                                              // the glass front shows every floor at once
@@ -767,18 +768,22 @@
       }
     }
     scene.add(ST.mesh()); scene.add(SG.mesh());
-    // the glass lift: a shaft from the lobby to the top team floor, light rails, a car going up and down
+    // the three glass lifts: shafts from the lobby to the Meeting Hall, light rails, a car each that carries whoever rides it
     {
-      const h = ROOF * FLOOR_H, gL = new THREE.Group(); scene.add(gL);
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(LIFT.r, LIFT.r, h, 32, 1, true), glassMat); shaft.position.set(LIFT.x, h / 2, LIFT.z); shaft.renderOrder = 3; gL.add(shaft);
+      const h = (LIFT_TOP + 1) * FLOOR_H, gL = new THREE.Group(); scene.add(gL);
       const rails = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
-      for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + k * Math.PI / 2; rails.box(0.09, h, 0.09, LIFT.x + Math.cos(a) * LIFT.r, h / 2, LIFT.z + Math.sin(a) * LIFT.r, 0xbff1ff); }
+      const lamp = [0x8ab4f8, 0x81c995, 0xfdd663];
+      LIFTS.forEach((Lf, i) => {
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(Lf.r, Lf.r, h, 32, 1, true), glassMat); shaft.position.set(Lf.x, h / 2, Lf.z); shaft.renderOrder = 3; gL.add(shaft);
+        for (let k = 0; k < 4; k++) { const a = Math.PI / 4 + k * Math.PI / 2; rails.box(0.09, h, 0.09, Lf.x + Math.cos(a) * Lf.r, h / 2, Lf.z + Math.sin(a) * Lf.r, 0xbff1ff); }
+        for (let f = 0; f <= LIFT_TOP; f++) rails.box(0.5, 0.32, 0.06, Lf.x, f * FLOOR_H + WALK_Y + 5.2, Lf.z + Lf.r + 0.05, lamp[i]);   // the lit sign over each door
+        const car = new THREE.Group(), y0 = [0, 3, LIFT_TOP][i] * FLOOR_H + WALK_Y; car.position.set(Lf.x, y0, Lf.z); gL.add(car);
+        const deck = new THREE.Mesh(new THREE.CylinderGeometry(Lf.r - 0.2, Lf.r - 0.2, 0.25, 32), new THREE.MeshLambertMaterial({ color: 0x4a5368 })); deck.position.y = 0.05; car.add(deck);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(Lf.r - 0.25, 0.06, 6, 40), basic(lamp[i])); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.2; car.add(ring);
+        const roofRing = ring.clone(); roofRing.position.y = 4.6; car.add(roofRing);
+        state.lifts.push({ car, x: Lf.x, y: y0, rider: null });
+      });
       gL.add(rails.mesh());
-      const car = new THREE.Group(); car.position.set(LIFT.x, WALK_Y, LIFT.z); gL.add(car);
-      const deck = new THREE.Mesh(new THREE.CylinderGeometry(LIFT.r - 0.2, LIFT.r - 0.2, 0.25, 32), new THREE.MeshLambertMaterial({ color: 0x4a5368 })); deck.position.y = 0.05; car.add(deck);
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(LIFT.r - 0.25, 0.06, 6, 40), basic(0xc6f4ff)); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.2; car.add(ring);
-      const roofRing = ring.clone(); roofRing.position.y = 4.6; car.add(roofRing);
-      state.lift = { car, top: (ROOF - 1) * FLOOR_H + WALK_Y };
     }
     // data wires: from the back corner of every room out through the glass to the Brain in the fountain
     const core = new THREE.Vector3(BRAIN.x, CORE_Y, BRAIN.z);
@@ -842,7 +847,7 @@
   // ------------------------------------------------------------------ the Meeting Hall (6F)
   // The right half is the auditorium: a stage, the projector screen and four vertical (9:16, like the reels) TVs on the
   // back wall; 4 rows of 9 seats
-  // facing them. The left half is a lounge with sofas, a bar and plants. The stairs and the lift stay clear in between.
+  // facing them. The left half is a lounge with sofas, a bar and plants. The stairs and the lifts stay clear in between.
   const HALL_ROWS = [-6.2, -2.2, 1.8, 5.8], HALL_COLS = [18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54];
   const HALL_SCREEN = { x: 36, w: 24, h: 10.5 };
   // the TVs: x, height, width, (with several channels: which channel, which of its videos)
@@ -878,7 +883,7 @@
     M.box(12, 2.2, 1.6, -50, top + 1.1, -12.6, 0x2b2e36); M.box(12.2, 0.12, 1.8, -50, top + 2.26, -12.6, 0xe8e2d6); GL.box(11.6, 0.08, 0.04, -50, top + 1.5, -11.78, 0x34a853);
     for (let k = 0; k < 4; k++) { M.cyl(0.45, 0.1, -54 + k * 2.7, top + 1.6, -10.6, 0xea4335); M.cyl(0.08, 1.6, -54 + k * 2.7, top + 0.8, -10.6, 0x2a2d35); }
     for (const [x, z] of [[-56, 8], [-24, 8], [-56, -14], [-18, -13], [12, -13], [58, -13], [58, 10], [12, 10]]) tree(M, x, top, z, 0.95);
-    for (let x = -50; x <= 54; x += 13) { if (Math.abs(x - STAIR.x) < 6 || Math.abs(x - LIFT.x) < 4) continue; GL.ball(0.5, x, top + 11.2, -2, 0xfff1d0); M.cyl(0.03, 2.6, x, top + 12.6, -2, 0x2a2d35); }
+    for (let x = -50; x <= 54; x += 13) { if (Math.abs(x - STAIR.x) < 6 || LIFTS.some((l) => Math.abs(x - l.x) < 3.5)) continue; GL.ball(0.5, x, top + 11.2, -2, 0xfff1d0); M.cyl(0.03, 2.6, x, top + 12.6, -2, 0x2a2d35); }
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(20, 2.4), new THREE.MeshBasicMaterial({ map: signTex('ALL-HANDS HALL', '#fbbc05'), transparent: true, depthWrite: false }));
     sign.position.set(-36, top + 9.2, back + 0.2); g.add(sign);
     state.hall = { screen: scr, tvs, beam, top, slide: 0, slideAt: 0, data: null, imgs: {}, videos: [], drawn: 0 };
@@ -1460,7 +1465,16 @@
   }
   function ledge(a, b) { if (a == null || b == null || a === b) return; const A = LIFE.nodes[a], B = LIFE.nodes[b]; if (!A.adj.includes(b)) A.adj.push(b); if (!B.adj.includes(a)) B.adj.push(a); }
   let _rd = null, _rp = null, _rv = null;
-  function route(from, to) {                                                   // Dijkstra over ~300 nodes, only when an action starts or is cut short
+  // An agent's habit: the stairs (-1) or a favourite lift (0-2). The other way still works, it just costs more, so a
+  // stairs person takes a lift for a long trip up and a lift person walks one floor.
+  function edgeCost(A, B, who) {
+    const d = A.p.distanceTo(B.p);
+    if (!who) return d;
+    if (A.lift != null && A.lift === B.lift) return d * (who.lift < 0 ? 2.2 : who.lift === A.lift ? 0.45 : 1.3);   // a ride between floors
+    if (A.stair && B.stair) return d * (who.lift < 0 ? 1 : 2.4);
+    return d;
+  }
+  function route(from, to, who) {                                              // Dijkstra over ~400 nodes, only when an action starts or is cut short
     const N = LIFE.nodes, n = N.length;
     if (from == null || to == null) return null;
     if (!_rd || _rd.length < n) { _rd = new Float64Array(n); _rp = new Int32Array(n); _rv = new Uint8Array(n); }
@@ -1471,7 +1485,7 @@
       if (u < 0 || u === to) break;
       _rv[u] = 1;
       if (N[u].spot && u !== from) continue;                                   // a spot is a dead end: never walk through someone's spot
-      for (const v of N[u].adj) { const nd = best + N[u].p.distanceTo(N[v].p); if (nd < _rd[v]) { _rd[v] = nd; _rp[v] = u; } }
+      for (const v of N[u].adj) { const nd = best + edgeCost(N[u], N[v], who); if (nd < _rd[v]) { _rd[v] = nd; _rp[v] = u; } }
     }
     if (from !== to && _rp[to] < 0) return null;
     const path = [to]; let c = to; while (c !== from) { c = _rp[c]; path.push(c); }
@@ -1501,9 +1515,24 @@
       if (last != null) ledge(last, foot);
       if (f < ROOF) {
         let prev = foot;
-        for (let k = 1; k < 12; k++) { const a = Math.PI / 2 + k * Math.PI / 6, id = lnode(STAIR.x + Math.cos(a) * WR, y + k / 12 * FLOOR_H, STAIR.z + Math.sin(a) * WR); ledge(prev, id); prev = id; }
+        for (let k = 1; k < 12; k++) { const a = Math.PI / 2 + k * Math.PI / 6, id = lnode(STAIR.x + Math.cos(a) * WR, y + k / 12 * FLOOR_H, STAIR.z + Math.sin(a) * WR); N[id].stair = true; ledge(prev, id); prev = id; }
         last = prev;
       }
+    }
+    // the lifts: on every floor a lift lobby in front of the three doors, joined to the corridor past the front desk;
+    // inside each car a node, and the shaft joins the cars' nodes floor to floor (a straight ride up or down)
+    const inCar = LIFTS.map(() => []);
+    for (let f = 0; f <= LIFT_TOP; f++) {
+      const y = f * FLOOR_H + WALK_Y, hall = LIFTS.map((Lf) => lnode(Lf.x, y, LIFT_HALL_Z, { w: 0.5 }));
+      for (let k = 1; k < hall.length; k++) ledge(hall[k - 1], hall[k]);
+      const out = lnode(LIFTS[LIFTS.length - 1].x + 2.5, y, LIFT_HALL_Z, { w: 0.5 });
+      ledge(hall[hall.length - 1], out); ledge(out, corrAt(f, 14));
+      LIFTS.forEach((Lf, i) => {
+        const door = lnode(Lf.x, y, Lf.z + Lf.r + 0.6), car = lnode(Lf.x, y, Lf.z);
+        N[car].lift = i; ledge(hall[i], door); ledge(door, car);
+        if (f) ledge(inCar[i][f - 1], car);
+        inCar[i].push(car);
+      });
     }
     {
       const hy = HALL * FLOOR_H + WALK_Y, seats = [], aisle = { L: [], R: [] };
@@ -1600,6 +1629,8 @@
       action: null, topic: '', partner: null, visit: null, pair: null, cgroup: null, sip: 0,
       wL: 0, wR: 0, oL: 0, oLz: 0, oR: 0, oRz: 0, bCode: 0, bText: '', bClearAt: 0, mug: null, phone: null, puffs: null,
     };
+    const habit = rng(hash('lift:' + seat.agent.name));
+    L.lift = habit() < 0.6 ? Math.floor(habit() * LIFTS.length) : -1;          // about 6 in 10 take a lift (each their own), the rest the stairs
     seat.life = L; LIFE.actors.push(L); LIFE.by[L.name] = L;
     makeAnchor('bubble', L.name, ch.group, new THREE.Vector3(0, 4.4, 0));   // the name pill's point; hud.css lifts the bubble over the pill
     labels.bubble[L.name].el.addEventListener('click', () => { const fn = api.onAgentClick; if (typeof fn === 'function') fn(L.name); else { select(L.name); focusAgent(L.name); } });
@@ -1648,7 +1679,7 @@
     L.inNext = false;
   }
   function walkInit(L, s) {
-    const ids = route(L.node, s.to);
+    const ids = route(L.node, s.to, L);
     if (!ids) return false;
     const pts = ids.map((id) => LIFE.nodes[id].p), ws = ids.map((id) => LIFE.nodes[id].w);
     if (s.from) { pts.unshift(s.from); ids.unshift(-1); ws.unshift(0); }       // rerouted mid-walk: start where the agent stands
@@ -1658,6 +1689,8 @@
   function turnTo(L, target, dt, rate) { L.yaw += wrapA(target - L.yaw) * Math.min(1, dt * rate); }
   function walkStep(L, s, dt) {
     let left = dt * s.speed, a = s.pts[s.k], b = s.pts[s.k + 1], len = a.distanceTo(b);
+    const lift = LIFE.nodes[s.ids[s.k]] && LIFE.nodes[s.ids[s.k + 1]] && LIFE.nodes[s.ids[s.k]].lift;
+    if (lift != null && lift === LIFE.nodes[s.ids[s.k + 1]].lift) { left = dt * 5.5; if (!state.lifts[lift].rider) state.lifts[lift].rider = L; }   // in a lift: 5.5 m/s
     L.moving = true; L.speedNow = s.speed;
     while (left > 0) {
       if (s.d + left < len) { s.d += left; left = 0; break; }
@@ -1668,7 +1701,7 @@
     }
     const u = len > 1e-6 ? s.d / len : 1, dx = b.x - a.x, dz = b.z - a.z, flat = Math.hypot(dx, dz), inv = 1 / Math.max(1e-6, flat), w = Math.min(s.ws[s.k], s.ws[s.k + 1]);
     const ride = flat < 0.05;                                                  // the lift: straight up or down
-    L.base.set(a.x + dx * u, a.y + (b.y - a.y) * (ride ? ease(u) : smooth(0.3, 0.7, u)), a.z + dz * u);
+    L.base.set(a.x + dx * u, a.y + (b.y - a.y) * (ride ? u : smooth(0.3, 0.7, u)), a.z + dz * u);
     _lo.set(-dz * inv * w, 0, dx * inv * w);                                   // keep to one side of a walkway or the ring, so walkers pass each other
     L.off.lerp(_lo, Math.min(1, dt * 3.5));
     if (ride) L.moving = false; else turnTo(L, Math.atan2(dx, dz), dt, 7);
@@ -2091,7 +2124,9 @@
       } else if (!o.graph && LIFE.debug) { scene.remove(LIFE.debug); LIFE.debug = null; }
     }
     if (o.topics) LIFE.topics = o.topics;
-    let res = { speed: LIFE.speed, auto: LIFE.auto, graph: !!LIFE.debug, nodes: LIFE.nodes.length };
+    let res = { speed: LIFE.speed, auto: LIFE.auto, graph: !!LIFE.debug, nodes: LIFE.nodes.length,
+      lifts: state.lifts.map((Lf) => ({ floor: Math.round((Lf.y - WALK_Y) / FLOOR_H * 10) / 10, rider: Lf.rider ? Lf.rider.name : null })),
+      habits: LIFE.actors.reduce((m, A) => { const k = A.lift < 0 ? 'stairs' : 'lift ' + (A.lift + 1); m[k] = (m[k] || 0) + 1; return m; }, {}) };
     if (o.force) {
       let L = o.agent ? LIFE.by[o.agent] : null;
       if (L && !isFree(L)) return Object.assign(res, { ok: false, reason: o.agent + ' is busy' });
@@ -2319,9 +2354,14 @@
       seat.running = on;
     }
     for (const name in state.seats) { const g = state.seats[name].ch.group; g.visible = floorShown(floorOfY(g.position.y)); }
-    if (state.lift) {                                                          // the lift glides up and down, pausing at the ends
-      const c = (t * 0.035) % 1, u = c < 0.4 ? ease(c / 0.4) : c < 0.5 ? 1 : c < 0.9 ? 1 - ease((c - 0.5) / 0.4) : 0;
-      state.lift.car.position.y = WALK_Y + u * (state.lift.top - WALK_Y);
+    for (const Lf of state.lifts) {                                           // each car fetches its rider, carries them, then waits at that floor
+      const R = Lf.rider;
+      if (R) {
+        const st = R.steps && R.steps[R.si], gap = R.base.y - Lf.y;
+        Lf.y += Math.abs(gap) < 0.6 ? gap : Math.sign(gap) * Math.min(Math.abs(gap), dt * 24);   // far away: it glides over fast first
+        if (!st || st.t !== 'walk' || Math.abs(R.base.x - Lf.x) > 0.3) Lf.rider = null;
+      }
+      Lf.car.position.y = Lf.y;
     }
     animateWalkers(t, dt); animateSubs(t); updateLabels(); updateHall(t);
     if (state.selectRing && state.selectRing.visible) {

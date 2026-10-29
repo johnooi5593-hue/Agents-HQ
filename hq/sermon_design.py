@@ -16,8 +16,10 @@ import subprocess
 import threading
 import time
 import uuid
+from PIL import Image
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from sermon_cleanup import plan_cleanup, execute_cleanup, index_lock
 
 ENGINE_ROOT = Path(r"D:\AI OFFICE")
 ENGINE_HOST, ENGINE_PORT = "127.0.0.1", 4341
@@ -88,6 +90,8 @@ LEAVE_MSG = ("这个设计正在生成，或有未保存的修改。\n已经开�
 BACK_TO_HQ_JS = BACK_TO_HQ_JS.replace(b"__LEAVE_MSG__", json.dumps(LEAVE_MSG).encode())
 BACK_TO_HQ = b"<script>" + BACK_TO_HQ_JS + b"</script>"
 BASE = "/api/sermon-design"
+COPY_LIMIT = 400 * 1024 * 1024
+SOURCE_LIMIT = 2 * 1024 * 1024 * 1024
 
 
 class DesignError(Exception):
@@ -103,7 +107,7 @@ def allowed(method, path):
             re.fullmatch(BASE + r"/projects/" + ID + r"(?:/assets/" + ID + r"|/designs/" + ID + r"/preview)?", path))
     if method == "POST":
         return path in (BASE + "/projects", BASE + "/assets") or bool(re.fullmatch(
-            BASE + r"/projects/" + ID + r"(?:/(?:generate|preview|export|restore|recap|trash|untrash))?", path))
+            BASE + r"/projects/" + ID + r"(?:/(?:generate|preview|export|restore|recap|trash|untrash|delivery))?", path))
     return method == "PUT" and bool(re.fullmatch(BASE + r"/projects/" + ID, path))
 
 
@@ -133,6 +137,7 @@ class SermonDesignBridge:
         self.pending_path = self.hq_root / "hq" / "sermon-pending-deliveries.json"
         self.lock, self.engine_lock = threading.Lock(), threading.Lock()
         self.watch_lock, self.watch_stop, self.watcher = threading.Lock(), threading.Event(), None
+        self.cleanup_watcher, self.cleanup_last_error = None, None
         self.delivery_poll_seconds, self.delivery_watch_seconds = max(.01, delivery_poll_seconds), min(1800, max(1, delivery_watch_seconds))
         self.request_impl, self.auto_start = request, auto_start
         self.engine_ready_at = 0
@@ -227,7 +232,9 @@ class SermonDesignBridge:
             for record in data["deliveries"].values():
                 if not isinstance(record, dict) or not re.fullmatch(r"sermon-studio-" + ID + r"-r\d+-a\d+", str(record.get("folder", ""))) or not isinstance(record.get("taskId"), str) or not isinstance(record.get("files"), list) or not record["files"]:
                     raise ValueError()
-                for item in record["files"]:
+                if not isinstance(record.get("sourceFiles", []), list) or len(record.get("sourceFiles", [])) > 150:
+                    raise ValueError()
+                for item in record["files"] + record.get("sourceFiles", []):
                     if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not isinstance(item.get("name"), str) or not isinstance(item.get("size"), int) or item["size"] <= 0 or not re.fullmatch(r"[a-f0-9]{64}", str(item.get("sha256", ""))):
                         raise ValueError()
             return data
@@ -235,13 +242,28 @@ class SermonDesignBridge:
             raise DesignError("The saved design delivery index needs repair. It was preserved; no duplicate task was created.", 409)
 
     def _save_index(self, data):
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.index_path.with_name(self.index_path.name + "." + uuid.uuid4().hex + ".tmp")
-        try:
-            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            os.replace(temporary, self.index_path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        with index_lock(self.hq_root):
+            if self.index_path.exists():
+                latest = json.loads(self.index_path.read_text(encoding="utf-8"))
+                merged = {**latest.get("deliveries", {}), **data.get("deliveries", {})}
+                for key, row in latest.get("deliveries", {}).items():
+                    if row.get("cleanup", {}).get("status") == "purged":
+                        merged[key] = row
+                data = {**data, "deliveries": merged}
+            self.index_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.index_path.with_name(self.index_path.name + "." + uuid.uuid4().hex + ".tmp")
+            try:
+                temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(temporary, self.index_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def delivery_permanently_deleted(self, folder):
+        """Read-only Restore guard; no bridge lock while the task board is locked."""
+        if not re.fullmatch(r"sermon-studio-" + ID + r"-r\d+-a\d+", str(folder)):
+            return False
+        index = self._index()
+        return any(row.get("folder") == folder and row.get("cleanup", {}).get("status") == "purged" for row in index["deliveries"].values())
 
     def _pending(self):
         if not self.pending_path.exists():
@@ -282,6 +304,29 @@ class SermonDesignBridge:
         with self.watch_lock:
             data = self._pending()
             self._start_watcher_locked(data)
+            if not self.watch_stop.is_set() and not (self.cleanup_watcher and self.cleanup_watcher.is_alive()):
+                self.cleanup_watcher = threading.Thread(target=self._watch_cleanup, name="sermon-receipt-cleanup", daemon=True)
+                self.cleanup_watcher.start()
+
+    def reconcile_purged_deliveries(self):
+        """Only a durable owner-confirmed engine purge can release HQ copies."""
+        with self.lock:
+            preview = plan_cleanup(self.hq_root, self.runtime_root)
+            if not preview["folders"]:
+                return {"status": "no-change", "deletedFiles": 0, "deletedBytes": 0, "cleanedFolders": [], "errors": preview["kept"]}
+            result = execute_cleanup(self.hq_root, self.runtime_root, preview, self.task_action)
+        if result.get("cleanedFolders") and self.notify:
+            self.notify()
+        return result
+
+    def _watch_cleanup(self):
+        while not self.watch_stop.is_set():
+            try:
+                result = self.reconcile_purged_deliveries()
+                self.cleanup_last_error = result.get("errors") or None
+            except (OSError, ValueError, DesignError) as error:
+                self.cleanup_last_error = [{"error": str(error)}]
+            self.watch_stop.wait(60 if not self.cleanup_last_error else 300)
 
     def _track_job(self, job):
         if not isinstance(job, dict) or not re.fullmatch(ID, str(job.get("id", ""))) or not re.fullmatch(ID, str(job.get("projectId", ""))):
@@ -373,6 +418,9 @@ class SermonDesignBridge:
         watcher = self.watcher
         if watcher and watcher is not threading.current_thread():
             watcher.join(timeout=6)
+        cleanup = self.cleanup_watcher
+        if cleanup and cleanup is not threading.current_thread():
+            cleanup.join(timeout=6)
 
     def _verified_file(self, project, item):
         native_id = project.get("hqTaskId")
@@ -390,9 +438,55 @@ class SermonDesignBridge:
             digest = hashlib.file_digest(source, "sha256").hexdigest()
         if digest != item.get("sha256"):
             raise DesignError("A design export failed its checksum. No successful delivery is claimed.", 502)
+        if item.get("format") == "png" or name.lower().endswith(".png"):
+            self._verify_png(file)
         return file, name, digest
 
+    def _verify_png(self, file):
+        try:
+            with Image.open(file) as picture:
+                if picture.format != "PNG" or not (0 < picture.width <= 8192 and 0 < picture.height <= 8192 and picture.width * picture.height <= 36_000_000):
+                    raise ValueError("PNG bounds")
+                picture.verify()
+            with Image.open(file) as picture:
+                picture.load()
+        except Exception as error:
+            raise DesignError("A required PNG artwork is corrupt or exceeds supported picture dimensions. It was not delivered.", 502) from error
+
+    def _delivery_rows(self, project, rows):
+        """Keep copy bounds; oversized source containers must not block final pictures."""
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 150:
+            raise DesignError("The design delivery file list is invalid.", 502)
+        seen, total = set(), 0
+        for item in rows:
+            if not isinstance(item, dict) or not isinstance(item.get("size"), int) or not 0 < item["size"] <= 512 * 1024 * 1024 or not re.fullmatch(r"[a-f0-9]{64}", str(item.get("sha256", ""))):
+                raise DesignError("The design delivery metadata is invalid or exceeds bounded source limits.", 502)
+            name = str(item.get("name", "")).replace("\\", "/")
+            if not name or name.startswith("/") or ":" in name or any(part in ("", ".", "..") for part in name.split("/")) or name.casefold() in seen:
+                raise DesignError("The design delivery contains duplicate or unsafe filenames.", 502)
+            seen.add(name.casefold()); total += item["size"]
+        if total > SOURCE_LIMIT:
+            raise DesignError("The saved source package exceeds the 2 GiB inspection limit. Final pictures need a bounded export package.", 502)
+        if not any(item.get("format") == "png" and str(item.get("name", "")).lower().endswith(".png") for item in rows):
+            raise DesignError("The design delivery has no required PNG artwork.", 502)
+        compact = total > COPY_LIMIT or any(item["size"] > 200 * 1024 * 1024 for item in rows)
+        if not compact:
+            return rows, [], []
+        required = [item for item in rows if item.get("format") in ("png", "jpg", "jpeg", "webp") or str(item.get("name", "")).lower().endswith((".png", ".jpg", ".jpeg", ".webp")) and "/" not in str(item.get("name", "")).replace("\\", "/")]
+        metadata = [item for item in rows if item.get("name") in ("project.json", "quality-report.json") and item["size"] <= 32 * 1024 * 1024]
+        selected = required + [item for item in metadata if item not in required]
+        if sum(item["size"] for item in selected) > COPY_LIMIT or any(item["size"] > 200 * 1024 * 1024 for item in selected):
+            raise DesignError("The verified final pictures exceed the 400 MiB HQ delivery limit. No picture was discarded or redrawn.", 502)
+        omitted = [item for item in rows if item not in selected]
+        # Sources are retained at their original engine paths. Download verifies bytes on demand.
+        for item in omitted:
+            base = self.runtime_root / ".studio/jobs" / project["hqTaskId"] / ("attempt-" + str(project["lastExport"]["hqAttempt"]))
+            inside(base, item.get("path", ""))
+        return selected, omitted, ["HQ received the complete PNG/JPG pictures. Duplicate SVG/HTML, fonts and source ZIP remain on the design engine to avoid copying the same artwork repeatedly."]
+
     def register(self, project):
+        if project.get("deletedAt") or project.get("status") in ("cancelled", "canceled", "failed"):
+            raise DesignError("This project was deleted, cancelled or failed; its delivery was not recreated.", 409)
         export = project.get("lastExport")
         if not export:
             return None
@@ -413,6 +507,8 @@ class SermonDesignBridge:
             index = self._index()
             if key in index["deliveries"]:
                 cached = index["deliveries"][key]
+                if cached.get("cleanup", {}).get("status") == "purged":
+                    raise DesignError("This project delivery was permanently deleted. It is not recreated by an old job.", 410)
                 if not any(t.get("id") == cached.get("taskId") for t in self.load_tasks().get("tasks", [])):
                     raise DesignError("The saved HQ review task was removed. It was not recreated automatically; the editable project is still saved on the design engine.", 409)
                 locations = [self.hq_root / area / cached.get("folder", "") for area in ("out", "approved")]
@@ -426,10 +522,10 @@ class SermonDesignBridge:
                     with open(copied, "rb") as source:
                         if hashlib.file_digest(source, "sha256").hexdigest() != row["sha256"]:
                             raise DesignError("The saved HQ design delivery changed after verification. It was not overwritten.", 409)
+                    if str(row["name"]).lower().endswith(".png"):
+                        self._verify_png(copied)
                 return cached
-            rows = export.get("files", [])
-            if not isinstance(rows, list) or not 1 <= len(rows) <= 150:
-                raise DesignError("The design delivery file list is invalid.", 502)
+            rows, source_rows, warnings = self._delivery_rows(project, export.get("files", []))
             verified, seen, total = [], set(), 0
             for item in rows:
                 source, name, digest = self._verified_file(project, item)
@@ -437,7 +533,7 @@ class SermonDesignBridge:
                     raise DesignError("The design delivery contains duplicate filenames.", 502)
                 seen.add(name.casefold()); total += source.stat().st_size
                 verified.append((source, name, digest, item))
-            if total > 400 * 1024 * 1024 or not any(i.get("format") == "png" for _, _, _, i in verified):
+            if total > COPY_LIMIT or not any(i.get("format") == "png" for _, _, _, i in verified):
                 raise DesignError("The design delivery is too large or has no verified PNG artwork.", 502)
             folder = f"sermon-studio-{pid}-r{revision}-a{attempt}"
             out = self.hq_root / "out"; out.mkdir(parents=True, exist_ok=True)
@@ -481,7 +577,9 @@ class SermonDesignBridge:
                     raise DesignError("Files were copied, but the HQ review task could not be registered. Retry opening the project; no model task was started.", 502)
                 task_id = result["added"]["id"]
             delivery = {"projectId": pid, "revision": revision, "attempt": attempt, "taskId": task_id, "folder": folder,
-                "nativeTaskId": project["hqTaskId"], "files": [{"path": str(source.relative_to(self.runtime_root)).replace("\\", "/"), "name": name, "sha256": digest, "size": item["size"]} for source, name, digest, item in verified]}
+                "nativeTaskId": project["hqTaskId"], "files": [{"path": str(source.relative_to(self.runtime_root)).replace("\\", "/"), "name": name, "sha256": digest, "size": item["size"]} for source, name, digest, item in verified],
+                "deliveryMode": "pictures-first" if source_rows else "full-package", "warnings": warnings,
+                "sourceFiles": [{"path": str(Path(item["path"]).relative_to(self.runtime_root)).replace("\\", "/"), "name": item["name"], "sha256": item["sha256"], "size": item["size"]} for item in source_rows]}
             index["deliveries"][key] = delivery; self._save_index(index)
             if self.notify:
                 self.notify()
@@ -512,11 +610,58 @@ class SermonDesignBridge:
             return value
         return rewrite(payload)
 
+    def retry_delivery(self, project_id, body):
+        """Collect a frozen saved export only; never generates, renders or approves."""
+        if set(body) - {"deliveryAction", "expectedRevision", "projectRevision", "jobId"} or body.get("deliveryAction", "retry") != "retry":
+            raise DesignError("Use delivery retry by itself. Generation, editing and export fields are not accepted.", 400)
+        if not re.fullmatch(ID, str(project_id)) or not isinstance(body.get("expectedRevision"), int) or not isinstance(body.get("projectRevision"), int):
+            raise DesignError("Delivery retry needs a saved project and its current revision.", 400)
+        code, _, raw = self._request("GET", BASE + "/projects/" + project_id)
+        payload = json.loads(raw)
+        current = payload.get("project") if isinstance(payload, dict) else None
+        if code != 200 or not isinstance(current, dict) or current.get("id") != project_id:
+            raise DesignError("This project is unavailable or permanently deleted. No delivery or image job was started.", 410 if code == 410 else 409)
+        if current.get("deletedAt") or current.get("status") in ("cancelled", "canceled", "failed"):
+            raise DesignError("A deleted, cancelled or failed project cannot be collected.", 409)
+        if current.get("revision") != body["expectedRevision"]:
+            raise DesignError("The project changed. Reopen it before retrying delivery; no generation was started.", 409)
+        revision = body["projectRevision"]
+        if not isinstance(revision, int) or revision < 1:
+            raise DesignError("No verified frozen export is available. No images were regenerated.", 409)
+        job_id = body.get("jobId")
+        if job_id is not None:
+            if not re.fullmatch(ID, str(job_id)):
+                raise DesignError("Choose the exact completed image job.", 400)
+            code, _, raw = self._request("GET", BASE + "/jobs/" + job_id)
+            accepted = json.loads(raw); job = accepted.get("job") if isinstance(accepted, dict) else None
+            if code != 200 or not isinstance(job, dict) or job.get("id") != job_id or job.get("projectId") != project_id or job.get("status") != "succeeded" or job.get("projectRevision") != revision:
+                raise DesignError("The assigned image job is running, failed, cancelled or unknown. Its earlier artwork was not substituted.", 409)
+        elif any(row.get("projectId") == project_id and row.get("status") == "watching" for row in self._pending()["jobs"].values()):
+            raise DesignError("This project has an unresolved image job. Check its status before collecting a frozen export.", 409)
+        frozen = current
+        if revision != current.get("revision"):
+            code, _, raw = self._request("GET", BASE + "/projects/" + project_id + "?revision=" + str(revision))
+            historical = json.loads(raw)
+            frozen = historical.get("project") if isinstance(historical, dict) else None
+            if code != 200 or not isinstance(frozen, dict) or frozen.get("id") != project_id or frozen.get("revision") != revision:
+                raise DesignError("The exact finished artwork revision is unavailable; no newer artwork was substituted.", 409)
+        if frozen.get("lastExport", {}).get("projectRevision") != revision:
+            raise DesignError("The selected revision has no verified completed export.", 409)
+        delivery = self.register(frozen)
+        if not delivery:
+            raise DesignError("The saved project has no completed export to deliver.", 409)
+        status = {"status": "delivered", "projectId": project_id, "projectRevision": revision, "taskId": delivery["taskId"], "warnings": delivery.get("warnings", []), "retryable": False}
+        result = self.adapt({"project": current}, register=False)
+        result.update({"hqTaskId": delivery["taskId"], "delivery": status})
+        result["project"]["hqTaskId"] = delivery["taskId"]
+        result["project"]["hqReviewUrl"] = "/?task=" + quote(delivery["taskId"])
+        return result
+
     def _download(self, handler, query, head=False):
         requested = parse_qs(query).get("path", [""])[0].replace("\\", "/")
         with self.lock:
             index = self._index()
-        item = next((f for d in index["deliveries"].values() for f in d.get("files", []) if f.get("path") == requested), None)
+        item = next((f for d in index["deliveries"].values() if d.get("cleanup", {}).get("status") != "purged" for f in d.get("files", []) + d.get("sourceFiles", []) if f.get("path") == requested), None)
         if not item:
             raise DesignError("Only this studio's verified exports can be downloaded here.", 404)
         file = inside(self.runtime_root / ".studio" / "jobs", self.runtime_root / requested)
@@ -643,6 +788,13 @@ class SermonDesignBridge:
                 except ValueError:
                     raise DesignError("The design request must be a JSON object.", 400)
             self.ensure_engine()
+            incoming = json.loads(data or b"{}") if data is not None else {}
+            retry_match = re.fullmatch(BASE + r"/projects/(" + ID + r")(?:/delivery)?", path)
+            if method == "POST" and retry_match and (path.endswith("/delivery") or incoming.get("deliveryAction") == "retry"):
+                result = self.retry_delivery(retry_match[1], incoming)
+                handler._sermon_response_started = True
+                handler.send_json(result, 200)
+                return True
             headers = {"Host": "127.0.0.1:4341", "Accept": handler.headers.get("Accept", "*/*")}
             if data is not None:
                 headers.update({"Content-Type": "application/json", "Content-Length": str(len(data)), "Origin": "http://127.0.0.1:4341", "Sec-Fetch-Site": "same-origin"})
@@ -654,11 +806,37 @@ class SermonDesignBridge:
                 except ValueError:
                     raise DesignError("The renderer returned invalid metadata.", 502)
                 if 200 <= code < 300:
+                    if path == BASE + "/capabilities":
+                        payload.update({"deliveryRetry": True, "deliveryRetryVersion": 1, "deliveryCopyLimitBytes": COPY_LIMIT, "deliveryPicturesFirst": True})
+                    if method == "POST" and isinstance(payload, dict):
+                        incoming = json.loads(data or b"{}")
+                        action = incoming.get("management", {}).get("action") if isinstance(incoming.get("management"), dict) else None
+                        own = payload.get("purge") if action == "purge-project" else payload.get("weekPurge") if action == "purge-week" else None
+                        if isinstance(own, dict) and isinstance(own.get("purgedProjectIds"), list) and own["purgedProjectIds"]:
+                            # Only the upstream's actual irreversible removals release HQ copies.
+                            # Local durable purge receipts are independently checked by the planner.
+                            try:
+                                with self.lock:
+                                    cleanup = plan_cleanup(self.hq_root, self.runtime_root, own["purgedProjectIds"])
+                                    payload["hqCleanup"] = execute_cleanup(self.hq_root, self.runtime_root, cleanup, self.task_action)
+                            except (OSError, ValueError) as error:
+                                payload["hqCleanup"] = {"status": "partial", "deletedFiles": 0, "deletedBytes": 0, "errors": [{"error": str(error)}]}
+                            if self.notify:
+                                self.notify()
                     if code == 202 and method == "POST" and re.fullmatch(BASE + r"/projects/" + ID + r"/(?:generate|preview)", path):
                         if not isinstance(payload.get("job"), dict) or payload["job"].get("projectId") != path.split("/")[-2]:
                             raise DesignError("The accepted job does not match its assigned project. No different task was watched.", 502)
                         self._track_job(payload.get("job"))
-                    payload = self.adapt(payload, register=not (method == "GET" and "revision" in parse_qs(url.query)))
+                    try:
+                        payload = self.adapt(payload, register=not (method == "GET" and "revision" in parse_qs(url.query)))
+                    except DesignError as error:
+                        job = payload.get("job") if isinstance(payload, dict) else None
+                        if method == "GET" and path.startswith(BASE + "/jobs/") and isinstance(job, dict) and job.get("status") == "succeeded":
+                            delivery = {"status": "failed", "error": str(error), "retryable": error.status not in (403, 410), "projectId": job.get("projectId"), "projectRevision": job.get("projectRevision")}
+                            payload = self.adapt(payload, register=False)
+                            payload["delivery"] = delivery; payload["job"]["delivery"] = delivery
+                        else:
+                            raise
                 handler._sermon_response_started = True
                 handler.send_json(payload, code); return True
             handler._sermon_response_started = True
@@ -675,7 +853,7 @@ class SermonDesignBridge:
                 handler.close_connection = True
             else:
                 try:
-                    handler.send_json({"error": str(error)}, error.status)
+                    handler.send_json({"error": str(error), "delivery": {"status": "failed", "error": str(error), "retryable": error.status not in (403, 410)}}, error.status)
                 except OSError:
                     handler.close_connection = True
             return True
