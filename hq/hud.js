@@ -731,7 +731,7 @@
   // what is ready to post is the video's card (READY), not a task title
   function taskTitle(t) { return t ? t.title : ""; }
   // a video's package: which steps it needs, the picks, READY (the server's video_package.py)
-  const PKG_STEPS = { video: "Video", caption: "Title + caption", thumbnail: "Thumbnail" };
+  const PKG_STEPS = { script: "Script", video: "Video", caption: "Title + caption", thumbnail: "Thumbnail" };
   // quick feelings for the thumbnail step: one tap adds the words to the feeling box
   const PK_MOODS = [["warm and hopeful", "暖心 Warm"], ["joyful and fun, bright colours", "欢乐 Joyful"], ["calm and peaceful, soft light", "平静 Calm"],
     ["emotional and touching", "感人 Touching"], ["bold and powerful, high contrast", "有力 Bold"], ["serious and reflective, darker tones", "深思 Reflective"],
@@ -758,8 +758,11 @@
   const PLAT_NAME = { facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
   const schedWhen = (s) => { const d = new Date(s.when * 1000); return `${DOW[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} ${fmtTime(pad2(d.getHours()) + ":" + pad2(d.getMinutes()))}`; };
   const schedTag = (s) => `<span class="sched-tag" title="Scheduled: ${esc(s.platforms.map((p) => PLAT_NAME[p] || p).join(", "))}">SCHEDULED · ${esc(schedWhen(s))}</span>`;
-  function editChooser(t) {                                 // Edit on new footage: the owner picks the package first
-    return `<div class="task-detail edit-pick"><div class="td-l">What does this video need?</div><div class="ep-opts">${PKG_PRESETS.map(([k, l]) => `<button class="btn sm ${k === "full" ? "primary" : ""}" data-edit-go="${esc(t.id)}:${k}" type="button">${l}</button>`).join("")}</div>
+  function editChooser(t) {                                 // Edit on new footage: the owner picks the package and how many videos first
+    const n = state.editVideos == null ? 3 : state.editVideos;
+    return `<div class="task-detail edit-pick"><div class="td-l">How many videos from this footage?</div><div class="ep-opts">${[0, 1, 2, 3, 4, 5].map((k) => `<button class="rv-chip ${k === n ? "on" : ""}" data-edit-videos="${k}" type="button">${k ? k : "Just edit it"}</button>`).join("")}</div>
+      <div class="hint">${n ? `Scripts first: the office transcribes the talk and shows you ${n} passages (plus 2 spares) with the exact words. You keep, swap or trim them, then press Make videos.` : "No scripts: the editor picks the passages itself and the first thing you see is the finished video."}</div>
+      <div class="td-l" style="margin-top:10px">What does each video need?</div><div class="ep-opts">${PKG_PRESETS.map(([k, l]) => `<button class="btn sm ${k === "full" ? "primary" : ""}" data-edit-go="${esc(t.id)}:${k}" type="button">${l}</button>`).join("")}</div>
       <div class="hint">Video only: just the edit. Video + caption: 3 title + caption sets to pick from. Full set: then Codex thumbnails from the title you pick. You can change it later on the video's card.</div>
       <div class="td-end"><button class="btn sm" data-edit-footage="" type="button">Cancel</button></div></div>`;
   }
@@ -782,6 +785,11 @@
     else if (t.status === "review" && /(?:^|\s)Blocked:/.test(t.note || "")) {   // the lead parked it as blocked: Run again once the block is lifted
       glyph = '<span class="stop-g" title="The lead could not finish this">❚❚</span>'; meta = "blocked · " + t.note.split(/(?:^|\s)Blocked:/).pop().trim().replace(/\s+/g, " "); cls = "stopped";
       act = `<button class="btn sm blue" data-run="${esc(t.id)}" type="button" title="Start this task again">Run again</button>`;
+    }
+    else if (t.status === "review" && t.scripts) {           // scripts first: the picked passages wait for the owner
+      const sc = t.scripts, keep = sc.picks.filter((p) => p.status === "keep").length;
+      glyph = '<span class="warn">!</span>'; meta = sc.made_at ? `making ${keep} video${keep === 1 ? "" : "s"} from the scripts you kept` : `${sc.picks.length} passages picked · ${keep} kept · read them and press Make videos`;
+      act = sc.made_at ? '<span class="chev">›</span>' : `<button class="btn primary sm" data-manage="${esc(t.id)}" type="button">${state.openDetail === t.id ? "Close" : "Scripts"}</button>`; cls = "hot";
     }
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : "";
       // a plain work task (no video folder): approving it just marks it done, so it gets its own Approve next to Review
@@ -815,8 +823,25 @@
   // a finished task whose work was approved (approved/<name>) can go back for changes, as a new version
   const canReedit = (t) => { const f = folderOfTask(t); return !!f && f.startsWith("approved/") && !/^approved\/thumbnail-final-/.test(f); };
   const STATUS_LABEL = { todo: "To do", doing: "Running", review: "Waiting", done: "Done" };
+  const fmtS = (s) => { s = Math.max(0, Math.round(+s || 0)); return `${Math.floor(s / 60)}:${pad2(s % 60)}`; };
+  function scriptsCard(t) {                                 // the picked passages: keep, spare, trim, Make videos
+    const sc = t.scripts, keep = sc.picks.filter((p) => p.status === "keep"), open = state.openScripts || new Set();
+    const pick = (p, i) => {
+      const len = p.end != null && p.start != null ? Math.round(p.end - p.start) : null, id = sc.name + "|" + p.id;
+      const chips = sc.made_at ? "" : ["keep", "spare", "dropped"].map((s) => `<button class="rv-chip sm ${p.status === s ? "on" : ""}" data-script-pick="${esc(id + "|" + s)}" type="button">${p.status === s ? svg("check") : ""}${{ keep: "Keep", spare: "Spare", dropped: "Drop" }[s]}</button>`).join("");
+      const words = open.has(id) ? `<div class="sc-words">${esc(p.text || "(no words saved)")}</div>` : "";
+      return `<div class="sc-pick ${p.status}"><div class="sc-head"><span class="sc-n">${i + 1}</span><div class="sc-tt"><div class="sc-title">${esc(p.title || p.name)}</div><div class="sc-meta">${p.start != null ? `${fmtS(p.start)}–${fmtS(p.end)}` : ""}${len ? ` · ${len} s` : ""}${p.why ? ` · ${esc(p.why)}` : ""}</div></div><div class="sc-chips">${chips}</div></div>
+        <button class="sc-toggle" data-script-text="${esc(id)}" type="button">${open.has(id) ? "Hide the words" : "Read the words"}</button>${words}
+        ${sc.made_at ? (p.trim ? `<div class="hint">Your note: ${esc(p.trim)}</div>` : "") : `<input class="field sc-trim" data-script-trim="${esc(id)}" value="${esc(p.trim || "")}" placeholder="A note for the editor, e.g. start later at 'But God…', or end before the prayer">`}</div>`;
+    };
+    const head = sc.made_at ? `<div class="hint">Making ${keep.length} video${keep.length === 1 ? "" : "s"} from the scripts you kept. Each gets its own card on the board with its own steps.</div>`
+      : `<div class="hint">The office transcribed the talk and picked these passages (${sc.want} wanted, ${sc.picks.length} picked). Keep the ones you want, swap one for a spare, add a note for the editor, or write in the chat below for different picks. Nothing is cut until you press Make videos.</div>`;
+    return `<div class="sc-card"><div class="td-l">Scripts · ${esc(sc.source.replace(/^inbox\//, ""))}</div>${head}<div class="sc-list">${sc.picks.map(pick).join("")}</div>
+      ${sc.made_at ? "" : `<div class="td-end"><span class="hint" style="margin-right:auto">${keep.length} kept</span><button class="btn primary" data-script-go="${esc(t.id)}" type="button" ${keep.length ? "" : "disabled"}>Make ${keep.length || ""} video${keep.length === 1 ? "" : "s"}</button></div>`}</div>`;
+  }
   function taskDetail(t) {
     const files = [], m = /out:([^\s,;]+)/.exec(t.note || ""), st = state.status || {}, top = m ? m[1].split("/")[0] : "";
+    if (t.scripts) files.push(scriptsCard(t));
     if (t.footage && t.status === "todo") files.push(`<button class="btn sm blue" data-edit-footage="${esc(t.id)}" type="button">${svg("play")} Edit this video</button>`);
     if (m && st.out && st.out[top]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[top].files || []).length} files</button>`);
     else if (m && st.approved && st.approved[top]) files.push(`<button class="btn sm blue" data-rv-folder="approved/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open to post</button>`);
@@ -2348,11 +2373,25 @@
       if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.editFootage != null) { state.editPick = d.editFootage || null; renderBoard(); return; }   // pick the package, then edit
+      if (d.editVideos != null) { state.editVideos = +d.editVideos; renderBoard(); return; }
       if (d.editGo) {
         const [id, pkg] = d.editGo.split(":"); state.editPick = null;
-        taskAction({ action: "edit", id, package: pkg }, `Editing started (${PKG_PRESETS.find((p) => p[0] === pkg)[1]}): the Creative team is on it. Nothing posts until you approve.`).then((r) => { if (r) setLead(true); });
+        const videos = state.editVideos == null ? 3 : state.editVideos;
+        taskAction({ action: "edit", id, package: pkg, videos }, videos ? `Scripts first: the office is transcribing the talk and picking ${videos} passages for you to approve. Nothing is cut yet.` : `Editing started (${PKG_PRESETS.find((p) => p[0] === pkg)[1]}): the Creative team is on it. Nothing posts until you approve.`).then((r) => { if (r) setLead(true); });
         return;
       }
+      if (d.scriptPick) {                                    // the Scripts card: keep / spare / dropped
+        const [name, pick, act] = d.scriptPick.split("|");
+        postJSON("/api/scripts", { name, pick, action: act }).then(refresh).catch((e) => toast("creative", "Scripts", e.message, { bad: true }));
+        return;
+      }
+      if (d.scriptGo) {
+        const t = (state.status.tasks || []).find((x) => x.id === d.scriptGo), sc = t && t.scripts; if (!sc) return;
+        const n = sc.picks.filter((p) => p.status === "keep").length;
+        postJSON("/api/scripts", { name: sc.name, action: "go", task: t.id }).then(() => { toast("creative", "Make videos", `${n} video${n === 1 ? "" : "s"} are being made from the scripts you kept. Each gets its own card.`); refresh(); setLead(true); }).catch((e) => toast("creative", "Scripts", e.message, { bad: true }));
+        return;
+      }
+      if (d.scriptText) { const s = (state.openScripts ||= new Set()); if (!s.delete(d.scriptText)) s.add(d.scriptText); renderBoard(); return; }
       if (d.run) { taskAction({ action: "run", id: d.run }).then((r) => { if (r && r.run) { attach(r.run.id, false); toast("chief", "Chief of staff", r.run.queued ? "Waiting in line: it starts by itself when a slot is free (or its video's earlier job is done)." : "Started: the lead is on it."); } }); return; }
       if (d.board != null) { openPanel("tasks"); return; }
       if (d.cal != null) { openPanel("calendar"); return; }
@@ -2404,6 +2443,11 @@
     document.addEventListener("dragleave", (e) => { const z = e.target.closest(".drop"); if (z) z.classList.remove("over"); });
     document.addEventListener("change", (e) => {
       if (e.target && e.target.id === "drop-ch") state.dropCh = e.target.value;
+      if (e.target && e.target.dataset && e.target.dataset.scriptTrim) {   // a note on a script pick, saved as you leave the field
+        const [name, pick] = e.target.dataset.scriptTrim.split("|");
+        postJSON("/api/scripts", { name, pick, action: "trim", trim: e.target.value }).catch((err) => toast("creative", "Scripts", err.message, { bad: true }));
+        return;
+      }
       if (e.target && e.target.id === "leads-limit") {           // Leads at once: takes effect now, kept for next time
         const n = +e.target.value;
         postJSON("/api/leads", { leads: n }).then((r) => toast("dev", "Leads at once", `Up to ${n} lead job${n === 1 ? "" : "s"} now run at the same time.` + (r.env ? " (HQ_PARALLEL on this computer sets it again at the next start.)" : ""), {}))

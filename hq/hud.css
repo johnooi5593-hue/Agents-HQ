@@ -442,6 +442,24 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .pk-thumb i { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; background: #3ddc97; color: #062a1c; display: grid; place-items: center; }
 .pk-thumb:focus-visible { outline: 2px solid #4f8cff; }
 .edit-pick .ep-opts { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+/* the Scripts card: the picked passages the owner approves before any video is cut */
+.sc-card { display: grid; gap: 10px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+.sc-list { display: grid; gap: 8px; }
+.sc-pick { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: #232a38; border: 1px solid rgba(255, 255, 255, 0.06); }
+.sc-pick.keep { border-color: rgba(61, 220, 151, 0.5); background: rgba(61, 220, 151, 0.07); }
+.sc-pick.dropped { opacity: 0.55; }
+.sc-head { display: flex; gap: 10px; align-items: flex-start; }
+.sc-n { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: #2f3547; font: 700 11px var(--mono); color: #b9c0cf; }
+.sc-pick.keep .sc-n { background: #3ddc97; color: #062a1c; }
+.sc-tt { flex: 1; min-width: 0; }
+.sc-title { font-weight: 600; font-size: 13.5px; color: #eef0f5; }
+.sc-meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.sc-chips { display: flex; gap: 4px; flex: none; }
+.rv-chip.sm { min-height: 28px; padding: 0 9px; font-size: 11.5px; }
+.sc-toggle { align-self: start; background: none; border: 0; padding: 0; color: #9fb6ff; font: 500 11.5px var(--font); cursor: pointer; }
+.sc-words { white-space: pre-wrap; font-size: 13px; line-height: 1.6; color: #dfe3ea; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.25); max-height: 260px; overflow-y: auto; }
+.sc-trim { height: 32px; font-size: 12.5px; }
+@media (max-width: 600px) { .sc-head { flex-wrap: wrap; } .sc-chips { width: 100%; justify-content: flex-end; } }
 .vg-tt { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .vg-title { font-weight: 700; font-size: 14px; color: #ecf0fc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: capitalize; }
 .vg-meta { font: 11px var(--mono); color: #7f8291; }

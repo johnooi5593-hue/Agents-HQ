@@ -40,6 +40,7 @@ import webpush  # noqa: E402  (phone notifications for the installed app)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
 from sermon_design import DesignError  # noqa: E402
 from video_package import Packages  # noqa: E402  (each video's steps: video, caption, thumbnails → READY)
+from scripts_step import Scripts  # noqa: E402  (scripts first: the owner approves the passages before any video is cut)
 from thumbnail_design import ThumbnailDesignBridge  # noqa: E402
 from thumbnail_design import small_image as thumbnail_preview, send_preview as thumbnail_send_preview  # noqa: E402
 
@@ -519,13 +520,15 @@ PACKAGE_LINES = {
 }
 
 
-def edit_prompt(rel, ch, task_id, package="full"):
+def edit_prompt(rel, ch, task_id, package="full", videos=0):
     """The lead's instruction for the Edit button: edit-clips for that one video, for its channel and its package."""
     n = channels.name(ch)
     who = (f" Channel: {n} (key {ch}). Same procedures as the main channel: follow \"Brand rules\" and \"Lessons\" as always, read "
            f"\"{n} · Company\" instead of \"Company\" and \"{n} · Brand rules\" on top (its rules win where they differ); never use the "
            f"main channel's name, logo, slogans or hashtags.") if ch else ""
-    return f'/edit-clips "{rel}"{who} {PACKAGE_LINES.get(package, PACKAGE_LINES["full"])} Board task {task_id} is this video\'s New footage task.'
+    first = (f" Scripts first: {videos}. The owner wants to see the picked passages before any video is cut: pick {videos} plus 2 spares, "
+             f"write out/<name>/scripts.json, move the task to review with scripts:<name> in its note, and stop there.") if videos else ""
+    return f'/edit-clips "{rel}"{who} {PACKAGE_LINES.get(package, PACKAGE_LINES["full"])}{first} Board task {task_id} is this video\'s New footage task.'
 
 
 def approved_dir(folder, areas=("approved",)):
@@ -809,7 +812,8 @@ def _task_action(body):
             if not got:
                 return 404, {"error": "that video is no longer waiting in the inbox"}
             task["package"] = body.get("package") if body.get("package") in ("video", "caption", "full") else "full"
-            run = desk.start(edit_prompt(*got, task["id"], task["package"]), tasks=[task["id"]])
+            videos = body.get("videos") if isinstance(body.get("videos"), int) and 1 <= body["videos"] <= 8 else 0   # scripts first: how many
+            run = desk.start(edit_prompt(*got, task["id"], task["package"], videos), tasks=[task["id"]])
             set_status(task, "doing"); save_tasks(db)
             return 202, {"editing": task, "run": run.summary()}
         if action in ("run", "say"):                # Run / Run again, or the owner's message in the task's chat
@@ -1018,6 +1022,7 @@ def status_payload():
             t["posted"], t["scheduled"] = posted_cache[t["video"]]   # out already: purple; waiting for its time: SCHEDULED
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
+        t["scripts"] = scripts.for_task(t)                  # the picked passages the owner approves before any video is cut
         t["ch"] = task_channel(t)                           # its channel (key, "" main) or None: the whole office
     s["channels"] = [{"key": c["key"], "name": c.get("name") or ("Main channel" if c["main"] else c["key"])} for c in channels.payload()["channels"]]
     for c in s["channels"][1:]:                             # a channel's clips wait in inbox/<key>/
@@ -1894,6 +1899,7 @@ desk.on_done = lambda run: (after_run(run), notifier.refresh())
 followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "add", **task})[1]["added"])
 sermon_design = SermonDesignBridge(ROOT, task_action, load_tasks, notify=lambda: notifier.refresh())
 thumbnail_design = ThumbnailDesignBridge(ROOT, sermon_design, channels, task_action, load_tasks, notify=lambda: notifier.refresh())
+scripts = Scripts(ROOT, task_action, load_tasks, lambda prompt: desk.start(prompt))
 packages = Packages(ROOT, thumbnail_design, task_action, approve_folder, load_tasks, lambda prompt: desk.start(prompt),
                     lambda prefix: desk.progress_of(prefix))   # a job for it: its estimated %, or None when none runs
 
@@ -2315,6 +2321,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/channels":
             code, payload = channels_action(self.read_json())
             return self.send_json(payload, code)
+        if path == "/api/scripts":                         # the Scripts card: keep, spare, trim a pick; Make videos
+            try:
+                result = scripts.action(self.read_json())
+            except DesignError as e:
+                return self.send_json({"error": str(e)}, e.status)
+            notifier.refresh()
+            return self.send_json(result)
         if path == "/api/package":                         # a video's package: its steps, the owner's picks, READY → approved
             try:
                 result = packages.action(self.read_json())

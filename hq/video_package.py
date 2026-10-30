@@ -86,6 +86,9 @@ class Packages:
         with self.thumbs.lock:
             pkg = self.read(name)
             stages = PRESETS[pkg["preset"]]
+            scripted = os.path.isfile(os.path.join(self.root, "out", name, "script.md"))   # made from a script the owner approved
+            if scripted:
+                stages = ["script"] + stages
             d = os.path.join(self.root, "out", name)
             captions = []
             if os.path.isfile(os.path.join(d, "post.md")):
@@ -105,7 +108,8 @@ class Packages:
             if style not in {t["id"] for t in templates}:
                 style = None
             both = all(thumbs[slot] and thumbs[slot]["picked"] for slot in SIZES)
-            done = {"video": bool(pkg.get("videoOkAt") or (row and row.get("mode", "video") == "video")),   # Codex only starts on an approved video
+            done = {"script": scripted,
+                    "video": bool(pkg.get("videoOkAt") or (row and row.get("mode", "video") == "video")),   # Codex only starts on an approved video
                     "caption": confirmed,
                     "thumbnail": both}
             return {"preset": pkg["preset"], "name": NAMES[pkg["preset"]], "stages": stages, "done": done, "captions": captions,

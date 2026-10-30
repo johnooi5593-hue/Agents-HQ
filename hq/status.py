@@ -16,6 +16,9 @@ def files(path, exts=None):
     return [n for n in names if exts is None or os.path.splitext(n)[1].lower() in exts]
 
 
+SCRIPTS_ONLY = {"scripts.json", "scripts.md", "scripts.json.tmp"}
+
+
 def work_folders(base):
     """Every folder under out/ (or approved/) with what it contains."""
     result = {}
@@ -29,6 +32,8 @@ def work_folders(base):
         if name in SPECIAL:
             result[name] = {"files": have}
             continue
+        if have and all(f in SCRIPTS_ONLY or f.startswith("full-plan.") for f in have):
+            continue                                        # a talk's scripts waiting for the owner's picks: the Scripts card shows them, not a video row
         result[name] = {
             "edit": "edit.mp4" in have,
             "cover": "cover.jpg" in have,
