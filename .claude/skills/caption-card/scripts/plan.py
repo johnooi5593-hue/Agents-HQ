@@ -5,14 +5,19 @@ usage: python plan.py <video> <out/plan.json> [--max-chars 12]          transcri
        python plan.py --from-plan <other plan.json> <out/plan.json>    reuse the lines and word times of a poster-kinetic plan
        python plan.py --md <plan.json>                                 rewrite plan.md after editing
        python plan.py --check <plan.json>                              check the rules
-Every line starts as "kind": "card". The agent then picks 3-4 lines a minute for big type (hook, number, writeon, punch).
+Every line starts as "kind": "card". The agent then gives each card line its stressed word ("key") and, where it wants a
+particular one, its entrance ("anim"), and picks about one line every 8 s for big type (hook, breathe, number, writeon,
+punch). Plan level (v2): "camera" {"face": [x, y], "cuts": "auto" or [times], "pull_back": "auto", "sway": [[t0, t1]]},
+"grade" [[t, g], ...], "light" true / a time / {"from": t, "bloom": 0.16}. See the skill's GUIDE.md for every field.
 """
 import argparse, importlib.util, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import cc  # noqa: E402
 
 FIELDS = {"kind": "card", "color": None, "rows": None, "key_row": None, "number": None, "label": None, "unit": None,
-          "phrase": None, "sub": None, "y": None, "transition": None, "why": "", "note": ""}
+          "phrase": None, "sub": None, "y": None, "transition": None, "anim": None, "key": [], "sway": False, "punch_in": None,
+          "accent": None, "leak": False, "why": "", "note": ""}
+V2 = {"motion": "v2", "camera": {"face": [0.5, 0.3], "cuts": "auto", "pull_back": "auto"}, "grade": [[0.0, 0.0]], "light": None}
 
 
 def write_md(path, plan):
@@ -39,7 +44,7 @@ def main():
         src = cc.load(a.from_plan); out = a.video or a.out
         lines = [dict({k: ln[k] for k in ("id", "start", "end", "text", "words") if k in ln}, **FIELDS) for ln in src.get("lines", [])]
         plan = {"style": "caption-card", "video": src.get("video"), "duration": src.get("duration"), "engine": src.get("engine"),
-                "language": src.get("language"), "card": dict(cc.CARD), "card_y": 0.51, "lines": lines}
+                "language": src.get("language"), "card": dict(cc.CARD), "card_y": 0.51, **V2, "lines": lines}
         cc.save(out, plan)
         cc.report(tool="plan", out=out, md=write_md(out, plan), lines=len(lines), from_plan=a.from_plan); return
     if not (a.video and a.out):
@@ -57,7 +62,7 @@ def main():
         lines.append(dict({"id": i + 1, "start": ws[0]["start"], "end": ws[-1]["end"], "text": "".join(w["t"] for w in ws).strip(),
                            "words": [{"t": w["t"].strip(), "start": w["start"], "end": w["end"]} for w in ws]}, **FIELDS))
     plan = {"style": "caption-card", "video": os.path.abspath(a.video), "duration": round(info["duration"], 2), "engine": engine,
-            "language": lang, "card": dict(cc.CARD), "card_y": 0.51, "lines": lines}
+            "language": lang, "card": dict(cc.CARD), "card_y": 0.51, **V2, "lines": lines}
     cc.save(a.out, plan)
     cc.report(tool="plan", out=a.out, md=write_md(a.out, plan), language=lang, lines=len(lines),
               transcript=" / ".join(f"{l['id']}:{l['text']}" for l in lines)[:1500])

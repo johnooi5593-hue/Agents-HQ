@@ -9,6 +9,8 @@ The guide in numbers (measured from the reference reel; see Documents/Style Guid
   writeon  each character drawn left to right with a light trail, 4 f each, 2 f apart; bloom exit 5 f
   punch    each character pops 2 f apart: 0.4 -> 1.35 -> 1.0, rotation +-15 -> 0, with a 1.35x picture punch-in
   layers   heavy face, top-light gradient, dark soft shadow #192113, outer glow, background blurred and dimmed under big type
+v2 (owner-approved on Pong+Gospel 11/14): animated card entrances, a key word per line (yellow bar + pop), the "breathe" big
+kind, camera moves, a grade arc, light leaks, warm light and accents; see render.py.
 """
 import functools, math, os, re, sys
 import numpy as np
@@ -17,16 +19,20 @@ from PIL import Image, ImageDraw, ImageFilter
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILLS = os.path.dirname(os.path.dirname(HERE))
 PKS = os.path.join(SKILLS, "poster-kinetic", "scripts")
+if not os.path.isdir(PKS):                                     # a copy outside the skills folder still finds poster-kinetic
+    PKS = "D:/Agents HQ/.claude/skills/poster-kinetic/scripts"
 if PKS not in sys.path:
     sys.path.insert(0, PKS)
 import pk  # noqa: E402  (poster-kinetic: display, char_times, units, probe, report, load, save, FFMPEG, norm, NEG, is_cjk)
 import pfonts  # noqa: E402
-from pk import FFMPEG, NEG, char_times, display, is_cjk, load, norm, probe, report, save  # noqa: E402,F401
+from pk import FFMPEG, NEG, char_times, display, is_cjk, load, norm, probe, report, save, units  # noqa: E402,F401
 
 FPS = 30; F1 = 1 / FPS; W0, H0 = 1080, 1920
 SAFE = {"left": 70, "right": 1010, "top": 140, "bottom": 1420}
-KINDS = ("card", "hook", "number", "writeon", "punch")
+KINDS = ("card", "hook", "number", "writeon", "punch", "breathe")
 TRANSITIONS = (None, "", "flash", "blurcut")
+ANIMS = ("rise", "slide", "slam", "stagger", "wipe", "cut")   # card entrances (v2); cut = the v1 hard cut
+ACCENTS = ("rings", "orbs", "halo")
 
 
 def rgb(h):
@@ -43,8 +49,9 @@ PALETTE = {
     "gold":   ("#FFE17A", "#D99A1E", "#FFC94A"),     # sermon: grace, promise
     "cyan":   ("#9AF7EE", "#3FB8AE", "#63E6DA"),     # sermon: peace, Spirit
     "rose":   ("#FFB3B8", "#D5576A", "#FF8A96"),     # sermon: love, warning
+    "ice":    ("#F4F8FF", "#AFC3E2", "#8FB2E8"),     # sermon: tired, lonely, quiet (breathe)
 }
-DEFAULT_COLOR = {"hook": "key", "number": "lime", "writeon": "green", "punch": "yellow"}
+DEFAULT_COLOR = {"hook": "key", "number": "lime", "writeon": "green", "punch": "yellow", "breathe": "ice"}
 SHADOW = ("#192113", 18, 10, 0.85)                    # colour, blur, dy, alpha
 CARD = {"box": "#63E6DA", "text": "#1D3AF5", "text2": "#1530D8"}
 
@@ -250,8 +257,47 @@ def sub_time(ln, sub, ct=None):
     return ct[p] if p >= 0 else ln["start"]
 
 
+def line_keys(ln):
+    """The line's stressed word(s): "key" as one string or a list."""
+    k = ln.get("key") or []
+    if isinstance(k, str):
+        return [k]
+    return [x for x in k if isinstance(x, str)] if isinstance(k, list) else []   # anything else is a check error
+
+
 def has_digit(s):
     return bool(re.search(r"[0-9０-９一二三四五六七八九十百千万零两]", s))
+
+
+def warm_from(plan):
+    """Where the grade arc turns warm: the time of the first "grade" point above 0 (0.0 when there is none)."""
+    pts = [(_num(p[0]), _num(p[1])) for p in (plan.get("grade") or []) if isinstance(p, list) and len(p) == 2]
+    for t, g in sorted((p for p in pts if None not in p), key=lambda p: p[0]):
+        if g > 0:
+            return t
+    return 0.0
+
+
+def light_of(plan):
+    """The plan's warm light as a dict with "from", or None. "light": true starts it where the grade turns warm,
+    "light": 46 starts it at 46 s, "light": {"from": 46, "bloom": 0.16, "particles": true} sets everything."""
+    L = plan.get("light")
+    if L is None or L is False:
+        return None
+    if L is True:
+        return {"from": warm_from(plan)}
+    if isinstance(L, (int, float)):
+        return {"from": float(L)}
+    if isinstance(L, dict) and _num(L.get("from")) is not None and all(_num(L[k]) is not None for k in ("to", "bloom") if k in L):
+        return L
+    return None                                                 # anything else is a check error (the render would crash)
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def check(plan):
@@ -268,12 +314,34 @@ def check(plan):
             err.append(f"{tag}: transition must be null, flash or blurcut")
         if ln.get("color") and not (ln["color"] in PALETTE or re.fullmatch(r"#[0-9a-fA-F]{6}", ln["color"])):
             err.append(f"{tag}: color must be one of {tuple(PALETTE)} or #hex")
+        if ln.get("accent") and ln["accent"] not in ACCENTS:
+            err.append(f"{tag}: accent must be one of {ACCENTS}")
+        if ln.get("accent") and kind == "card":
+            warn.append(f"{tag}: an accent only shows with big type; this line is a card")
+        if ln.get("punch_in") and not (1.0 < (_num(ln["punch_in"]) or 0) <= 1.25):
+            err.append(f"{tag}: punch_in is a zoom between 1.0 and 1.25 (1.15 is the usual)")
+        k0 = ln.get("key")
+        if k0 not in (None, "") and not (isinstance(k0, str) or (isinstance(k0, list) and all(isinstance(x, str) for x in k0))):
+            err.append(f"{tag}: key is the stressed word as text, or a list of them ([\"麻烦\", \"担心\"])")
         if kind == "card":
+            if ln.get("anim") and ln["anim"] not in ANIMS:
+                err.append(f"{tag}: anim must be one of {ANIMS}")
+            for k_ in line_keys(ln):
+                if not k_ or k_ not in t:
+                    err.append(f"{tag}: key '{k_}' is not an exact part of the line '{t}'")
+                    continue
+                p = t.find(k_)
+                if p > 0 and (t[p - 1] in NEG or t[max(0, p - 2):p] in ("不是", "没有")) and k_[0] not in NEG:
+                    warn.append(f"{tag}: key '{k_}' leaves out the negation before it; stress the whole '{t[max(0, p - 2):p]}{k_}'")
+                if t.find(k_, p + 1) >= 0:
+                    warn.append(f"{tag}: key '{k_}' comes twice in the line; only the first one gets the bar")
+                if not display(k_):
+                    err.append(f"{tag}: key '{k_}' has nothing that shows on screen (punctuation only)")
             continue
         bigs.append((ln.get("start", 0), kind))
         if not (ln.get("why") or "").strip():
             err.append(f"{tag}: a {kind} moment needs \"why\": big type is only for the line whose words earn it")
-        fields = {"hook": ["rows"], "number": ["number"], "writeon": ["phrase"], "punch": ["phrase"]}[kind]
+        fields = {"hook": ["rows"], "number": ["number"], "writeon": ["phrase"], "punch": ["phrase"], "breathe": ["rows"]}[kind]
         for f_ in fields:
             if not ln.get(f_):
                 err.append(f"{tag}: {kind} needs \"{f_}\"")
@@ -287,8 +355,8 @@ def check(plan):
             if p >= 0 and p < pos:
                 err.append(f"{tag}: hook rows must follow the order of the words")
             pos = max(pos, p)
-        if kind == "hook" and len(ln.get("rows") or []) > 3:
-            err.append(f"{tag}: a hook has at most 3 rows")
+        if kind in ("hook", "breathe") and len(ln.get("rows") or []) > 3:
+            err.append(f"{tag}: a {kind} has at most 3 rows")
         for r in ln.get("rows") or []:
             d = display(r); c = sum(1 for x in d if is_cjk(x))
             if c > 7 or (not c and len(d.split()) > 3):
@@ -308,9 +376,51 @@ def check(plan):
                 if (c > cmax) or (not c and len(d.split()) > wmax):
                     warn.append(f"{tag}: {key} '{v}' is long; big type reads big at up to {cmax} characters or {wmax} words (it will shrink)")
     dur = plan.get("duration") or (lines[-1]["end"] if lines else 60)
-    cap = max(2, round(dur / 15) + 1)
+    classic = plan.get("motion") == "classic"
+    if plan.get("motion") not in (None, "v2", "classic"):
+        err.append("motion must be v2 (the default) or classic")
+    cap = max(2, round(dur / 15) + 1) if classic else max(3, round(dur / 8))     # v2: about one every 8 s (1114: 8 in 65 s)
     if len(bigs) > cap:
         warn.append(f"{len(bigs)} big moments in {dur:.0f} s; about {cap} keeps each one special (cards carry the rest)")
+    if not classic:
+        cards_ = [ln for ln in lines if (ln.get("kind") or "card") == "card"]
+        if cards_ and sum(1 for ln in cards_ if line_keys(ln)) < len(cards_) / 2:
+            warn.append(f"only {sum(1 for ln in cards_ if line_keys(ln))} of {len(cards_)} card lines have a \"key\"; give most lines their stressed word")
+        anims = [ln.get("anim") for ln in cards_]
+        for a_, b_ in zip(anims, anims[1:]):
+            if a_ and a_ == b_ and a_ != "cut":
+                warn.append(f"two card lines in a row both '{a_}'; neighbours read better with different entrances")
+                break
+        g = plan.get("grade")
+        if g and not (isinstance(g, list) and all(isinstance(p, list) and len(p) == 2 and _num(p[0]) is not None
+                                                      and -1 <= (_num(p[1]) if _num(p[1]) is not None else 9) <= 1 for p in g)):
+            err.append("grade is a list of [time, value] with value -1 (cool) .. 0 (neutral) .. +1 (warm)")
+        if plan.get("light") not in (None, False) and light_of(plan) is None:
+            err.append("light is true (start where the grade turns warm), a time in seconds, or {\"from\": t, \"bloom\": 0.16} (numbers)")
+        elif plan.get("light") is True and warm_from(plan) == 0.0:
+            warn.append("light: true starts where the grade turns warm, but no grade point is above 0, so the light covers the whole clip")
+        cam = plan.get("camera") or {}
+        if not isinstance(cam, dict):
+            err.append("camera is an object: {\"face\": [x, y], \"cuts\": \"auto\" or [times], \"pull_back\": \"auto\"}")
+        else:
+            if cam.get("cuts") not in (None, "auto") and not (isinstance(cam["cuts"], list) and all(_num(c) is not None for c in cam["cuts"])):
+                err.append("camera cuts is \"auto\" or a list of cut times in seconds")
+            if "on" in cam and not isinstance(cam["on"], bool):
+                err.append("camera on is true or false (not text)")
+            sw = cam.get("sway")
+            if sw is not None and not (isinstance(sw, list) and all(isinstance(w, list) and len(w) >= 2 and _num(w[0]) is not None
+                                                                    and _num(w[1]) is not None for w in sw)):
+                err.append("camera sway is a list of [start, end] times in seconds")
+            if "punch_scale" in cam and not (1.0 <= (_num(cam["punch_scale"]) or 0) <= 1.35):
+                err.append("camera punch_scale is a zoom between 1.0 and 1.35 (1.25 is the usual)")
+            f = cam.get("face")
+            if f is not None and not (isinstance(f, list) and len(f) == 2 and all(0 <= (_num(v) if _num(v) is not None else -1) <= 1 for v in f)):
+                err.append("camera face is [x, y], each 0..1 of the frame (where the speaker's face is)")
+            pb = cam.get("pull_back", "auto")
+            if pb not in ("auto", None, False):          # below 1x the picture would not fill the frame (black borders)
+                if not (isinstance(pb, dict) and _num(pb.get("start")) is not None and (pb.get("end") is None or _num(pb["end"]) is not None)
+                        and 1.0 <= (_num(pb.get("to", 1.0)) or 0) <= 1.35):
+                    err.append("camera pull_back is \"auto\", false, or {\"start\": t, \"end\": t, \"to\": 1.0} (to: a zoom 1.0 .. 1.35)")
     for (a, ka), (b, kb) in zip(bigs, bigs[1:]):
         if b - a < 3:
             warn.append(f"big moments at {a:.1f}s and {b:.1f}s are under 3 s apart")
@@ -319,7 +429,7 @@ def check(plan):
     return err, warn
 
 
-KIND_ZH = {"card": "字卡", "hook": "三行钩子", "number": "半屏大数字", "writeon": "写出来", "punch": "行动语蹦出"}
+KIND_ZH = {"card": "字卡", "hook": "三行钩子", "number": "半屏大数字", "writeon": "写出来", "punch": "行动语蹦出", "breathe": "慢慢浮现"}
 
 
 def ts(t):
@@ -333,16 +443,27 @@ def plan_md(plan):
     for ln in plan.get("lines", []):
         k = ln.get("kind") or "card"
         big = "-"
-        if k == "hook":
+        if k == "card" and plan.get("motion") != "classic":
+            big = f"{ln.get('anim') or 'auto'}" + (f" · 重点 key: {' / '.join(line_keys(ln))}" if line_keys(ln) else "")
+        if k in ("hook", "breathe"):
             big = " / ".join(ln.get("rows") or [])
         elif k == "number":
             big = " ".join(x for x in (ln.get("label"), ln.get("number"), ln.get("unit")) if x)
         elif k in ("writeon", "punch"):
             big = ln.get("phrase", "") + (f" + {ln['sub']}" if ln.get("sub") else "")
         col = ln.get("color") or (DEFAULT_COLOR.get(k, "-") if k != "card" else "-")
+        extra = " ".join(x for x in (ln.get("accent") and f"accent {ln['accent']}", ln.get("sway") and "sway",
+                                         ln.get("punch_in") and f"punch-in {ln['punch_in']}x", ln.get("leak") and "leak") if x)
         out.append(f"| {ln.get('id')} | {ts(ln['start'])}-{ts(ln['end'])} | {ln['text']} | {KIND_ZH[k]} {k} | {big} | {col} | "
-                   f"{ln.get('transition') or ''} | {ln.get('why') or ''} |")
-    out += ["", "Rules: every line is a caption card; 3-4 lines in a minute earn big type (a hook, a number, a phrase written on, a "
-            "punch line), each with a why; the words, numbers, negations and scripture stay exactly as spoken.", "",
+                   f"{' '.join(x for x in (ln.get('transition') or '', extra) if x)} | {ln.get('why') or ''} |")
+    if plan.get("motion") != "classic":
+        cam = plan.get("camera") or {}
+        lt = light_of(plan)
+        out += ["", f"Camera: push / drift per piece around the face {cam.get('face') or [0.5, 0.3]}, cuts {cam.get('cuts', 'auto')}, "
+                f"pull-back {cam.get('pull_back', 'auto')}. Grade arc: {plan.get('grade', [[0, 0]])}. "
+                f"Warm light: {('from ' + str(lt['from']) + ' s') if lt else 'none'}."]
+    out += ["", "Rules: every line is a caption card with its own entrance and its stressed word; about one line every 8 s earns "
+            "big type (a hook, a breathe, a number, a phrase written on, a punch line), each with a why; the words, numbers, "
+            "negations and scripture stay exactly as spoken.", "",
             "Waiting for the owner's OK before rendering (skip when the owner asked for the video directly)."]
     return "\n".join(out) + "\n"
