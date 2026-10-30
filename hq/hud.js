@@ -147,11 +147,19 @@
   // sub-agents of one team started by the lead within the run. Labelled "Sub n · <clip or short task>".
   let subsCache = { t: 0, v: {} };
   function derivedSubs() {
-    const byTeam = {}, st = state.status, clips = (st && st.inbox && st.inbox.clips) || [];
+    const byTeam = {}, st = state.status, tasks = (st && st.tasks) || [];
     const push = (t, item) => { if (t) (byTeam[t.key] = byTeam[t.key] || []).push(item); };
+    // each copy is named after the job its lead really gave it (every running lead job, from the server), never after
+    // whatever happens to sit in inbox/; without one, after the board task its lead job works on
+    const jobsOf = {};
+    for (const j of (st && st.staff_jobs) || []) (jobsOf[j.staff] ||= []).push(j);
     for (const [name, n] of Object.entries(hookRun())) {
       const a = agentByName(name); if (n < 2 || !a || a.role === "head") continue;
-      for (let i = 0; i < n; i++) push(teamOf(name), { id: `${name}#${i + 1}`, agent: name, start: state.firstSeen[`${name}#${i + 1}`], clip: clips[i] || "" });
+      const jobs = jobsOf[name] || [];
+      for (let i = 0; i < n; i++) {
+        const j = jobs[i], task = j && tasks.find((t) => (j.tasks || []).includes(t.id));
+        push(teamOf(name), { id: `${name}#${i + 1}`, agent: name, start: state.firstSeen[`${name}#${i + 1}`], clip: j ? fileIn(j.text) : "", text: j ? j.text : task ? task.title : "" });
+      }
     }
     const stream = {};
     for (const [id, p] of Object.entries(state.pending)) { const t = teamOf(p.staff); if (t) (stream[t.key] = stream[t.key] || []).push({ id, agent: p.staff, start: p.start, text: p.text, clip: fileIn(p.text) }); }
@@ -164,7 +172,7 @@
       if (items.length < 2) continue;
       out[key] = items.slice(0, 6).map((it, i) => {
         const prog = pseudoProgress(it.start), a = agentByName(it.agent);
-        const short = it.clip ? it.clip.replace(/\.[a-z0-9]+$/i, "") : shortTask(it.text || (a ? a.label : it.agent), 16);
+        const short = it.clip ? it.clip.replace(/\.[a-z0-9]+$/i, "") : shortTask(it.text || (a ? a.label : it.agent), 34);
         return { id: it.id, label: `Sub ${i + 1} · ${short}`, subtitle: `${stageOf(it.agent, prog)} · ${prog}%`, progress: prog, agent: it.agent, file: it.clip || "", team: key };
       });
     }

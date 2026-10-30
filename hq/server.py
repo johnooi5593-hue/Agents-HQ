@@ -1024,6 +1024,7 @@ def status_payload():
         s["inbox"]["clips"] += [c["key"] + "/" + n for n in files(channels.inbox(c["key"]), CLIP_EXT)]
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
     s["update"] = dict(UPDATE)
+    s["staff_jobs"] = desk.staff_jobs()                     # what each sub-agent is really doing: the cards are named after it
     s["office_name"] = office_name()
     s["studios"] = sermon_design.engine_root.is_dir()      # the design studios run on AI OFFICE: hidden on a computer without it
     s["boot"] = BOOT                                        # changes on every start: open windows reload to the new app
@@ -1506,6 +1507,19 @@ class Run:
                 return re.sub(r"\s+", " ", str(ev.get("text") or ev.get("name")))[:120]
         return "starting"
 
+    def staff_jobs(self):
+        """The sub-agents this run has working now, each with the job the lead gave it: [{id, staff, text}]. One sent to
+        the background stays until the run ends (its own result comes later)."""
+        if self.done or not self.started:
+            return []
+        open_ = {}
+        for ev in list(self.events):
+            if ev.get("type") == "tool" and ev.get("staff"):
+                open_[ev.get("id")] = {"id": ev.get("id"), "staff": ev["staff"], "text": re.sub(r"^[^:]+:\s*", "", ev.get("text") or "")}
+            elif ev.get("type") == "tool_done" and ev.get("id") in open_ and not re.search(r"background", ev.get("text") or "", re.I):
+                del open_[ev["id"]]
+        return list(open_.values())
+
     def summary(self):
         return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events),
                 "tasks": self.tasks, "queued": not self.started and not self.done}
@@ -1846,6 +1860,12 @@ class Desks:
             if any(r.prompt.startswith(prefix) for r in waiting):
                 return 0
         return None
+
+    def staff_jobs(self):
+        """Every sub-agent at work across the running lead jobs, with its job and the board tasks of its lead job."""
+        with self.lock:
+            busy = [d.current for d in self.lanes.values() if d.current and not d.current.done]
+        return [dict(job, tasks=list(run.tasks)) for run in busy for job in run.staff_jobs()]
 
     def working_on(self):
         out = {}
