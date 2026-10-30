@@ -863,6 +863,15 @@ test("the office's name and access code: cleaned, checked, never handed to the p
   assert.deepStrictEqual(lib.readOffice(dir), {});
 });
 
+test("engineBusy: what a restart would stop, from the engine's own job list", async () => {
+  const answer = (status, body) => async () => ({ status, body: JSON.stringify(body) });
+  assert.deepStrictEqual(await lib.engineBusy(7331, answer(200, { running: 2, queued: 1 })), ["2 jobs running", "1 waiting"]);
+  assert.deepStrictEqual(await lib.engineBusy(7331, answer(200, { running: 1, queued: 0 })), ["1 job running"]);
+  assert.deepStrictEqual(await lib.engineBusy(7331, answer(200, { running: 0, queued: 0 })), []);
+  assert.strictEqual(await lib.engineBusy(7331, answer(401, {})), null);
+  assert.strictEqual(await lib.engineBusy(7331, async () => { throw new Error("down"); }), null);
+});
+
 // ---------------------------------------------------------------- run them
 
 (async () => {

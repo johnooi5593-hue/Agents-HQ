@@ -27,7 +27,7 @@
  * Build: copy the office into desktop/bundle (the GitHub workflow .github/workflows/windows-app.yml does this with
  * robocopy: the repository without .git, desktop, out, done, approved and the inbox contents), then `npm run dist:win`.
  */
-const { app, BrowserWindow, Menu, Tray, ipcMain, shell, session, nativeImage, safeStorage, clipboard } = require("electron");
+const { app, BrowserWindow, Menu, Tray, ipcMain, shell, session, nativeImage, safeStorage, clipboard, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -451,9 +451,28 @@ function stopEngine() {
   });
 }
 
+/**
+ * Before the app stops a running engine: when lead jobs are at work, ask first, because a restart stops them mid-way (the
+ * editors' videos stay half done). True when it may go ahead. The office's own updates already wait for a quiet moment.
+ */
+async function okToStop(what) {
+  if (!child || state.engine !== "running") return true;
+  const busy = await lib.engineBusy(state.port);
+  if (!busy || !busy.length) return true;
+  const { response } = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+    type: "warning", buttons: ["Wait, keep working", what + " anyway"], defaultId: 0, cancelId: 0, noLink: true,
+    title: "Agents HQ is working", message: `The office is busy: ${busy.join(", ")}.`,
+    detail: `${what} now stops that work mid-way, and it has to be started again with Run again. The office installs its own updates by itself once it is quiet, so you rarely need this.`,
+  });
+  if (response !== 1) { say(`${what}: not now, the office is busy (${busy.join(", ")}).`); return false; }
+  say(`${what} while busy (${busy.join(", ")}): the owner chose to stop that work.`);
+  return true;
+}
+
 /** Stop and start the engine again. `opts.focus: false` leaves the window where it is (the phone access window stays in front). */
 async function restartEngine(opts = {}) {
   if (booting) return;
+  if (!opts.force && !(await okToStop("Restart"))) return;
   if (opts.focus !== false) showWindow();
   showSetup();
   if (externalEngine && !child) {
@@ -475,6 +494,7 @@ async function restartEngine(opts = {}) {
 /** Tray: restart the engine; on start it updates the office folder from GitHub (and links a copied folder to GitHub). */
 async function checkForUpdates() {
   if (booting) return;
+  if (!(await okToStop("Update now"))) return;
   showWindow();
   showSetup();
   booting = true;

@@ -376,6 +376,22 @@ function httpGet(url, timeoutMs = 3000) {
   });
 }
 
+/**
+ * What a restart of the engine would cut off, from the engine itself: ["2 jobs running", "1 post going out"], [] when quiet,
+ * null when it does not answer (then there is nothing to protect).
+ */
+async function engineBusy(port, get = httpGet) {
+  try {
+    const r = await get(`http://127.0.0.1:${port}/api/runs`, 2000);
+    if (r.status !== 200) return null;
+    const d = JSON.parse(r.body);
+    const out = [];
+    if (d.running) out.push(`${d.running} job${d.running === 1 ? "" : "s"} running`);
+    if (d.queued) out.push(`${d.queued} waiting`);
+    return out;
+  } catch (_) { return null; }
+}
+
 /** True when an Agents HQ engine answers on the port (its /api/status is JSON with the office counts). */
 async function isAgentsHq(port, host = "127.0.0.1") {
   try {
@@ -976,7 +992,7 @@ module.exports = {
   parseVersion, firstLine, pythonLabel, checkGit, checkNode, checkPython, checkFfmpeg, checkClaude, checkAll,
   refreshPath, resolveClaude, shortPath, claudeSignedIn, officeBase, installLines, installScript,
   loadSettings, saveSettings,
-  isPortFree, findPort, httpGet, isAgentsHq, waitForHttp,
+  isPortFree, findPort, httpGet, engineBusy, isAgentsHq, waitForHttp,
   PHONE_ENV_KEYS, PHONE_MIN_PASSWORD, PASSWORD_WORDS, TAILSCALE_WIN_EXE,
   isTailscaleIp, phoneAddresses, generatePassword, passwordProblem, buildEngineEnv, redact,
   parseTailscaleIp, tailscaleState, checkTailscale, tailscaleInstallLines, commandMissing,
