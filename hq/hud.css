@@ -1304,3 +1304,15 @@ body.review-open { overflow: hidden; }
 .sw-go.sw-del::after { background: #ff4d5e; color: #fff; }
 .sw-go.sw-open::after { background: #2f7cf6; color: #fff; }
 .vg-del .i { width: 16px; height: 16px; }
+
+/* Copy buttons in the chats: the whole message, and every prompt (a fenced block or quoted lines) on its own */
+#lead-log .ev.text, #lead-log .ev.result, .task-detail .msg.lead .tx { position: relative; }
+.cp-all { float: right; margin: 0 0 4px 8px; padding: 2px 8px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; background: rgba(255, 255, 255, 0.06); color: #c9d3e6; font: 600 10.5px var(--mono); cursor: pointer; }
+.cp-all:hover, .cp-btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.cp-all.ok, .cp-btn.ok { color: #7dffb0; border-color: rgba(125, 255, 176, 0.5); }
+.cp-block { margin: 6px 0; border: 1px solid rgba(138, 180, 248, 0.35); border-radius: 8px; background: rgba(9, 13, 22, 0.75); overflow: hidden; white-space: normal; }
+.cp-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 10px; background: rgba(138, 180, 248, 0.12); font: 600 10px var(--mono); color: #8ab4f8; letter-spacing: 0.03em; }
+.cp-btn { padding: 4px 12px; border: 1px solid rgba(138, 180, 248, 0.5); border-radius: 6px; background: #2c3f6b; color: #fff; font: 700 11px var(--mono); cursor: pointer; }
+.cp-block pre { margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 var(--mono); color: #e6e8ef; user-select: text; }
+.cp-tx { white-space: pre-wrap; }
+@media (max-width: 600px) { .cp-btn { padding: 7px 16px; font-size: 12.5px; } .cp-all { padding: 5px 11px; font-size: 12px; } }

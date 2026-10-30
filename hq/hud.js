@@ -798,7 +798,7 @@
   }
   // the task's chat: the lead's replies about this task, and the owner's messages to its team
   function taskChat(t) {
-    const msgs = (t.chat || []).map((m) => `<div class="msg ${m.from === "owner" ? "me" : "lead"}${m.error ? " err" : ""}"><div class="who">${m.from === "owner" ? "You" : "Lead"} · ${esc(timeAgo(m.at))}</div><div class="tx">${esc(m.text)}</div></div>`).join("");
+    const msgs = (t.chat || []).map((m) => `<div class="msg ${m.from === "owner" ? "me" : "lead"}${m.error ? " err" : ""}"><div class="who">${m.from === "owner" ? "You" : "Lead"} · ${esc(timeAgo(m.at))}</div><div class="tx">${m.from === "owner" ? esc(m.text) : chatHtml(m.text, m.text)}</div></div>`).join("");
     const team = t.team || "the team", live = t.live && t.live.state;
     return `<div class="td-chat"><span class="td-l">Chat with ${esc(team)}</span>${msgs ? `<div class="msgs">${msgs}</div>` : '<div class="hint">No messages yet. What the lead says about this task shows up here.</div>'}
       ${live === "working" ? `<div class="hint live"><span class="spin"></span> The lead is on it now: ${esc(t.live.step || "")}</div>` : live === "queued" ? '<div class="hint live">Waiting in line: it starts by itself when a slot is free.</div>' : ""}
@@ -1392,8 +1392,10 @@
   function hideAgentCard() { $("#agent-card").hidden = true; state.agentCard = null; callScene("select", null); }
 
   // ---------- the lead's run stream (ported from the first app): /api/run then /api/runs/<id>?after=N every 800 ms ----------
-  function log(cls, text) {
-    const con = $("#lead-con"), d = document.createElement("div"); d.className = "ev " + cls; d.textContent = text; con.appendChild(d);
+  function log(cls, text, copy) {                          // copy: the lead's words, with Copy buttons on the message and its prompts
+    const con = $("#lead-con"), d = document.createElement("div"); d.className = "ev " + cls;
+    if (copy) d.innerHTML = chatHtml(text, copy); else d.textContent = text;
+    con.appendChild(d);
     while (con.children.length > 400) con.firstElementChild.remove();
     con.scrollTop = con.scrollHeight;
   }
@@ -1405,13 +1407,13 @@
       const p = state.pending[ev.id];
       if (p && /background/i.test(ev.text || "")) log("staff", "… " + p.staff + " is working in the background");    // stays lit until the lead's reply
       else if (p) { delete state.pending[ev.id]; if (!Object.values(state.pending).some((q) => q.staff === p.staff)) delete state.working[p.staff]; state.finished[p.staff] = Date.now(); log("staff", "← " + p.staff + (ev.is_error ? " (error)" : " done")); }
-    } else if (ev.type === "text") { log("text", ev.text); state.lastReply = ev.text; $("#lead-text").textContent = "Lead · " + shortTask(ev.text, 70); }
+    } else if (ev.type === "text") { log("text", ev.text, ev.text); state.lastReply = ev.text; $("#lead-text").textContent = "Lead · " + shortTask(ev.text, 70); }
     else if (ev.type === "result") {
       for (const k of Object.keys(state.working)) delete state.working[k];
       for (const k of Object.keys(state.pending)) delete state.pending[k];
       const reply = ev.text || (ev.is_error ? "The lead hit an error. See the Lead log." : "(no reply)");
       const stats = ev.cost_usd != null ? ` (${ev.turns} turns, ${(ev.duration_ms / 1000).toFixed(0)}s, $${Number(ev.cost_usd).toFixed(3)})` : "";
-      log(ev.is_error ? "error" : "result", (reply === state.lastReply ? "done" : reply) + stats);
+      if (reply === state.lastReply) log("result", "done" + stats); else log(ev.is_error ? "error" : "result", reply + stats, ev.is_error ? null : reply);
       state.lastReply = reply; $("#lead-text").textContent = "Lead · " + shortTask(reply, 70);
       const leadSheet = isPhone() && $("#lead-log").classList.contains("open");   // a phone with the lead sheet open already shows the reply
       if ((!state.run.quiet || ev.is_error) && !leadSheet) toast("chief", "Chief of staff", shortTask(reply, 180), { bad: !!ev.is_error });
@@ -1910,6 +1912,28 @@
     }
     return out.join("");
   }
+  // A chat message with Copy buttons: one for the whole message, and one on every prompt in it (a fenced code block,
+  // or lines quoted with "> "), so a prompt for Codex, a caption or an email copies in one tap, without the chat around it.
+  function chatHtml(text, copyAll) {
+    const src = String(text || "").replace(/\r/g, ""), parts = [];
+    const re = /```[^\n]*\n([\s\S]*?)(?:```|$)|((?:^|\n)(?:>[^\n]*(?:\n|$))+)/g;
+    let last = 0, m;
+    while ((m = re.exec(src)) && m[0]) {
+      if (m.index > last) parts.push({ t: src.slice(last, m.index) });
+      parts.push({ code: m[1] != null ? m[1].replace(/\n+$/, "") : m[2].trim().split("\n").map((l) => l.replace(/^>\s?/, "")).join("\n") });
+      last = re.lastIndex;
+    }
+    if (last < src.length) parts.push({ t: src.slice(last) });
+    const body = parts.map((p) => (p.code != null
+      ? `<div class="cp-block"><div class="cp-h"><span>Prompt · text to copy</span><button class="cp-btn" type="button" data-copy-chat="${esc(p.code)}">Copy</button></div><pre>${esc(p.code)}</pre></div>`
+      : `<span class="cp-tx">${esc(p.t.replace(/^\n+|\n+$/g, ""))}</span>`)).join("");
+    return (copyAll ? `<button class="cp-all" type="button" data-copy-chat="${esc(copyAll)}" title="Copy the whole message">Copy</button>` : "") + body;
+  }
+  document.addEventListener("click", (e) => {               // a Copy in any chat (the Lead log, a task's chat)
+    const b = e.target.closest && e.target.closest("[data-copy-chat]"); if (!b) return;
+    e.preventDefault(); e.stopPropagation(); copyText(b.dataset.copyChat);
+    b.textContent = "Copied ✓"; b.classList.add("ok"); setTimeout(() => { b.textContent = "Copy"; b.classList.remove("ok"); }, 1600);
+  }, true);
   function copyText(text) {                                 // the clipboard API needs https; a phone on Wi-Fi or Tailscale is plain http
     const done = () => toast("chief", "Copied", shortTask(text, 60));
     if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done, () => legacy()); return; }

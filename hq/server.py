@@ -1656,6 +1656,7 @@ class Desk:
             # one line: claude.cmd on Windows cuts -p at the first newline and drops the flags after it
             prompt = re.sub(r"\s*\n+\s*", " / ", with_skills(run.prompt).strip())
             cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model_for(prompt)]
+            cmd += ["--append-system-prompt", COPY_NOTE]       # prompts go in their own block: the app gives each one a Copy button
             allowed = allow_list()
             if allowed:
                 cmd += ["--allowedTools", *allowed]
@@ -2482,6 +2483,11 @@ def office_skills():
 def office_slash():
     """The app's / menu: the office commands, then the skills."""
     return [dict(c) for c in OFFICE_COMMANDS] + office_skills()
+
+
+COPY_NOTE = ("When you give the owner a prompt or any text meant to be pasted somewhere else (a prompt for Codex or another AI, "
+             "a caption, a message, an email, a command), put exactly that text, and nothing else, in its own fenced code block: "
+             "the Agents HQ chat shows a Copy button on each block.")
 
 
 def with_skills(prompt):
