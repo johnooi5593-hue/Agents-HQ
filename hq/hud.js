@@ -2534,5 +2534,10 @@
     if (window.HQ_OFFICE) onSceneReady();                  // the scene may already be there
     else setTimeout(() => { if (window.HQ_OFFICE) onSceneReady(); }, 3000);
   }
+  // iPhone: a home-screen web app follows the silent switch, so a video played with the phone on silent had no sound.
+  // A video the owner presses play on is media playback, like in Safari or YouTube: it plays its sound on silent too.
+  document.addEventListener("play", (e) => {
+    if (e.target && e.target.tagName === "VIDEO" && navigator.audioSession) { try { navigator.audioSession.type = "playback"; } catch (err) { /* older iOS */ } }
+  }, true);
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();
