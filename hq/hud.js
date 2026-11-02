@@ -2195,7 +2195,12 @@
     if (!rv.folder && task) html += `<div class="rv-sec"><div class="rv-h">Details</div><div class="md">${mdHtml([task.subtitle, task.agent ? "By " + task.agent : "", task.date ? "Date: " + task.date + (task.time ? " " + task.time : "") : "", "Created " + timeAgo(task.created)].filter(Boolean).join("\n"))}</div></div>`;
     html += "</div>";
     if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence. Type / to pick an editing style." required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
-    else if (rv.mode === "approved") html += `<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
+    else if (rv.mode === "confirm-post") {                 // Approve & post / Post now asks once more: posting can't be taken back
+      const where = chosenPub().map((k) => (PUB.find(([x]) => x === k) || [k, k])[1]).join(", ");
+      const when = rv.whenOn ? whenSay() : "It goes out now.";
+      html += `<div class="rv-actions confirm"><div class="msg">${rv.whenOn ? "Schedule" : "Post"} this video to <b>${esc(where || "no account")}</b>? ${esc(when)}${(rv.folder || "").startsWith("approved/") ? "" : " It is also approved and moved to approved/."} Once it's live, the office can't take it back.</div><button class="btn" data-rv-mode="" type="button">Cancel</button><button class="btn primary" data-rv-approve="post-yes" type="button" ${where ? "" : "disabled"}>Yes, ${rv.whenOn ? "schedule" : "post"}</button></div>`;
+    }
+    else if (rv.mode === "approved") html +=`<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
     else {
       const n = thumbnailStage || rv.ready === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
       const verb = rv.whenOn ? "schedule" : "post";
@@ -2306,7 +2311,8 @@
       return true;
     }
     if (d.rvMode != null) { rv.mode = d.rvMode || null; renderReview(); return true; }
-    if (d.rvApprove != null) { reviewApprove(d.rvApprove === "post"); return true; }
+    if (d.rvApprove === "post") { rv.mode = "confirm-post"; renderReview(); return true; }   // asks first: Cancel or Yes, post
+    if (d.rvApprove != null) { if (d.rvApprove === "post-yes") rv.mode = null; reviewApprove(d.rvApprove === "post-yes"); return true; }
     if (d.rvRetro != null) { send(`/retro ${rv.folder || "board task " + rv.taskId} (the owner approved it)`); toast("chief", "Retro started", "The team is writing down what worked."); closeReview(); return true; }
     return false;
   }
