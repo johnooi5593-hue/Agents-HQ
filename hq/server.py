@@ -782,6 +782,13 @@ def _task_action(body):
             if ch is not None and ch != OFFICE and not (isinstance(ch, str) and channels.get(ch)):
                 return 400, {"error": "choose an existing channel"}
             task["channel"], task["updated"] = ch, now_iso(); save_tasks(db)
+            # its video folder follows (channel.txt picks the posting accounts); a thumbnail package keeps its own
+            m = re.search(r"out:([^\s,;]+)", task.get("note") or "")
+            name = m[1].strip("/").split("/")[0] if m else ""
+            d = safe_join(os.path.join(ROOT, "out"), name) if name and SAFE_NAME.match(name) and not name.startswith("thumbnail-final-") else None
+            if isinstance(ch, str) and ch != OFFICE and d and os.path.isdir(d):
+                with open(os.path.join(d, "channel.txt"), "w", encoding="utf-8") as f:
+                    f.write(ch)
             return 200, {"channel": task}
         if action == "approve":
             if not task:

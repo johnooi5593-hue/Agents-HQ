@@ -67,6 +67,26 @@ class BoardTests(unittest.TestCase):
         self.act({"action": "channel", "id": t["id"], "channel": None})       # back to automatic: nothing to go on, whole office
         self.assertIsNone(ch(t))
 
+    def test_a_tasks_video_folder_follows_its_channel(self):
+        # the posting screen reads the folder's channel.txt for its accounts, so switching the card's channel moves it too
+        clip = self.root / "out" / "clip"
+        clip.mkdir(parents=True)
+        (clip / "channel.txt").write_text("main", encoding="utf-8")
+        t = self.add(note="out:clip")
+        self.assertEqual(self.act({"action": "channel", "id": t["id"], "channel": "pong-gospel"})[0], 200)
+        self.assertEqual((clip / "channel.txt").read_text(encoding="utf-8"), "pong-gospel")
+        self.act({"action": "channel", "id": t["id"], "channel": ""})          # the main channel
+        self.assertEqual((clip / "channel.txt").read_text(encoding="utf-8"), "")
+        self.act({"action": "channel", "id": t["id"], "channel": "@office"})   # the whole office, or automatic: the folder stays
+        self.act({"action": "channel", "id": t["id"], "channel": None})
+        self.assertEqual((clip / "channel.txt").read_text(encoding="utf-8"), "")
+        pkg = self.root / "out" / "thumbnail-final-abc"
+        pkg.mkdir()
+        (pkg / "channel.txt").write_text("pong-gospel", encoding="utf-8")
+        p = self.add(note="out:thumbnail-final-abc")
+        self.act({"action": "channel", "id": p["id"], "channel": ""})
+        self.assertEqual((pkg / "channel.txt").read_text(encoding="utf-8"), "pong-gospel")
+
     def test_cancel_restore_and_delete(self):
         t = self.add(status="review", note="out:somewhere")
         self.assertEqual(self.act({"action": "move", "id": t["id"], "status": "cancelled"})[0], 200)

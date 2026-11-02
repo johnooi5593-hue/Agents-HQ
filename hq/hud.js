@@ -723,6 +723,12 @@
   const chList = () => (state.status && state.status.channels) || [];
   const chName = (key) => (key == null ? "Whole office" : (chList().find((c) => c.key === key) || {}).name || key || "Main channel");
   const chPill = (key) => `<span class="chpill${key == null ? " office" : ""}" style="--chc:${key == null ? "#4a5060" : hashColor("channel:" + key)}">${esc(chName(key))}</span>`;
+  const taskChOpts = (t) => {                              // a task's channel choices: automatic, every channel, the whole office
+    const opt = (value, label, on) => `<option value="${esc(value)}" ${on ? "selected" : ""}>${esc(label)}</option>`;
+    return opt("auto", `Automatic · ${chName(t.ch)}`, t.channel == null) + chList().map((c) => opt("ch:" + c.key, c.name, t.channel === c.key)).join("") + opt("@office", "Whole office (no channel)", t.channel === "@office");
+  };
+  // the card's channel pill is a picker: an invisible select over it opens the phone's or browser's own list
+  const chSwitch = (t) => `<span class="ch-sw" title="Change the channel">${chPill(t.ch)}<select data-task-ch="${esc(t.id)}" aria-label="Channel of this task">${taskChOpts(t)}</select></span>`;
   const inChannel = (t) => state.chFilter === "all" || (state.chFilter === "@office" ? t.ch == null : t.ch === state.chFilter);
   function ring(p) {
     const r = 13, c = 2 * Math.PI * r, off = c * (1 - clamp(p, 0, 100) / 100);
@@ -810,7 +816,7 @@
     const asks = t.asks ? `<button class="ask-pill" data-manage="${esc(t.id)}" type="button" title="Open the chat to answer">${(t.chat || []).slice(-1).some((m) => m.error) ? "Stopped · see why" : "Lead asks you"}</button>` : "";
     const nChat = (t.chat || []).length;
     const nOlder = ((state.older || {})[t.id] || []).length; if (nOlder) meta += ` · +${nOlder} older version${nOlder === 1 ? "" : "s"}`;
-    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${ready ? readyTag : ""}${esc(title)}</div><div class="meta">${asks}${chPill(t.ch)}${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage.replace("⋯", nChat ? `⋯<i class="chat-n">${nChat}</i>` : "⋯")}</div></div>${state.editPick === t.id ? editChooser(t) : ""}${state.openDetail === t.id ? taskDetail(t) : ""}`;
+    return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${ready ? readyTag : ""}${esc(title)}</div><div class="meta">${asks}${chSwitch(t)}${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage.replace("⋯", nChat ? `⋯<i class="chat-n">${nChat}</i>` : "⋯")}</div></div>${state.editPick === t.id ? editChooser(t) : ""}${state.openDetail === t.id ? taskDetail(t) : ""}`;
   }
   // the task's chat: the lead's replies about this task, and the owner's messages to its team
   function taskChat(t) {
@@ -846,8 +852,7 @@
     if (m && st.out && st.out[top]) files.push(`<button class="btn sm blue" data-rv-folder="out/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open ${(st.out[top].files || []).length} files</button>`);
     else if (m && st.approved && st.approved[top]) files.push(`<button class="btn sm blue" data-rv-folder="approved/${esc(m[1])}" data-rv-task="${esc(t.id)}" type="button">${svg("play")} Open to post</button>`);
     const moves = Object.keys(STATUS_LABEL).filter((s) => s !== t.status).map((s) => `<button class="btn sm" data-move="${esc(t.id)}:${s}" type="button">${STATUS_LABEL[s]}</button>`).join("");
-    const opt = (value, label, on) => `<option value="${esc(value)}" ${on ? "selected" : ""}>${esc(label)}</option>`;
-    const chOpts = opt("auto", `Automatic · ${chName(t.ch)}`, t.channel == null) + chList().map((c) => opt("ch:" + c.key, c.name, t.channel === c.key)).join("") + opt("@office", "Whole office (no channel)", t.channel === "@office");
+    const chOpts = taskChOpts(t);
     const stop = t.status === "cancelled" ? `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore to To do</button>` : `<button class="btn sm" data-cancel="${esc(t.id)}" type="button">Cancel task</button>`;
     const older = ((state.older || {})[t.id] || []).sort((a, b) => b.rev - a.rev);
     if (older.length) files.push(`<div class="td-vers"><span class="td-l">Older versions · ${older.length} (Delete removes them too)</span>${older.map((x) => `<button class="btn sm" data-rv-folder="out/${esc(x.name)}" type="button">${svg("play")} v${x.rev}</button>`).join("")}</div>`);
@@ -951,6 +956,8 @@
   }
   // the board and team panel redraw on every poll: keep what the owner is typing (and the cursor) across a redraw
   function keepTyping(p, draw) {
+    const a = document.activeElement;                     // a channel list the owner has open: redraw after they pick
+    if (a && a.tagName === "SELECT" && (a.dataset.taskCh || a.dataset.outCh != null) && p.contains(a)) return;
     const ids = ["task-title", "reedit-text", "say-text"], saved = ids.map((id) => { const x = p.querySelector("#" + id); return x && { id, v: x.value, focus: document.activeElement === x, a: x.selectionStart, b: x.selectionEnd }; }).filter(Boolean);
     // a chat the owner scrolled up in stays where it is; one at the bottom (or just opened) follows new messages
     const chat = p.querySelector(".task-detail .msgs"), was = chat && p.dataset.chatOf === state.openDetail ? { top: chat.scrollTop, end: chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40 } : null;
@@ -2308,6 +2315,7 @@
   // ---------- events ----------
   function wire() {
     document.addEventListener("click", (e) => {
+      if (e.target.closest(".ch-sw")) return;              // the card's channel picker: choosing never opens the task
       if (reviewClick(e)) return;                          // the review screen and everything that opens it
       if (rv.open) return;
       const b = e.target.closest("button, [data-open], [data-chip], [data-open-cal], [data-agent], .tab");
@@ -2454,6 +2462,7 @@
           .catch((err) => toast("dev", "Leads at once", "Could not change it: " + (err && err.message || err), { bad: true }));
         return;
       }
+      if (e.target && e.target.tagName === "SELECT" && (e.target.dataset.taskCh || e.target.dataset.outCh != null)) e.target.blur();   // lets the board redraw
       const id = e.target && e.target.dataset && e.target.dataset.taskCh, v = id && e.target.value;
       if (id) taskAction({ action: "channel", id, channel: v === "auto" ? null : v === "@office" ? "@office" : v.slice(3) }, "Channel updated.");
       const folder = e.target && e.target.dataset && e.target.dataset.outCh;
