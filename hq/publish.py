@@ -33,6 +33,13 @@ class PostError(Exception):
     pass
 
 
+class IgRefused(PostError):
+    """Instagram's upload host refused the Reel. It often takes the same file later, so Agents HQ tries again by itself."""
+
+
+IG_LATER = (30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)    # Instagram refused: try again after these waits, then give up
+
+
 PROGRESS = threading.local()                                   # the post this thread works on: progress() shows on its row
 
 
@@ -132,16 +139,24 @@ def ig_ready(video):
     return None
 
 
-def cover_jpeg(cover):
+REEL_COVER = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=40:2,eq=brightness=-0.1[bg];"
+              "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
+
+
+def cover_jpeg(cover, reel=False):
     """The owner's thumbnail as a JPEG every platform takes (YouTube wants at most 2 MB, Instagram's cover is a JPEG,
-    a Codex pick is a large PNG), or None without ffmpeg. The picked file itself stays as it is."""
+    a Codex pick is a large PNG), or None without ffmpeg. The picked file itself stays as it is.
+    reel: Instagram's Reel cover, always 1080x1920. Instagram refuses Reel uploads whose cover is 3:4 (2026-11-02: both
+    3:4 Codex covers refused, every 9:16 one taken), so a 3:4 cover sits whole in the middle over a blurred copy of
+    itself: the profile grid shows the middle 3:4, which is exactly the owner's 3:4 design."""
     ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
     if not cover or not ff or not os.path.isfile(cover):
         return None
     fd, out = tempfile.mkstemp(prefix="hq-cover-", suffix=".jpg")
     os.close(fd)
     for q, scale in ((2, None), (4, None), (5, "1080:-2")):   # smaller only when it has to be
-        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", cover, "-frames:v", "1", "-q:v", str(q)] + (["-vf", "scale=" + scale] if scale else []) + [out]
+        vf = ["-filter_complex", REEL_COVER] if reel else (["-vf", "scale=" + scale] if scale else [])
+        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", cover, "-frames:v", "1", "-q:v", str(q)] + vf + [out]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=120, creationflags=0x08000000 if os.name == "nt" else 0)
             if r.returncode == 0 and 0 < os.path.getsize(out) <= 2 * 1024 * 1024:
@@ -643,6 +658,8 @@ class Publisher:
             try:
                 link, extra = self.send(p, video, cover_of(p), chosen[p], when, channel)
                 self.note(folder, p, state="scheduled" if when else "posted", link=link, error="", **extra)
+            except IgRefused as e:                              # Instagram said no for now: Agents HQ tries again later
+                self.later(folder, p, {"text": chosen[p], "video": rel(video), "cover": rel(cover_of(p))}, e)
             except Exception as e:                              # one platform failing never stops the others
                 self.note(folder, p, state="failed", error=str(e)[:400])
             finally:
@@ -664,7 +681,7 @@ class Publisher:
     def send(self, p, video, cover, text, when, channel):
         """One platform, with the owner's thumbnail as a JPEG every platform takes (the picked file stays as it is)."""
         progress(1, "preparing your thumbnail")
-        jpg = cover_jpeg(cover)
+        jpg = cover_jpeg(cover, reel=p == "instagram")
         try:
             return getattr(self, "post_" + p)(video, jpg or cover, text, when, channel)
         finally:
@@ -673,6 +690,19 @@ class Publisher:
                     os.remove(jpg)
                 except OSError:
                     pass
+
+    def later(self, folder, p, job, err, now=None):
+        """Instagram refused: park the post as scheduled for a later try (the scheduler runs it), or fail after the last."""
+        n = int(job.get("tries") or 0)
+        if n >= len(IG_LATER):
+            self.note(folder, p, state="failed", job=None, error=(
+                f"Instagram refused this Reel {n + 1} times over about {sum(IG_LATER) // 3600} hours, with and without the cover. "
+                "Post it by hand in the Instagram app (the 1080p video is in this folder), and tell Claude."))
+            return
+        at = int((now or time.time()) + IG_LATER[n])
+        self.note(folder, p, state="scheduled", when=at, job=dict(job, tries=n + 1), error="",
+                  warning=f"Instagram refused the upload just now ({err}). Agents HQ tries again by itself at "
+                          f"{time.strftime('%H:%M', time.localtime(at))} (try {n + 2} of {len(IG_LATER) + 1}); keep the computer on.")
 
     def cancel(self, folder, platform):
         """Cancel a scheduled post that is still waiting here (Instagram). Facebook and YouTube already hold theirs."""
@@ -730,7 +760,9 @@ class Publisher:
                     link, extra = self.send(p, video, cover, job["text"], None, folder_channel(folder))
                     late = now - e["when"] > 15 * 60
                     self.note(folder, p, state="posted", link=link, error="",
-                              warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late else ""), **extra)
+                              warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late and not job.get("tries") else ""), **extra)
+                except IgRefused as ex:
+                    self.later(folder, p, job, ex, now)
                 except Exception as ex:
                     self.note(folder, p, state="failed", error=str(ex)[:400])
                 finally:
@@ -873,39 +905,6 @@ class Publisher:
                 pass
         parked.clear()
 
-    def ig_limit(self, video, base, m):
-        """Instagram refused the upload: test clips (never published) tell whether it is the length, and up to how long
-        this account takes videos from apps. Returns the longest accepted length in seconds, 0 when the length is not the
-        reason, or None when it can't tell."""
-        d, ff = duration(video), os.environ.get("FFMPEG") or shutil.which("ffmpeg")
-        if not d or not ff:
-            return None
-        fd, clip = tempfile.mkstemp(prefix="hq-igtest-", suffix=".mp4")
-        os.close(fd)
-
-        def takes(sec):
-            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=s=1080x1920:r=30:d={sec:.1f}",
-                            "-f", "lavfi", "-i", f"sine=f=440:d={sec:.1f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "38",
-                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
-                            "-use_editlist", "0", "-shortest", clip],
-                           capture_output=True, timeout=600, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
-            return bool(self.ig_direct(clip, base, m, wait=False)[0])
-        try:
-            if takes(d):
-                return 0                                       # a clip as long is fine: it's something in the file itself
-            lo, hi = 5.0, d
-            while hi - lo > 5:
-                mid = (lo + hi) / 2
-                lo, hi = (mid, hi) if takes(mid) else (lo, mid)
-            return int(lo)
-        except (OSError, subprocess.SubprocessError, PostError):
-            return None
-        finally:
-            try:
-                os.remove(clip)
-            except OSError:
-                pass
-
     def post_instagram_file(self, video, cover, text, m):
         tok, ig = m["page_token"], m["ig_id"]
         base = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
@@ -913,29 +912,26 @@ class Publisher:
         try:
             progress(3, "sending your thumbnail")
             url = self.cover_url(cover, m, parked)
-            cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
-            for wait in (30, 90):                              # a refusal can pass later: a 57-second Reel went through
-                if cid or err != "upload refused":            # this way on the account that refused a 56-second one
-                    break
-                progress(5, f"Instagram refused the upload, trying again in {wait} seconds")
-                time.sleep(wait)
-                cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
-            if not cid and url and err != "upload refused":   # taken but not processed: try once without the cover
-                cid, err2 = self.ig_direct(video, base, m)
+            # with the cover, again after a pause (a refusal can pass later), then without it: a cover Instagram
+            # dislikes makes it refuse the whole upload, and the video matters more than the cover
+            tries = ([("cover", 0), ("cover", 30)] if url else []) + [("plain", 0), ("plain", 90)]
+            cid = err = None
+            for kind, wait in tries:
+                if wait:
+                    progress(5, f"Instagram refused the upload, trying again in {wait} seconds")
+                    time.sleep(wait)
+                elif kind == "plain" and url:
+                    progress(5, "Instagram refused it with your cover, trying without the cover")
+                cid, err = self.ig_direct(video, dict(base, cover_url=url) if kind == "cover" else base, m)
                 if cid:
-                    extra["warning"] = "Posted without your cover: Instagram would not take it."
-                else:
-                    err = err2
+                    if kind == "plain" and url:
+                        extra["warning"] = ("Posted without your cover: Instagram would not take the upload with it. "
+                                            "Set the cover in the Instagram app (the Reel → ⋯ → Edit → Edit cover).")
+                    break
+                if err != "upload refused" and kind == "plain":
+                    break                                      # taken but not processed, cover or not: not a refusal
             if not cid and err == "upload refused":
-                progress(50, "Instagram refused it three times: finding out why")
-                cap, d = self.ig_limit(video, base, m), duration(video)
-                long = f"{int(d // 60)}:{int(d % 60):02d}" if d else ""
-                if cap:
-                    raise PostError(f"Instagram refused this video three times. Its test clips passed only up to about {cap} seconds today, "
-                                    f"and this one is {long}, but longer Reels have gone through before, so try Post again later. "
-                                    f"Otherwise post it by hand in the Instagram app, or ask Creative for an Instagram cut under {cap} seconds.")
-                raise PostError("Instagram refused this video file" + (" (a test clip just as long was fine, so it isn't the length)" if cap == 0 else "")
-                                + ". Post this one by hand in the Instagram app, and send a screenshot of this to Claude.")
+                raise IgRefused("Instagram refused the upload (with and without the cover).")
             if not cid:
                 raise PostError(f"Instagram could not process the video ({err}). Try Post again in a few minutes; if it keeps failing, "
                                 "post this one by hand in the Instagram app.")
