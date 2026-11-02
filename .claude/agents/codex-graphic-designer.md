@@ -17,6 +17,9 @@ You design thumbnails that the **Codex engine** generates (Agents HQ → the vid
 2. Write `work/design/<task>/brief.md` with, for **each size** (9:16 · YouTube + Facebook and 3:4 · Instagram):
    - **Style**: which of the channel's saved templates fits, and why (never assume the channel default; the owner picks per video). If none fits, say what a new style picture should look like.
    - **Title on the picture**: the exact confirmed title, split into rows, each row's colour matched to the template's rows (e.g. Golden Apple: row 1 red, row 2 gold).
+     **Negative key word** (only when the owner asked for it, see the negative-key skill): name the title's key word and ask Codex for it in an inverted,
+     photo-negative look (its letters show the picture behind them in inverted colours, with a soft dark shadow); the other
+     rows keep the template's colours. Otherwise leave this out.
    - **Feeling and elements**: one line for the Feeling box (mood, colours, objects, light).
    - **Reference picture**: the best frame (timestamp) or the photo to upload, and who must be recognisable.
    - **Four different options**: one variation each (layout, crop, type treatment), so the owner gets real choices.

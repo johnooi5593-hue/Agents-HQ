@@ -10,6 +10,8 @@ description: Make the cover image (thumbnail) for a cut clip, following the bran
 3. **Make it** from the cut without captions:
    `python3 .claude/skills/pixel/scripts/thumbnail.py out/<name>/cut.mp4 out/<name>/cover.jpg --text "<COVER TEXT>" --color <cover color>`
    The script picks the sharpest, best-lit frame on its own. `--accent N` colors the Nth word instead of the last one.
+   **Negative key word** (only when the owner asks for it, see the negative-key skill): `--key negative` draws the key word (the `--accent` word) as a
+   photo negative of the picture behind it, over the same soft shadow; the other words stay white.
 4. **Look at it.** Read `cover.jpg`. If the text sits on something busy or is hard to read, run it again with `--at <seconds>` (another frame) or `--pos middle|bottom` (move the text).
 5. **Record it.** Add a line `Cover text: <COVER TEXT>` to `out/<name>/notes.md`.
 

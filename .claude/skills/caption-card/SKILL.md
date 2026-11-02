@@ -23,10 +23,14 @@ most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of
 ## Steps
 1. **Source.** A clean, caption-free edit (e.g. `clean.mp4` / `cut.mp4`), or cut a topic from a RAW livestream as in the
    poster-kinetic skill (speaker crop `--crop 960:297:960:540 --focus ...`; the owner's rule: no slides from the RAW).
+   **Footage mix** (sermon highlights cut from a RAW livestream, owner 2026-11-02): show the RAW in only 2-3 scenes; the rest is the same service's B-roll, mostly the speaker from other angles and about a third without the speaker (audience, worship team, raised hands, the hall and stage), more of those on the reflective lines. The speaker's audio, timing and captions run on unchanged under the B-roll; captions stay off faces.
    **Also keep the full-resolution footage of the same cut** when the camera's own file is bigger than 1080x1920 (4K / 1728x3072):
    the same ranges, the whole camera frame (as `pong-1114-caption-card/v2/cut_hr.py` does), with a `cutmap.json` that gives each
    shot's box (`"wide"` / `"tight"` re-framings). The camera's pushes and the 1.25x punch-in then crop real pixels instead of
    blowing up the 1080x1920 edit.
+   **Fillers and pauses out** (every edit, owner 2026-11-01): `python "D:/Agents HQ/.claude/skills/yellow-serif/scripts/tighten.py"
+   <clip> <dir>/tight.mp4 [--map <dir>/cutmap.json]` (env `YS_LANG=zh`) removes um / ah / ohh / 呃 / 嗯 and a standalone 啊 / 哦 and
+   shortens pauses over 0.3 s to 0.12 s, never a real word (cut the full-resolution footage with the same `tight.cutmap.json`).
 2. **Plan.** `python "$CC/plan.py" <clip> <dir>/plan.json` (CPU faster-whisper, local large-v3-turbo; `YS_LANG=zh` for Chinese),
    or reuse an existing plan's lines: `python "$CC/plan.py" --from-plan <other plan.json> <dir>/plan.json`. Read the transcript;
    fix clearly misheard words in `text` (the cards show `text`; the word times stay for timing) and say so in `note`.
@@ -34,6 +38,10 @@ most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of
    spoken, the word turns deep blue and pops). One key on most lines, two on a list (`["麻烦", "担心"]`), none on a bridge line
    (`[]`). Optional `"anim"`: `rise`, `slide`, `slam`, `stagger`, `wipe` or `cut`; leave it out and the lines take turns, so
    neighbours never match.
+   **Negative key word** (only when the owner asks for it, see the negative-key skill): plan `"key_style": "negative"` draws the card's key word and the
+   hook / breathe key row as a photo negative of what is under the letters (dark red on the cyan card, light on the dimmed
+   picture) over a soft dark shadow, with no yellow bar; the key row's `color` is then unused. Left out (or `"yellow"`,
+   and in `--classic`) the yellow bar + deep blue word stay.
 4. **Choose the big moments** (most lines stay `"kind": "card"`). About one every 8 s (1114: 8 in 65 s; in `--classic`, one every 12-20 s),
    at least 3 s apart, each with `"why"`:
    | kind | when the words... | fields (exact parts of the line) | default colour |
@@ -79,7 +87,7 @@ most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of
    at each big moment (entry, +0.1 s, +0.3 s, landed), two cards with their key bars, a cut, the flash and the pull-back.
    Check: big type lands on its word, never on the face, readable on the picture, cards never doubled with big type, every key
    bar shows on its word, no zoom jump at a cut or a punch, no black borders, no clipped text, Traditional characters drawn.
-10. **Sound.** The sfx skill: start from `edit.sfx-events.json` (a draft of every big move, camera punch-in and pull-back), keep
+10. **Music and sound.** The sfx skill: its step 0 blends the owner's music under the voice (`music.py`, every edit); then start from `edit.sfx-events.json` (a draft of every big move, camera punch-in and pull-back), keep
     the true punchlines (a sermon stays reverent: 1-3 hits a minute), run its `place.py`.
 11. **Deliver** as the other styles do: `notes.md` (title, punchline, the big moments and why, fonts, the transcript), Agents HQ
     `out/<name>/` with `edit.mp4`, `captions.srt`, `clean.mp4` (`render.py ... --no-text`), `followups.json`; send `edit_phone.mp4`.

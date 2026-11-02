@@ -9,6 +9,8 @@ Read `GUIDE.md` in this folder once (the style in numbers, the sermon palette, d
 a giant hero word that lands on the word as it is spoken, every other line a clean caption, colour by meaning, nothing
 over the face or below y 1400. Never change the meaning: original words, numbers, negations and conditions stay.
 
+**Negative key word** (only when the owner asks for it, see the negative-key skill): plan `"key_style": "negative"` draws the hero's face as a photo negative of the picture behind it over a soft dark shadow, on a neutral dark extrusion (#101010) with a thin light outline; captions, cards and the title stay as they are. A negative hero reads worst over a busy or mid-grey patch: move its zone. Left out (or `"colour"`) the face keeps its meaning colour.
+
 Scripts live in `D:/Agents HQ/.claude/skills/poster-kinetic/scripts/` (call it `$PK`); they reuse the yellow-serif and
 reel skills next to it for speech-to-text and cutting. Run each command on its own (no `&&`), with quoted absolute paths,
 from a short working folder (Windows cannot launch ffmpeg from very long paths). Every script prints one JSON line.
@@ -25,6 +27,11 @@ Never upload, post or delete anything.
      `python "D:/Agents HQ/.claude/skills/yellow-serif/scripts/cut_topics.py" <raw> <dir>/topics.json <dir>`.
      The livestream frame has the stage camera in the right half of the strip y 297-837; render with
      `--crop 960:297:960:540` (and `--focus` to follow the speaker). The owner's rule: no slides from the RAW.
+     **Footage mix** (sermon highlights cut from a RAW livestream, owner 2026-11-02): show the RAW in only 2-3 scenes; the rest is the same service's B-roll, mostly the speaker from other angles and about a third without the speaker (audience, worship team, raised hands, the hall and stage), more of those on the reflective lines. The speaker's audio, timing and captions run on unchanged under the B-roll; captions stay off faces.
+   - **Fillers and pauses out** (every edit, owner 2026-11-01), on whichever clip you start from:
+     `python "D:/Agents HQ/.claude/skills/yellow-serif/scripts/tighten.py" <clip> <dir>/tight.mp4 [--map <dir>/cutmap.json]`
+     (env `YS_LANG=zh`). It removes um / ah / ohh / 呃 / 嗯 and a standalone 啊 / 哦 and shortens pauses over 0.3 s to 0.12 s,
+     never a real word; drop a false start it lists with `--drop START-END`. Use `tight.mp4` (and `tight.cutmap.json`) from here on.
 3. **Plan.** `python "$PK/plan.py" <clip> <dir>/plan.json [--map <dir>/cutmap.json]` (env `YS_LANG=zh`; Cantonese
    sermons too). It runs on the CPU with the local large-v3-turbo model. Read the transcript it prints; fix clearly
    misheard words (names, 甘迪 -> 甘地) in that line's `text` and the same word in `words`, and say so in `note`.
@@ -59,6 +66,8 @@ Never upload, post or delete anything.
    `--frame blur` for RAW sources; `--no-punch` if the source already moves a lot). About 1.5x real time. It writes
    `edit.mp4`, `edit.srt`, `edit.pk.json`, `plan.json` and `edit_phone.mp4` (under 28 MiB, for SendUserFile). Read its
    `warnings`: contrast swaps, short holds, lines that did not fit, hidden heroes.
+   **Music and sound** (every edit): then the sfx skill: its step 0 blends the owner's music under the voice (`music.py`),
+   then the sound effects go on top.
 8. **Optional: text behind the speaker.** `python "$PK/matte.py" <clip> <dir>/matte.mp4` (same `--crop/--focus/--frame`),
    then render with `--matte <dir>/matte.mp4` and `"behind": true` on the poster / stack lines (zone `top` or
    `middle`, where the head is). It uses the local Robust Video Matting model (D:/AI OFFICE/tools/models/rvm, CPU,

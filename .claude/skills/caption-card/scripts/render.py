@@ -26,6 +26,9 @@ v2 (the default, owner-approved on Pong+Gospel 11/14, 2026-10-30):
             without "anim" the lines take turns so neighbours never match. Follow-on cards of a line use a quicker
             version; the line's last card swells and blurs out. "key": the stressed word(s) of the line: a yellow bar
             wipes in under it at the moment it is spoken, the word turns deep blue and pops 1.22x.
+  key_style plan "key_style": "yellow" (the normal look, also when left out) or "negative" (only when the owner asks for
+            the negative key word, see negative-key: the key word and the hook / breathe key row turn into a photo
+            negative of the frame under them over a soft dark shadow, with no yellow bar).
   big type  hook, number, writeon, punch (as in v1) and breathe: 2-3 rows that fade, rise and unblur slowly, the group
             drifts and dissolves up (the quiet, heavy line). Layered type: heavy face, top-light gradient, dark soft
             shadow, outer glow, the picture blurred and dimmed underneath.
@@ -56,7 +59,8 @@ from cc import (CARD, DEFAULT_COLOR, F1, FFMPEG, FPS, SAFE, ease_io, ease_out, k
                 put, report, rgb, save, styled_line, sub_time, char_times, display, is_cjk, fit_size)
 
 W, H = 1080, 1920
-BAR = "#FFE45C"; KEY1, KEY2 = "#0A1A9C", "#06127A"          # key word: yellow bar, deep blue word
+BAR = "#FFE45C"; KEY1, KEY2 = "#0A1A9C", "#06127A"          # key_style "yellow": yellow bar, deep blue word
+NEG_SHADOW, NEG_BAR = 0.45, False                           # key_style "negative": shadow strength; no bar under it
 AUTO_ANIMS = ["rise", "slide", "slam", "stagger", "slide", "wipe"]   # neighbours never match, also across the wrap
 
 
@@ -131,9 +135,10 @@ def display_map(text, a, b):
 class CardRenderer:
     """Caption cards with their entrance, key-word bar and swell-before-exit. A settled card is cached as one sprite."""
 
-    def __init__(self, colors, y):
+    def __init__(self, colors, y, neg=False):
         self.box, self.c1, self.c2 = colors.get("box", CARD["box"]), colors.get("text", CARD["text"]), colors.get("text2", CARD["text2"])
         self.y = y; self.cache = {}
+        self.neg = neg                                          # key_style "negative": the key word is a photo negative
 
     def build(self, text):
         if text in self.cache:
@@ -148,14 +153,19 @@ class CardRenderer:
             spr, _ = cc.layered(g["mask"], self.c1, self.c2, box[1], box[3], g["y"], None, ("#0B1446", 5, 3, 0.35))
             kspr, _ = cc.layered(g["mask"], KEY1, KEY2, box[1], box[3], g["y"], None, ("#6B5200", 5, 3, 0.25))
             glyphs.append({"img": spr, "kimg": kspr, "cx": g["cx"], "cy": g["cy"], "ci": idx[k] if k < len(idx) else k,
-                           "l": g["pen"] - (box[0] + box[2]) / 2, "r": g["pen"] + g["adv"] - (box[0] + box[2]) / 2})
+                           "l": g["pen"] - (box[0] + box[2]) / 2, "r": g["pen"] + g["adv"] - (box[0] + box[2]) / 2,
+                           "mimg": cc.mask_sprite(g["mask"]) if self.neg else None})
         d = {"size": size, "glyphs": glyphs, "bw": bw, "bh": bh, "cw": cw, "ch": ch, "cx": cw / 2, "cy": ch / 2, "settled": {}}
         self.cache[text] = d
         return d
 
     def layer(self, d, keyset, box_sx, anchor_l, char_fn, reveal=None, streak=0.0):
-        """keyset: [(a, b, bar progress 0..1, frames since the key was spoken)], one entry per key word on screen."""
+        """keyset: [(a, b, bar progress 0..1, frames since the key was spoken)], one entry per key word on screen.
+        Returns (card image, key letters image or None). With key_style "negative" the key word's letters go on their own
+        image (letter shape only) as it is spoken, cross-fading from the blue word over the bar's 3 frames; draw()
+        turns them into a photo negative of the frame."""
         img = Image.new("RGBA", (d["cw"], d["ch"]), (0, 0, 0, 0)); dr = ImageDraw.Draw(img)
+        kimg = Image.new("RGBA", img.size, (0, 0, 0, 0)) if self.neg else None
         cx, cy, bw, bh = d["cx"], d["cy"], d["bw"], d["bh"]
         if box_sx > 0.01:
             if anchor_l:
@@ -169,7 +179,7 @@ class CardRenderer:
                 s = s.filter(ImageFilter.GaussianBlur(7)); img.alpha_composite(s, (int(x1 - 30), int(cy - s.height / 2)))
         for (a, b, bp, _) in keyset:                            # key bars under the stressed words, each at its own pace
             ks = [g for g in d["glyphs"] if a <= g["ci"] < b]
-            if not ks or bp <= 0.01:
+            if not ks or bp <= 0.01 or (self.neg and not NEG_BAR):
                 continue
             l = min(g["l"] for g in ks) - d["size"] * 0.06; r = max(g["r"] for g in ks) + d["size"] * 0.02
             r = l + (r - l) * min(1, bp)
@@ -181,10 +191,28 @@ class CardRenderer:
             if reveal is not None and anchor_l and (cx - bw / 2 + bw * reveal) < cx + g["cx"] - d["size"] * 0.2:
                 continue
             k = next((k for k in keyset if k[0] <= g["ci"] < k[1]), None)
-            src = g["kimg"] if (k and k[2] >= 0.5) else g["img"]
             pop = keys(k[3], [0, 2, 5], [1.0, 1.22, 1.0]) if k else 1.0
+            if self.neg:
+                kp = min(1.0, k[2]) if k else 0.0
+                if kp < 0.99:
+                    put(img, g["img"], cx + g["cx"], cy + g["cy"] + dy, s * pop, alpha=a * (1 - kp))
+                if kp > 0.01:
+                    put(kimg, g["mimg"], cx + g["cx"], cy + g["cy"] + dy, s * pop, alpha=a * kp)
+                continue
+            src = g["kimg"] if (k and k[2] >= 0.5) else g["img"]
             put(img, src, cx + g["cx"], cy + g["cy"] + dy, s * pop, alpha=a)
-        return img
+        return img, (kimg if kimg is not None and kimg.getchannel("A").getbbox() else None)
+
+    def put_neg(self, fr, kimg, size, x, y, s=1.0, alpha=1.0, blur=0.0, mblur=0.0, paste=False):
+        """The key letters (kimg, card-sized) onto fr as a photo negative of what is under them, with the card's transform."""
+        if kimg is None:
+            return
+        kl = Image.new("RGBA", fr.size, (0, 0, 0, 0))
+        if paste:
+            cc._paste(kl, kimg, x, y)
+        else:
+            put(kl, kimg, x, y, s, alpha=alpha, blur=blur, mblur=mblur)
+        cc.negative(fr, kl, NEG_SHADOW, max(6, size * 0.07), dy=3)
 
     def draw(self, fr, c, t):
         """c: card chunk (text, t0, t1, anim, dir, first, last, exit, keys [(a, b, t_key)])"""
@@ -239,13 +267,16 @@ class CardRenderer:
             ga *= keys(e, [0, 1.5, 4], [1.0, 1.0, 0.0]); gbl = max(gbl, keys(e, [0, 1.5, 4], [0, 0, 8]))
         if not ((fe < settle_f + 1) or popping or swell):
             kk = tuple((a, b) for a, b, _, _ in keyset)
-            img = d["settled"].get(kk)
-            if img is None:
-                img = d["settled"][kk] = self.layer(d, [(a, b, 1.0, 99) for a, b in kk], 1.0, False, char_fn)
+            got = d["settled"].get(kk)
+            if got is None:
+                got = d["settled"][kk] = self.layer(d, [(a, b, 1.0, 99) for a, b in kk], 1.0, False, char_fn)
+            img, kimg = got
             cc._paste(fr, img, W / 2, self.y)
+            self.put_neg(fr, kimg, d["size"], W / 2, self.y, paste=True)
             return
-        img = self.layer(d, keyset, box_sx, anchor_l, char_fn, reveal, streak)
+        img, kimg = self.layer(d, keyset, box_sx, anchor_l, char_fn, reveal, streak)
         put(fr, img, W / 2 + gx, self.y + gy, gs, alpha=ga, blur=gbl, mblur=gmb, bright=gbr)
+        self.put_neg(fr, kimg, d["size"], W / 2 + gx, self.y + gy, gs, alpha=ga, blur=gbl, mblur=gmb)
 
 
 def card_timeline(lines, bigs, dur, classic, warn=None):
@@ -324,12 +355,25 @@ OUT_FRAMES = {"hook": 3, "number": 5, "writeon": 5, "punch": 1, "breathe": 8}
 class Big:
     """One big-type moment: builds its sprites, knows its entry time and draws itself at time t."""
 
+    NEG = False                                                 # key_style "negative": the key row is a photo negative
+
     def __init__(self, ln, warn):
         self.ln = ln; self.kind = ln["kind"]; self.id = ln.get("id")
         self.ct = char_times(ln); self.color = ln.get("color") or DEFAULT_COLOR[self.kind]
         self.yf = ln.get("y")
         self.events = []
         getattr(self, "build_" + self.kind)(warn)
+
+    def neg_glyphs(self, gl, txt, size):
+        """The key row's letter-shape sprites (same layout as its styled glyphs) for the photo negative."""
+        mg, _ = cc.mask_line(txt, "hook", size)
+        return [dict(g, img=m["img"]) for g, m in zip(gl, mg)]
+
+    def neg_layer(self, fr):
+        return Image.new("RGBA", fr.size, (0, 0, 0, 0))
+
+    def neg_apply(self, fr, kl):
+        cc.negative(fr, kl, NEG_SHADOW + 0.1, max(8, getattr(self, "ksize", 200) * 0.07), dy=5)
 
     def t_of(self, sub):
         return sub_time(self.ln, sub, self.ct) - 2 * F1
@@ -357,6 +401,8 @@ class Big:
             s, _, b = fit_size(txt, "hook", sizes[i], 940, None, 0.0, 60)
             col = self.color if i == key else "white"
             gl, ink = styled_line(txt, "hook", s, col, glow=(i == key), shadow=("#0D0F0A", 16, 8, 0.75))
+            if i == key and self.NEG:
+                gl = self.neg_glyphs(gl, txt, s)
             built.append((gl, ink, s, i == key))
         gap = 14
         total = sum(ink[1] for _, ink, _, _ in built) + gap * (len(built) - 1)
@@ -364,6 +410,8 @@ class Big:
         for i, (gl, ink, s, isk) in enumerate(built):
             cy = y + ink[1] / 2; y += ink[1] + gap
             self.rows.append({"glyphs": gl, "cy": cy, "key": isk, "t": self.t_of(rows[i]), "size": s})
+            if isk:
+                self.ksize = s
             self.events.append({"t": self.rows[-1]["t"] + (0 if not isk else 5 * F1), "kind": "hook key (gathered)" if isk else "hook row",
                                 "sfx": "impact" if isk else "swish_soft"})
         self.t_in = self.rows[0]["t"]; self.settle = max(r["t"] for r in self.rows) + 9 * F1
@@ -383,11 +431,14 @@ class Big:
                 spread = keys(f, [0, 5], [2.2, 1.0]); sc = keys(f, [0, 3, 5, 7], [0.45, 1.12, 0.98, 1.0])
                 bl = keys(f, [0, 4], [14, 0])
                 ghost = 1.0 if 6 <= f < 9 else 0.0
+                tgt = self.neg_layer(fr) if self.NEG else fr
                 for g in r["glyphs"]:
                     x = W / 2 + g["cx"] * spread * sc; y = r["cy"] + g["cy"] * sc
                     if ghost:
-                        put(fr, g["img"], x - 12, y + 4, sc * 1.06, alpha=0.35 * ea, blur=4)
-                    put(fr, g["img"], x, y, sc, alpha=min(1, 0.4 + f / 3) * ea, blur=max(bl, eb))
+                        put(tgt, g["img"], x - 12, y + 4, sc * 1.06, alpha=0.35 * ea, blur=4)
+                    put(tgt, g["img"], x, y, sc, alpha=min(1, 0.4 + f / 3) * ea, blur=max(bl, eb))
+                if self.NEG:
+                    self.neg_apply(fr, tgt)
 
     # breathe: rows fade, rise and unblur slowly character by character; the group drifts; dissolves up
     def build_breathe(self, warn):
@@ -397,6 +448,10 @@ class Big:
         for i, r in enumerate(rows):
             txt = display(r); s, _, _ = fit_size(txt, "hook", 205 if i == key else 128, 900, None, 0.0, 60)
             gl, ink = styled_line(txt, "hook", s, self.color if i == key else "white", glow=(i == key), shadow=("#0A0F1A", 18, 8, 0.7))
+            if i == key:
+                self.ksize = s
+                if self.NEG:
+                    gl = self.neg_glyphs(gl, txt, s)
             built.append((gl, ink, i == key))
         gap = 18; total = sum(ink[1] for _, ink, _ in built) + gap * (len(built) - 1)
         y = (self.yf or 0.5) * H - total / 2
@@ -412,14 +467,17 @@ class Big:
     def draw_breathe(self, fr, t, out_p):
         drift = 1.0 + 0.012 * (t - self.t_in)                  # the group slowly grows
         for r in self.rows:
+            tgt = self.neg_layer(fr) if (self.NEG and r["key"]) else fr
             for i, g in enumerate(r["glyphs"]):
                 fi = (t - r["t"]) * FPS - i * self.step
                 if fi < 0:
                     continue
                 p = ease_out(min(1, fi / 8))
                 oe = max(0.0, min(1.0, out_p - i * 0.05))
-                put(fr, g["img"], W / 2 + g["cx"] * drift, r["cy"] + g["cy"] * drift + 26 * (1 - p) - 30 * oe, drift * (1.06 - 0.06 * p),
+                put(tgt, g["img"], W / 2 + g["cx"] * drift, r["cy"] + g["cy"] * drift + 26 * (1 - p) - 30 * oe, drift * (1.06 - 0.06 * p),
                     alpha=(0.1 + 0.9 * p) * (1 - oe), blur=max(12 * (1 - p), 14 * oe))
+            if tgt is not fr:
+                self.neg_apply(fr, tgt)
 
     # number: grows from spread digits; label tracking collapses; unit beside
     def build_number(self, warn):
@@ -927,7 +985,14 @@ def main():
         report(tool="render", ok=False, errors=[f"nothing to render between --from {frm} and --to {end}"], warnings=warn); sys.exit(1)
     preview = frm > 0 or end < full
     lines = sorted(plan.get("lines", []), key=lambda l: l["start"])
-    cards = CardRenderer(plan.get("card") or {}, (plan.get("card_y") or 0.51) * H)
+    # key_style: "yellow" (the normal look, also when left out and in --classic: yellow bar + deep blue word, coloured key
+    # row) or "negative" (only on the owner's request: the key word and the hook / breathe key row as a photo negative of
+    # the frame over a soft dark shadow).
+    key_style = plan.get("key_style") or "yellow"
+    if key_style not in cc.KEY_STYLES:
+        report(tool="render", ok=False, errors=[f"key_style must be one of {cc.KEY_STYLES}"], warnings=warn); sys.exit(1)
+    Big.NEG = key_style == "negative"
+    cards = CardRenderer(plan.get("card") or {}, (plan.get("card_y") or 0.51) * H, neg=Big.NEG)
     bigs = []
     for i, ln in enumerate(lines):
         nxt = lines[i + 1]["start"] if i + 1 < len(lines) else full
@@ -1122,7 +1187,7 @@ def main():
         fail.append(f"only {n} of {want} frames were rendered")
     if fail:
         report(tool="render", ok=False, out=a.out, frames=n, errors=fail, warnings=warn); sys.exit(1)
-    out = {"tool": "render", "ok": True, "out": a.out, "motion": "classic" if classic else "v2", "frames": n, "seconds": round(n / FPS, 2),
+    out = {"tool": "render", "ok": True, "out": a.out, "motion": "classic" if classic else "v2", "key_style": key_style, "frames": n, "seconds": round(n / FPS, 2),
            "render_seconds": round(time.time() - t0, 1)}
     if preview:
         out.update(preview=[round(frm, 3), round(end, 3)])

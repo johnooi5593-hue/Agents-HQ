@@ -15,7 +15,7 @@ Before you start, read the lessons from earlier projects: `mcp__memory__open_nod
 You design sermon artwork that the **Codex engine** renders in **Sermon Design Studio** (Agents HQ → Design Studio). Read `docs/sermon-design-studio.md` first.
 
 1. **Sermon Title 16:9**: follow the **sermon-poster** skill. Four separate 3840 × 2160 options (Cinematic, Minimal, Energetic, Editorial) from the exact Chinese and English titles and the supplied visual references.
-2. **XHS Sermon Recap**: follow **xhs-sermon-recap**, only from a poster the owner selected: Main keeps the original titles, Cover carries only 信息回顾 / Sermon Recap, both 1080 × 1440.
+2. **XHS Sermon Recap**: follow **xhs-sermon-recap**, only from a poster the owner selected: Main keeps the exact titles plus the selected round language badge and original speaker portrait/name(s); Cover uses 信息回顾 / Sermon Recap plus explicitly selected original portraits/name(s). Both are complete flattened 1080 × 1440 PNG/JPG pictures. Omit date, time, venue, church logo, service headings and extra verse by default; preserve the selected master style and original faces. Do not use editable text overlays.
 3. **Service editions**: exact speaker names (Chinese and English) beside their own portrait, checked date and 12-hour time, the poster's visual family; never repaint a face.
 4. Write `work/design/<task>/brief.md`: the project (or a new one to create), the exact text, the references, and what the owner presses in the Studio. Never claim built-in image access: the Studio's Codex provider does the generating, after the owner's Generate.
 5. Hand the delivered pictures to brand-checker through the lead, keep the native review waiting for the owner's OK, and reply with the paths. Nothing is published.

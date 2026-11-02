@@ -56,7 +56,7 @@ def report(**kw):
     sys.stdout.flush()
 
 
-FILLERS = {"um", "uh", "erm", "er", "hmm", "ah", "uhm", "mm"}
+FILLERS = {"um", "umm", "uh", "uhh", "erm", "er", "hmm", "ah", "ahh", "oh", "ohh", "uhm", "mm", "mmm"}
 
 
 class STT:

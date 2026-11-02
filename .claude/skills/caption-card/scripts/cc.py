@@ -9,7 +9,7 @@ The guide in numbers (measured from the reference reel; see Documents/Style Guid
   writeon  each character drawn left to right with a light trail, 4 f each, 2 f apart; bloom exit 5 f
   punch    each character pops 2 f apart: 0.4 -> 1.35 -> 1.0, rotation +-15 -> 0, with a 1.35x picture punch-in
   layers   heavy face, top-light gradient, dark soft shadow #192113, outer glow, background blurred and dimmed under big type
-v2 (owner-approved on Pong+Gospel 11/14): animated card entrances, a key word per line (yellow bar + pop), the "breathe" big
+v2 (owner-approved on Pong+Gospel 11/14): animated card entrances, a key word per line (yellow bar + pop; key_style "negative": photo negative), the "breathe" big
 kind, camera moves, a grade arc, light leaks, warm light and accents; see render.py.
 """
 import functools, math, os, re, sys
@@ -247,6 +247,53 @@ def _paste(fr, img, cx, cy):
     if x1 <= x0 or y1 <= y0:
         return
     fr.alpha_composite(img.crop((x0, y0, x1, y1)), (x + x0, y + y0))
+
+
+# ---- key word as a photo negative (on request only) -----------------------------------------------------------------------
+KEY_STYLES = ("yellow", "negative")                   # yellow: the normal look (bar + deep blue / colour); negative: on request
+
+
+def mask_sprite(mask, pad=4):
+    """A glyph mask -> white RGBA sprite whose alpha is the letter shape only (no glow, no shadow), padded evenly so it is
+    centred where the layered sprite of the same mask is."""
+    img = Image.new("RGBA", (mask.width + 2 * pad, mask.height + 2 * pad), (255, 255, 255, 0))
+    a = Image.new("L", img.size); a.paste(mask, (pad, pad)); img.putalpha(a)
+    return img
+
+
+def mask_line(text, role, size, tracking=0.0):
+    """A line as per-glyph letter-shape sprites [{ch, img, cx, cy}], laid out exactly as styled_line lays it out."""
+    gs, box = layout(text, role, size, tracking)
+    return [{"ch": g["ch"], "img": mask_sprite(g["mask"]), "cx": g["cx"], "cy": g["cy"]} for g in gs], (box[2] - box[0], box[3] - box[1])
+
+
+def negative(fr, layer, shadow=0.45, blur=10, dy=0):
+    """Draw the letters of `layer` (an RGBA image the size of fr; only its alpha, the letter shape, is used) onto fr as a
+    PHOTO NEGATIVE of whatever is under them (out = 255 - frame) over a soft dark shadow (the blurred letters, shifted dy
+    px down). Works in place on fr (RGBA or RGB), only inside the letters' box, and returns fr."""
+    bb = layer.getchannel("A").getbbox()
+    if not bb:
+        return fr
+    m = int(blur * 3) + abs(int(dy)) + 2
+    x0, y0 = max(0, bb[0] - m), max(0, bb[1] - m); x1, y1 = min(fr.width, bb[2] + m), min(fr.height, bb[3] + m)
+    la = layer.getchannel("A").crop((x0, y0, x1, y1))
+    a = np.asarray(la, np.float32)[..., None] / 255
+    if shadow > 0:
+        sl = la if not dy else Image.new("L", la.size)
+        if dy:
+            sl.paste(la, (0, int(dy)))
+        sh = np.asarray(sl.filter(ImageFilter.GaussianBlur(blur)), np.float32)[..., None] / 255 * shadow
+    else:
+        sh = 0.0
+    crop = fr.crop((x0, y0, x1, y1))
+    rgb_ = np.asarray(crop.convert("RGB"), np.float32)
+    out = rgb_ * (1 - sh)
+    out = out * (1 - a) + (255 - rgb_) * a
+    res = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+    if crop.mode == "RGBA":
+        res.putalpha(crop.getchannel("A"))
+    fr.paste(res.convert(fr.mode), (x0, y0))
+    return fr
 
 
 # ---- planning helpers ------------------------------------------------------------------------------------------------------

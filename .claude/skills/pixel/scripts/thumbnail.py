@@ -1,7 +1,8 @@
 """Thumbnail / cover: pick the sharpest, best-lit frame and put a short bold text on it.
 
-usage: python3 .claude/skills/pixel/scripts/thumbnail.py <video> <out.jpg> --text "THREE WORD TEXT" [--color #FFD400] [--accent 2] [--at SECONDS] [--pos top|middle|bottom]
---accent N colors the Nth word (1-based) in --color; the rest are white.
+usage: python3 .claude/skills/pixel/scripts/thumbnail.py <video> <out.jpg> --text "THREE WORD TEXT" [--key color|negative] [--color #FFD400] [--accent 2] [--at SECONDS] [--pos top|middle|bottom]
+--accent N colors the Nth word (1-based) in --color; the rest are white. --key negative (only when the owner asks for the
+negative key word, see negative-key) draws that word as a photo negative of the picture behind it instead.
 """
 import argparse, os, subprocess, sys
 import numpy as np
@@ -12,6 +13,7 @@ from media import FFMPEG, probe, report
 ap = argparse.ArgumentParser()
 ap.add_argument("src"); ap.add_argument("out")
 ap.add_argument("--text", required=True)
+ap.add_argument("--key", choices=["color", "negative"], default="color", help="the key word in --color (default) or, on request, as a photo negative")
 ap.add_argument("--color", default="#FFD400")
 ap.add_argument("--accent", type=int, default=0, help="which word gets the color (0 = last word)")
 ap.add_argument("--at", type=float, default=None, help="use the frame at this second instead of the automatic pick")
@@ -37,6 +39,7 @@ best = max(range(skip, len(frames) - skip) or range(len(frames)), key=lambda i: 
 t = best / len(frames) * info["duration"] if a.at is None else min(max(0.0, a.at), info["duration"] - 0.05)
 full = subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", a.src, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
 im = Image.frombuffer("RGB", (W, H), full).convert("RGBA")
+behind = np.asarray(im.convert("RGB"), np.float32) if a.key == "negative" else None   # the frame as shot, for --key negative
 
 # darken the top for the text, then the words, stacked, as big as they fit
 grad = Image.new("L", (1, H)); c0 = {"top": 0.0, "middle": 0.5, "bottom": 1.0}[a.pos]
@@ -60,9 +63,19 @@ block = len(words) * int(size * 1.02); y0 = {"top": int(H * 0.08), "middle": (H 
 sh = Image.new("RGBA", (W, H), (0, 0, 0, 0)); d = ImageDraw.Draw(sh); y = y0
 for i, w in enumerate(words):
     d.text(((W - font.getlength(w)) / 2, y + size * 0.06), w, font=font, fill=(0, 0, 0, 180)); y += int(size * 1.02)
-im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(size * 0.06))); d = ImageDraw.Draw(im); y = y0
+im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(size * 0.06)))
+key = Image.new("L", (W, H), 0); d = ImageDraw.Draw(im); dk = ImageDraw.Draw(key); y = y0
 for i, w in enumerate(words):
-    d.text(((W - font.getlength(w)) / 2, y), w, font=font, fill=(hl + (255,)) if i == acc else (255, 255, 255, 255)); y += int(size * 1.02)
+    x = (W - font.getlength(w)) / 2
+    if i == acc and a.key == "negative":
+        dk.text((x, y), w, font=font, fill=255)
+    else:
+        d.text((x, y), w, font=font, fill=(hl + (255,)) if i == acc else (255, 255, 255, 255))
+    y += int(size * 1.02)
+if a.key == "negative":                                # its letters flip the colours behind them
+    k = np.asarray(key, np.float32)[..., None] / 255
+    rgb = np.asarray(im.convert("RGB"), np.float32)
+    im = Image.fromarray(np.clip(rgb * (1 - k) + (255 - behind) * k, 0, 255).astype(np.uint8)).convert("RGBA")
 os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
 im.convert("RGB").save(a.out, quality=92)
 report(tool="thumbnail", out=a.out, frame_at_seconds=round(t, 2), text=" ".join(words), position=a.pos, size=f"{W}x{H}", font=os.path.basename(FONT))

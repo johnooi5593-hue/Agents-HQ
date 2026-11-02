@@ -7,6 +7,8 @@ description: Yellow Serif Kinetic (黄字重点衬线动态字幕) captions: whi
 
 The owner's style guide is `GUIDE.md` in this folder (read it once). Plain sentences are thick and clear; key words are warm yellow `#FBC238`; motion brings out the point of what is said. Never change the meaning: the original words, negations and conditions stay.
 
+**Negative key word** (only when the owner asks for it, see the negative-key skill): plan `"key_style": "negative"` at the top of `plan.json` draws every key word (inline key words, the burst phrase, the darken column, a fullscreen `head` big letter) as a photo negative of the frame behind it over a soft dark shadow; the other words stay white, and `edit.ass` still marks key words in `#FBC238`. Left out (or `"yellow"`) the key words stay yellow.
+
 Call the clip `<name>` (its file name without the extension). One command per Bash call, no `&&` chains. The scripts create their output folders and print one JSON line. Never upload, post or delete anything.
 
 ## Steps
@@ -17,6 +19,8 @@ Call the clip `<name>` (its file name without the extension). One command per Ba
    `{"topics": [{"name": "<short-slug>", "start": <source s>, "end": <source s>, "why": "<one line>"}, ...]}`
 4. **Cut.** `python3 .claude/skills/yellow-serif/scripts/cut_topics.py inbox/<file> out/<name>/topics.json out/<name>`
    Each topic becomes `out/<name>/<topic>/cut.mp4` with pauses removed and `cutmap.json` (source ranges kept). It keeps the original framing; the render makes it vertical. Below, `<dir>` is `out/<name>/<topic>`.
+   **Footage mix** (sermon highlights cut from a RAW livestream, owner 2026-11-02): show the RAW in only 2-3 scenes; the rest is the same service's B-roll, mostly the speaker from other angles and about a third without the speaker (audience, worship team, raised hands, the hall and stage), more of those on the reflective lines. The speaker's audio, timing and captions run on unchanged under the B-roll; captions stay off faces.
+   **Fillers and pauses out** (every edit, owner 2026-11-01): `python3 .claude/skills/yellow-serif/scripts/tighten.py <dir>/cut.mp4 <dir>/tight.mp4 --map <dir>/cutmap.json` (env `YS_LANG=zh`). It removes um / ah / ohh / 呃 / 嗯 and a standalone 啊 / 哦, and shortens every pause over 0.3 s to 0.12 s; it never removes a real word (a second listen keeps speech the first pass missed, such as an interpreter's English). Read its `second_listen` and `kept_unclear`, listen to its `possible_false_starts` and drop a failed try with `--drop START-END`. From here on use `tight.mp4` as the cut and `tight.cutmap.json` as the map.
 5. **Planning page.** `python3 .claude/skills/yellow-serif/scripts/plan.py <dir>/cut.mp4 <dir>/plan.json --map <dir>/cutmap.json`
    Read the transcript it prints. Fix a clearly misheard word in that line's `text` (and the same word in its `words`), and write the fix in `note`. Nothing else in the words changes.
 6. **Edit `<dir>/plan.json`** (the lines, in order). Each line has `keywords`, `motion`, `shine`, `layout`, `standalone`, `standalone_font`, `transition`, `head`, `note`. The rules:
@@ -29,6 +33,7 @@ Call the clip `<name>` (its file name without the extension). One command per Ba
 7. **Check and show.** `python3 .claude/skills/yellow-serif/scripts/plan.py --check <dir>/plan.json` (fix every error, think about every warning), then `python3 .claude/skills/yellow-serif/scripts/plan.py --md <dir>/plan.json` writes `<dir>/plan.md`, the planning page (讲话原句 | 重点词 | 主要动作 | 画面与备注, with source and caption times). If the owner asked to see the plan first, stop here and report the `plan.md` paths.
 8. **Render.** `python3 .claude/skills/yellow-serif/scripts/render.py <dir>/cut.mp4 <dir>/plan.json <dir>/edit.mp4`
    Add `--frame blur` to keep a wide shot whole (blurred fill) instead of a centre crop; `--font-size 78` for denser lines (guide: 74-96). It writes `edit.mp4`, `edit.ass` (editable captions with styles and timings for Aegisub), `edit.srt` (for CapCut), `edit.ys.json` (events) and keeps `plan.json` beside it. Read its `warnings` and fix the plan for each one (shrunk lines, short burst holds, no time to shine).
+   **Music and sound** (every edit): the sfx skill's step 0 blends the owner's music under the voice (`music.py`), then its sound effects go on top.
 9. **Look at it.** `python3 .claude/skills/yellow-serif/scripts/preview.py <dir>/edit.mp4 <dir>/preview.jpg`, then Read `preview.jpg`: 8 frames at the pop, burst, shine, flash and leak moments. To look closer at a moment: `--at 12.3,14.6`. Check: heavy serif, yellow only on the key words, no line touching the side margins, at most two rows, nothing over the face in `subtitle`, the burst phrase readable over the grey line, text clear after every effect. Fix the plan and render again until it is right.
 10. **Cover.** `python3 .claude/skills/yellow-serif/scripts/render.py <dir>/cut.mp4 <dir>/plan.json <dir>/clean.mp4 --no-captions`, then the pixel skill on `<dir>/clean.mp4` with `--color "#FBC238"`.
 11. **Delivery checklist** (the guide's page 7). Go through every item and fix what fails before reporting:

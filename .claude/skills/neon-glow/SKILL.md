@@ -9,13 +9,18 @@ Guide: `C:\Users\John Ooi\Documents\Style Guides\neon-glow-reel\guideline.pdf` (
 renderer reproduces the measured glow and switch-on, so your job is choosing **which word glows** and keeping the words exact.
 Never change the preacher's words, scripture, numbers, negations or conditions.
 
+**Negative key word** (only when the owner asks for it, see the negative-key skill): plan `"key_style": "negative"` draws the neon word and the gold key word of the kinetic lines as a photo negative of the picture behind them over a soft dark shadow instead of the glow (the tight dark rim, flicker, switch-on, scale settle and sparkles stay; no glow, shine sweep, light streak or flare). Left out (or `"neon"`) the glow stays.
+
 Scripts: `D:/Agents HQ/.claude/skills/neon-glow/scripts/` (call it `$NG`). It reuses caption-card and poster-kinetic next to it
 (fonts, layout, speech-to-text, preview). One command per Bash call, quoted absolute paths, a short working folder. Every
 script prints one JSON line. Never upload, post or delete anything.
 
 ## Steps
 1. **Source.** A clean, caption-free edit, or a topic cut from a RAW livestream as in the poster-kinetic skill (speaker crop;
-   the owner's rule: no slides from the RAW).
+   the owner's rule: no slides from the RAW). **Footage mix** (sermon highlights cut from a RAW livestream, owner 2026-11-02): show the RAW in only 2-3 scenes; the rest is the same service's B-roll, mostly the speaker from other angles and about a third without the speaker (audience, worship team, raised hands, the hall and stage), more of those on the reflective lines. The speaker's audio, timing and captions run on unchanged under the B-roll; captions stay off faces.
+   **Fillers and pauses out** (every edit, owner 2026-11-01):
+   `python "D:/Agents HQ/.claude/skills/yellow-serif/scripts/tighten.py" <clip> <dir>/tight.mp4 [--map <dir>/cutmap.json]`
+   (env `YS_LANG=zh`; removes um / ah / ohh / 呃 / 嗯, shortens pauses over 0.3 s, never a real word); use `tight.mp4` from here on.
 2. **Plan.** `python "$NG/plan.py" <clip> <dir>/plan.json` (CPU faster-whisper, local large-v3-turbo; `YS_LANG=zh`), or reuse
    another plan's lines: `python "$NG/plan.py" --from-plan <other plan.json> <dir>/plan.json`. Fix clearly misheard words in
    `text` and `words` (note them).
@@ -38,7 +43,7 @@ script prints one JSON line. Never upload, post or delete anything.
 6. **Look.** `python "D:/Agents HQ/.claude/skills/poster-kinetic/scripts/preview.py" <dir>/edit.mp4 <dir>/preview.jpg --at ...`
    at each neon word (its spoken time, +0.1 s, +0.4 s) and a few chrome lines. Check: the glow reads on the picture, no text
    on the face, the chrome readable, no boxes for missing characters.
-7. **Sound** with the sfx skill from `edit.sfx-events.json` (soft chimes on the neon words: keep the true punchlines).
+7. **Music and sound** with the sfx skill: its step 0 blends the owner's music under the voice (`music.py`, every edit), then effects from `edit.sfx-events.json` (soft chimes on the neon words: keep the true punchlines).
 8. **Deliver** as the other styles: `notes.md`, Agents HQ `out/<name>/` with `edit.mp4`, `captions.srt`, `clean.mp4`
    (`--no-text`), `followups.json`; send `edit_phone.mp4`.
 

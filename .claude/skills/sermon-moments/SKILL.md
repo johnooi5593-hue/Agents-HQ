@@ -58,3 +58,4 @@ same words.
 - The matte (RVM, D:/AI OFFICE/tools/models/rvm) runs about 9 frames per second on the CPU: 3 min for a 60 s clip.
 - Whip pans are heavier to render; a 60 s clip with ~20 cuts takes about 4 min.
 - Owner rules still hold: speaker angle only from the RAW (no slides), our own B-roll, phone copy under 28 MiB.
+- **Footage mix** (sermon highlights cut from a RAW livestream, owner 2026-11-02): show the RAW in only 2-3 scenes; the rest is the same service's B-roll, mostly the speaker from other angles and about a third without the speaker (audience, worship team, raised hands, the hall and stage), more of those on the reflective lines. The speaker's audio, timing and captions run on unchanged under the B-roll; captions stay off faces.

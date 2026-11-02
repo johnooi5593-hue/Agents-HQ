@@ -17,6 +17,10 @@ What it draws (guide: Semenyih shoplot reel, measured; sermon adaptations marked
   picture  transitions flash (zoom-blur white flash, 12 frames) and whip (horizontal blur, 5 frames) at section starts;
            a slow 4.5% punch-in while a hero is up*; text behind the speaker when a matte is given (matte.py)
   colour   a hero's colour comes from the sermon palette; a dark colour on a dark picture switches to its light variant*
+  key word plan "key_style": "colour" (the normal look, also when left out: the face in its meaning colour) or "negative"
+           (only when the owner asks for the negative key word, see negative-key: the hero's FACE as a photo negative of
+           the picture behind it over a soft dark shadow, on a neutral dark extrusion #101010). Captions, cards and the title
+           are unchanged either way.
 Writes <out>.mp4, <out>.srt, <out>.pk.json (events for preview.py, warnings) and a copy of plan.json; --phone also writes
 <out>_phone.mp4 under 28 MiB for sending to a phone. Prints one JSON line.
 """
@@ -36,6 +40,31 @@ BREAK_BEFORE = set("像是在但就而所因如可然还也都又才把被让给
 BREAK_AFTER = set("的了吗呢吧啊么着过")
 LATIN_K = 1.06
 F1 = 1 / FPS
+
+
+NEG_EXTRUDE = (0x10, 0x10, 0x10)          # key_style "negative": the hero's extrusion in a neutral dark
+NEG_SHADOW, NEG_BLUR = 0.5, 10            # key_style "negative": soft dark shadow under the negative face
+NEG_EDGE, NEG_EDGE_RGB = 0.007, (0xEE, 0xEE, 0xEE)   # key_style "negative": light hairline round the face (x hero size)
+KEY_STYLES = ("colour", "negative")
+
+
+def negative(fr, alpha, shadow=NEG_SHADOW, blur=NEG_BLUR):
+    """Draw the letter shape `alpha` (an L image the size of fr) onto fr as a PHOTO NEGATIVE of what is under it
+    (out = 255 - frame) over a soft dark shadow (the blurred letters). In place, only inside the letters' box."""
+    bb = alpha.getbbox()
+    if not bb:
+        return fr
+    m = int(blur * 3) + 2
+    x0, y0 = max(0, bb[0] - m), max(0, bb[1] - m); x1, y1 = min(fr.width, bb[2] + m), min(fr.height, bb[3] + m)
+    la = alpha.crop((x0, y0, x1, y1))
+    a = np.asarray(la, np.float32)[..., None] / 255
+    sh = np.asarray(la.filter(ImageFilter.GaussianBlur(blur)), np.float32)[..., None] / 255 * shadow
+    crop = fr.crop((x0, y0, x1, y1))
+    rgb_ = np.asarray(crop.convert("RGB"), np.float32)
+    out = rgb_ * (1 - sh)
+    out = out * (1 - a) + (255 - rgb_) * a
+    fr.paste(Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB").convert(fr.mode), (x0, y0))
+    return fr
 
 
 def ease_out(x): x = min(1.0, max(0.0, x)); return 1 - (1 - x) ** 3
@@ -68,7 +97,9 @@ def get_font(text, role, size):
 
 def sprite(text, role, size, style):
     """One piece (a Chinese character or a Latin word) as an RGBA image with soft shadow, short dark extrusion, optional
-    stroke and a solid, gradient or metal fill. style = (kind, c1, c2, gx, gw, extrude_px, shadow, stroke_px, stroke_rgb)."""
+    stroke and a solid, gradient or metal fill. style = (kind, c1, c2, gx, gw, extrude_px, shadow, stroke_px, stroke_rgb).
+    kind "neg" (key_style negative): the image holds only the shadow and a neutral dark extrusion with the face left
+    clear, and sp["face"] is the face alone (white, alpha = letter shape) to be drawn as a photo negative."""
     size = max(6, int(round(size)))
     key = (text, role, size, style)
     if key in _SPR:
@@ -120,14 +151,24 @@ def sprite(text, role, size, style):
         out[..., 3] = a + out[..., 3] * (1 - a)
     over(np.zeros(3, np.float32), S)
     if ext:
-        over(np.array(EXTRUDE, np.float32) / 255, E)
+        over(np.array(NEG_EXTRUDE if kind == "neg" else EXTRUDE, np.float32) / 255, E)
     if spx:
         over(np.array(scol, np.float32) / 255, ms)
-    over(F, mf)
+    if kind == "neg":
+        # a light hairline round the face, so a dark negative face still separates from the dark extrusion
+        k = max(3, int(round(size * NEG_EDGE)) * 2 + 1)
+        ring = np.asarray(Image.fromarray((mf * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(k)), np.float32) / 255
+        over(np.array(NEG_EDGE_RGB, np.float32) / 255, ring * 0.95)
+        out[..., 3] *= 1 - mf                                       # the face stays clear: it is drawn as a negative
+    else:
+        over(F, mf)
     a = out[..., 3:4]
     col = np.where(a > 1e-4, out[..., :3] / np.maximum(a, 1e-4), 0)
     img = Image.fromarray(np.dstack([col * 255, a * 255]).clip(0, 255).astype(np.uint8), "RGBA")
     sp = {"img": img, "ox": -org[0], "oy": -org[1], "adv": ft.getlength(text), "ink": (x0, y0, x1 + slw // 2, y1), "size": size}
+    if kind == "neg":
+        face = Image.new("RGBA", (w, h), (255, 255, 255, 0)); face.putalpha(Image.fromarray((mf * 255).astype(np.uint8)))
+        sp["face"] = face; img._negface = face
     if len(_SPR) > 3000:
         _SPR.clear()
     _SPR[key] = sp
@@ -189,6 +230,12 @@ def run_image(run):
     cv = Image.new("RGBA", (X1 - X0, Y1 - Y0), (0, 0, 0, 0))
     for p, b in zip(run["pieces"], boxes):
         cv.alpha_composite(p["sp"]["img"], (int(round(b[0] - X0)), int(round(b[1] - Y0))))
+    if any("face" in p["sp"] for p in run["pieces"]):              # key_style negative: the faces as their own image
+        fc = Image.new("RGBA", cv.size, (255, 255, 255, 0))
+        for p, b in zip(run["pieces"], boxes):
+            if "face" in p["sp"]:
+                fc.alpha_composite(p["sp"]["face"], (int(round(b[0] - X0)), int(round(b[1] - Y0))))
+        cv._negface = fc
     run["img"] = (cv, -X0, -Y0)
     return run["img"]
 
@@ -345,6 +392,7 @@ def build(ln, plan, W, H, warn, k_hero):
     tag = f"line {L.id}"
     L.units, L.hero, L.col, L.zone = [], None, [], ln.get("zone") or plan.get("zone_default") or "low"
     L.behind = bool(ln.get("behind"))
+    L.neg = plan.get("key_style") == "negative"
     left, right = SAFE["left"] + 10, SAFE["right"] - 10
     maxw = right - left
     L.color_name = ln.get("color") or "gold"
@@ -384,6 +432,8 @@ def layout_hero(L, plan, W, H, warn, light=False, bright=False):
     c1 = colour(L.color_name, light)
     c2 = colour(ln.get("color2"), light) if ln.get("color2") else None
     fill = ("metal", c1, None) if L.fill == "metal" else ("grad", c1, c2) if L.fill == "gradient" and c2 else ("solid", c1, None)
+    if L.neg:                                              # key_style negative: the face is the picture inverted
+        fill = ("neg", c1, None)
     left, right = SAFE["left"] + 10, SAFE["right"] - 10
     maxw = right - left
     text = ln["text"]; p = L.kw_pos; kw = ln["keyword"]
@@ -571,6 +621,15 @@ def draw_hero(fr, L, t, W, H):
     if ex is None:
         return
     ea, eb, es, edy = ex
+    faces = []                                             # key_style negative: the hero faces, drawn as a negative below
+
+    def hp(fr, img, *args):
+        put_blur(fr, img, *args)
+        face = getattr(img, "_negface", None)
+        if face is not None:
+            if not faces:
+                faces.append(Image.new("RGB", fr.size, 0))
+            put_blur(faces[0], face, *args)
     if L.mode == "poster":
         img, pxi, pyi = run_image(L.hero)
         ix0, iy0, ix1, iy1 = L.hero["ink"]
@@ -584,20 +643,20 @@ def draw_hero(fr, L, t, W, H):
             if f < WHIP["in"]:
                 e = ease_expo(f / WHIP["in"])
                 if L.dir == "top":
-                    put_blur(fr, img, ax, ay, X, Y - 0.22 * H * (1 - e), es, ea, max(eb, 10 * (1 - e)))
+                    hp(fr, img, ax, ay, X, Y - 0.22 * H * (1 - e), es, ea, max(eb, 10 * (1 - e)))
                 else:
-                    put_blur(fr, img, ax, ay, X + sgn * WHIP["travel"] * W * (1 - e), Y, es, ea, eb, WHIP["mblur"] * (1 - e) + 2)
+                    hp(fr, img, ax, ay, X + sgn * WHIP["travel"] * W * (1 - e), Y, es, ea, eb, WHIP["mblur"] * (1 - e) + 2)
             else:
                 g = f - WHIP["in"]
                 drift = WHIP["drift"] * ease_out(g / WHIP["drift_frames"]) + 12 * max(0, g - WHIP["drift_frames"]) / FPS
                 dx = 0 if L.dir == "top" else -sgn * drift
                 dy = drift * 0.5 if L.dir == "top" else 0
-                put_blur(fr, img, ax, ay, X + dx, Y + dy, es, ea, eb)
+                hp(fr, img, ax, ay, X + dx, Y + dy, es, ea, eb)
         elif L.motion == "zoom":
             s = 1 + (ZOOM["from_scale"] - 1) * (1 - ease_out(f / (ZOOM["in"] + ZOOM["settle"])))
             b = ZOOM["blur"] * max(0, 1 - f / ZOOM["in"])
             a = min(1.0, 0.4 + 0.6 * f / ZOOM["in"])
-            put_blur(fr, img, ax, ay, X, Y, s * es, a * ea, max(b, eb))
+            hp(fr, img, ax, ay, X, Y, s * es, a * ea, max(b, eb))
         else:  # drop: pieces 1 frame apart, recentred while they arrive
             pcs = L.hero["pieces"]
             vis = [k for k in range(len(pcs)) if f >= k * DROP["stagger"]]
@@ -613,7 +672,7 @@ def draw_hero(fr, L, t, W, H):
                     cxi = -sp["ox"] + (sp["ink"][0] + sp["ink"][2]) / 2; cyi = -sp["oy"] + (sp["ink"][1] + sp["ink"][3]) / 2
                     Xp = L.hx + pc["x"] + shift + (sp["ink"][0] + sp["ink"][2]) / 2
                     Yp = L.hy + (sp["ink"][1] + sp["ink"][3]) / 2 + DROP["from_y"] * (1 - e) + edy
-                    put_blur(fr, sp["img"], cxi, cyi, Xp, Yp, (DROP["from_scale"] - (DROP["from_scale"] - 1) * e) * es,
+                    hp(fr, sp["img"], cxi, cyi, Xp, Yp, (DROP["from_scale"] - (DROP["from_scale"] - 1) * e) * es,
                              min(1.0, e * 1.3) * ea, max(DROP["blur"] * (1 - e), eb))
     else:
         for c in L.col:
@@ -623,8 +682,10 @@ def draw_hero(fr, L, t, W, H):
             p = min(1.0, f / STACK["in"])
             img, pxi, pyi = run_image(c["run"])
             ix0, iy0, ix1, iy1 = c["run"]["ink"]
-            put_blur(fr, img, pxi + (ix0 + ix1) / 2, pyi + (iy0 + iy1) / 2, c["x"] + (ix0 + ix1) / 2, c["y"] + (iy0 + iy1) / 2 + edy,
+            hp(fr, img, pxi + (ix0 + ix1) / 2, pyi + (iy0 + iy1) / 2, c["x"] + (ix0 + ix1) / 2, c["y"] + (iy0 + iy1) / 2 + edy,
                      (1.08 - 0.08 * p) * es, (0.3 + 0.7 * p) * ea, max(STACK["blur"] * (1 - p), eb))
+    if faces:
+        negative(fr, faces[0].convert("L"))
     # lead / tail ride with the hero composition and leave with it
     for u in L.lead + L.tail:
         st = unit_state(t, u["t"], L.hero_out, out_frames=SWAP["out"] if L.swap else BLUR_OUT)
@@ -896,6 +957,8 @@ def main():
         sys.exit("this renderer lays out at 1080x1920")
     plan = load(a.plan)
     err, warn = check(plan)
+    if (plan.get("key_style") or "colour") not in KEY_STYLES:
+        err.append(f'key_style must be one of {KEY_STYLES} ("colour", also when left out; "negative": the hero face as a photo negative, on request)')
     if err:
         report(tool="render", ok=False, errors=err, warnings=warn); sys.exit(1)
     info = probe(a.video); dur = info["duration"]
@@ -1038,7 +1101,7 @@ def main():
                 continue
             if t < min([L.hero_t] + [u["t"] for u in L.lead]) - 1e-6 or t > L.hero_out + 0.5:
                 continue
-            if not getattr(L, "checked", False) and t >= L.hero_t:
+            if not getattr(L, "checked", False) and t >= L.hero_t and not L.neg:
                 L.checked = True                               # colour against the actual picture behind the hero
                 x0, y0, x1, y1 = (int(v) for v in hero_box_px(L))
                 reg = arr[max(0, y0):max(1, y1), max(0, x0):max(1, x1)].reshape(-1, 3)

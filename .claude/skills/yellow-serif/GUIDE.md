@@ -11,6 +11,7 @@ How to use it (这份指南怎样使用): an optional style template. First fix 
 
 - **Main captions**: a heavy / bold Song face (偏粗宋体／标宋感): full glyphs, stroke contrast, clear serifs.
 - **Inline emphasis** (行内重点): the same font, turned yellow and slightly larger, **1.0-1.15x**, keeping the reading rhythm of the sentence.
+- **Negative key word** (only when the owner asks for it, see the negative-key skill): plan `"key_style": "negative"` draws the key words as a photo negative of the picture behind them (255 - background) over a soft dark shadow instead of the yellow below; the rest stays white.
 - **Standalone key phrases** (独立重点短语): only a few key phrases become big hand-written / brush words (书写感大字), **1.5-2.1x**.
 - The reference fonts were not identified; trial-set before production and **record the final font files and their licences** (登记最终字体文件与使用权限).
   This skill uses Noto Serif SC at its heaviest weight (Black) and Ma Shan Zheng (马善政) for brush phrases, both SIL Open Font License; see `scripts/fonts/FONTS.md`.

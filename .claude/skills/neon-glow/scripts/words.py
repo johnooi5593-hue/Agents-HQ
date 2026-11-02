@@ -1,5 +1,6 @@
 """Kinetic words for the ordinary (non-neon) lines of Neon Glow: each line gets a placement and a word animation, varied
-line by line so the wording keeps moving, plus one emphasised word in warm gold glow.
+line by line so the wording keeps moving, plus one emphasised word in warm gold glow (with plan key_style "negative", only on
+the owner's request, that word is a photo negative of the picture over a soft dark shadow instead).
 
 Placements: center, left, right, stagger (each word or pair on its own row, alternating offset and size), tilt (the
 line turned about 5 degrees). Animations (per word, at the moment it is spoken): rise, pop, slide, drop, wave, zoom, flash.
@@ -23,7 +24,9 @@ SHADOW = ("#0A0C10", 7, 5, 0.85)
 
 
 def unit_image(text, size, colour):
-    gl, ink = cc.styled_line(text, "hook", size, colour, glow=(colour == "emph"), shadow=SHADOW, glow_r=max(8, size * 0.14))
+    neg = colour == "emph" and ng.KEY["style"] == "negative"     # key_style negative: the letter shape only
+    gl, ink = cc.styled_line(text, "hook", size, "white" if neg else colour, glow=(colour == "emph" and not neg),
+                             shadow=None if neg else SHADOW, glow_r=max(8, size * 0.14))
     if not gl:
         return None, ink
     xs0 = [g["cx"] - g["img"].width / 2 for g in gl]; xs1 = [g["cx"] + g["img"].width / 2 for g in gl]
@@ -208,7 +211,12 @@ class WordLine:
             if q > 0:
                 a *= 1 - q; blur = max(blur, 12 * q); y -= 26 * q; s *= 1 - 0.05 * q
             ox, oy = sp["ox"], sp["oy"]
-            cc.put(fr, sp["img"], x + ox * s, y + oy * s, s, 0.0, alpha=a, blur=blur, mblur=mb, bright=br)
+            if u["emph"] and ng.KEY["style"] == "negative":      # the key word as a photo negative over a soft dark shadow
+                lay = Image.new("RGBA", fr.size, (0, 0, 0, 0))
+                cc.put(lay, sp["img"], x + ox * s, y + oy * s, s, 0.0, alpha=a, blur=blur, mblur=mb)
+                ng.negative(fr, lay.getchannel("A"))
+            else:
+                cc.put(fr, sp["img"], x + ox * s, y + oy * s, s, 0.0, alpha=a, blur=blur, mblur=mb, bright=br)
             if u["emph"] and 3 <= f < 13:                      # a quick glint on the key word
                 kk = math.sin(math.pi * (f - 3) / 10)
                 cc.put(fr, ng.star(u["size"] * 0.42), x + u["ink"][0] * 0.42, y - u["ink"][1] * 0.38, 0.5 + 0.7 * kk, rot=f * 5, alpha=kk * a)

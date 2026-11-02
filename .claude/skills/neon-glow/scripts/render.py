@@ -10,6 +10,9 @@ olive glow) that switches on without moving: opacity 0.25 -> 1, saturation 0.3 -
 word left-aligned and huge (0.23 of the frame), the lead under it. Line "transition": "blurdark" (blur into darkness,
 0.35 s). Plan "moments": [{"kind": "window", "start", "end"}] put B-roll inside a dark rounded frame. Plan "overlays":
 [{"kind": "bubble", "start", "end", "text"}] a chat bubble with typing dots, then the words.
+Plan "key_style": "neon" (also when left out) is the normal glowing look; "negative" (only when the owner asks for the
+negative key word, see negative-key) draws the neon word, and the gold key word of the kinetic lines, as a photo negative
+of the picture behind it over a soft dark shadow, keeping the tight dark rim and dropping the bright glow and light streak.
 Writes <out>.mp4, .srt, .pk.json (events for poster-kinetic preview.py), .sfx-events.json (for the sfx skill), a copy of
 plan.json; --phone also <out>_phone.mp4 under 28 MiB. Prints one JSON line.
 """
@@ -86,6 +89,18 @@ class ChromeRow:
 
 
 FX = {"enhanced": True}
+
+
+def NEG():
+    return ng.KEY["style"] == "negative"
+
+
+def neg_put(fr, img, cx, cy, s=1.0, alpha=1.0, blur=0.0):
+    """key_style negative: place the letter-shape sprite img like cc.put would and draw those letters onto fr as a photo
+    negative of the picture under them, over a soft dark shadow."""
+    lay = Image.new("RGBA", fr.size, (0, 0, 0, 0))
+    cc.put(lay, img, cx, cy, s, alpha=alpha, blur=blur)
+    ng.negative(fr, lay.getchannel("A"))
 
 
 def neon(mask, h, **kw):
@@ -204,7 +219,11 @@ class Line:
             f = (t - self.kw_t) * FPS
             if f >= 0 and not enh:
                 p = ease_out(min(1, f / 8))
-                cc.put(fr, self.neon.image(p, a, b), self.ncx, self.ncy)
+                if NEG():
+                    cc.put(fr, self.neon.image(p, a, b, neg=True), self.ncx, self.ncy)
+                    neg_put(fr, self.neon.face(p, a, b), self.ncx, self.ncy)
+                else:
+                    cc.put(fr, self.neon.image(p, a, b), self.ncx, self.ncy)
             elif f >= 0:
                 self.draw_enhanced(fr, t, f, q, a, b, drift)
         if self.over:
@@ -234,9 +253,14 @@ class Line:
         bright = 1.0
         if q > 0:                                               # exit flare: swell, brighten, blur away
             gk *= 1 + 1.2 * min(1, q * 2); bright = 1 + 0.6 * min(1, q * 2); sc *= 1 + 0.05 * q
-        cc.put(fr, N.image(lit, a, b, gk, shine, bright), self.ncx, self.ncy, sc)
+        neg = NEG()
+        if neg:                                                  # key_style negative: dark rim + the letters as a negative
+            cc.put(fr, N.image(lit, a, b, neg=True), self.ncx, self.ncy, sc)
+            neg_put(fr, N.face(lit, a, b), self.ncx, self.ncy, sc)
+        else:
+            cc.put(fr, N.image(lit, a, b, gk, shine, bright), self.ncx, self.ncy, sc)
         h = N.h
-        if 4 <= f < 18:                                          # anamorphic light streak at the glow burst
+        if 4 <= f < 18 and not neg:                              # anamorphic light streak at the glow burst
             k = math.sin(math.pi * (f - 4) / 14)
             st = ng.streak(N.size[0] * 1.7, h * 0.75)
             cc.put(fr, st, self.ncx, self.ncy, 1.0, alpha=min(1.0, 1.1 * k) * a)
@@ -307,6 +331,9 @@ def main():
     t0 = time.time()
     plan = load(a.plan)
     err, warn = ng.check(plan)
+    ng.KEY["style"] = plan.get("key_style") or "neon"
+    if ng.KEY["style"] not in ng.KEY_STYLES:
+        err.append(f'key_style must be one of {ng.KEY_STYLES} ("neon", also when left out; "negative": the key word as a photo negative, on request)')
     if err:
         report(tool="render", ok=False, errors=err, warnings=warn); sys.exit(1)
     dur = ng.probe(a.video)["duration"]

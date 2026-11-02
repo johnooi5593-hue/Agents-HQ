@@ -7,6 +7,9 @@ The guide in numbers (measured; Documents/Style Guides/neon-glow-reel/guideline.
   glow        olive #C8C830 fading out within about 0.15 x letter height (30 px at 195 px letters)
   glow-on     no movement: opacity 0.25 -> 1, saturation 0.3 -> 1, brightness 0.55 -> 1, glow 0 -> 1 over 8 frames, ease-out
   chrome      Chinese/lead line #E8EFF6 -> #B5C5D3, dark soft shadow, typed one character at a time as spoken
+Negative key word (only when the owner asks for it, see negative-key): plan "key_style" "negative" draws the neon word (and
+the gold key word of the kinetic lines) as a PHOTO NEGATIVE of the picture behind it (out = 255 - frame) over a soft dark
+shadow instead of a bright glow; "neon" (also when left out) is the normal glowing look.
 """
 import os, re, sys
 import numpy as np
@@ -27,6 +30,31 @@ CHROME = ("#E8EFF6", "#B5C5D3")
 WHITE_OVER = ("#F4F7F9", "#C9D6DD")
 cc.PALETTE["chrome"] = (CHROME[0], CHROME[1], None)
 LAYOUTS = ("stack", "number")
+KEY_STYLES = ("neon", "negative")
+KEY = {"style": "neon"}                           # set by render.py from plan "key_style"
+NEG_SHADOW, NEG_BLUR = 0.55, 12                   # key_style "negative": the soft dark shadow that replaces the glow
+
+
+def negative(fr, alpha, shadow=NEG_SHADOW, blur=NEG_BLUR):
+    """Draw the letter shape `alpha` (an L image the size of fr) onto fr as a PHOTO NEGATIVE of what is under it
+    (out = 255 - frame) over a soft dark shadow (the blurred letters). In place, only inside the letters' box."""
+    bb = alpha.getbbox()
+    if not bb:
+        return fr
+    m = int(blur * 3) + 2
+    x0, y0 = max(0, bb[0] - m), max(0, bb[1] - m); x1, y1 = min(fr.width, bb[2] + m), min(fr.height, bb[3] + m)
+    la = alpha.crop((x0, y0, x1, y1))
+    a = np.asarray(la, np.float32)[..., None] / 255
+    sh = np.asarray(la.filter(ImageFilter.GaussianBlur(blur)), np.float32)[..., None] / 255 * shadow
+    crop = fr.crop((x0, y0, x1, y1))
+    rgb_ = np.asarray(crop.convert("RGB"), np.float32)
+    out = rgb_ * (1 - sh)
+    out = out * (1 - a) + (255 - rgb_) * a
+    res = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+    if crop.mode == "RGBA":
+        res.putalpha(crop.getchannel("A"))
+    fr.paste(res.convert(fr.mode), (x0, y0))
+    return fr
 TRANSITIONS = (None, "", "blurdark", "cut")
 
 
@@ -99,11 +127,27 @@ class Neon:
         self.sparkle_pts = pts
         self.cache = {}
 
-    def image(self, p, alpha=1.0, blur=0.0, glow_k=1.0, shine=None, bright=1.0):
+    def face(self, p, alpha=1.0, blur=0.0):
+        """key_style negative: the letter shape alone (white, alpha = core at glow-on progress p), to be drawn as a negative."""
+        key = ("face", round(p, 3), round(alpha, 3), round(blur, 1))
+        if key in self.cache:
+            return self.cache[key]
+        a = self.core_a * (0.25 + 0.75 * p) * alpha
+        img = Image.new("RGBA", self.size, (255, 255, 255, 0))
+        img.putalpha(Image.fromarray(np.clip(a * 255, 0, 255).astype(np.uint8)))
+        if blur > 0.5:
+            img = img.convert("RGBa").filter(ImageFilter.GaussianBlur(blur)).convert("RGBA")
+        if len(self.cache) > 48:
+            self.cache.clear()
+        self.cache[key] = img
+        return img
+
+    def image(self, p, alpha=1.0, blur=0.0, glow_k=1.0, shine=None, bright=1.0, neg=False):
         """Composite at glow-on progress p (0..1, already eased) with an extra opacity and blur. glow_k scales the halo
         (bursts and pulses), shine is the position (0..1) of a diagonal light band sweeping through the letters, bright
-        lifts the core toward white (flares)."""
-        key = (round(p, 3), round(alpha, 3), round(blur, 1), round(glow_k, 2), None if shine is None else round(shine, 3), round(bright, 2))
+        lifts the core toward white (flares). neg (key_style negative): only the dark rim, with no glow and the letters
+        left clear for face()."""
+        key = (round(p, 3), round(alpha, 3), round(blur, 1), round(glow_k, 2), None if shine is None else round(shine, 3), round(bright, 2), neg)
         if key in self.cache:
             return self.cache[key]
         band = None
@@ -116,11 +160,14 @@ class Neon:
             a3 = a[..., None]
             out[..., :3] = col * a3 + out[..., :3] * (1 - a3)
             out[..., 3:] = a3 + out[..., 3:] * (1 - a3)
-        if self.glow_a is not None:
+        if neg:
+            over(self.rim_c, self.rim_a * (0.4 + 0.6 * p) * (1 - self.core_a))
+        if self.glow_a is not None and not neg:
             gk = glow_k * (1 + (2.0 * band if band is not None else 0))
             over(self.bloom_c, np.clip(self.bloom_a * p * gk, 0, 1))
             over(self.glow_c, np.clip(self.glow_a * p * gk, 0, 1))
-        over(self.rim_c, self.rim_a * (0.4 + 0.6 * p))
+        if not neg:
+            over(self.rim_c, self.rim_a * (0.4 + 0.6 * p))
         c = self.core_c
         g = c.mean(2, keepdims=True)
         c = (g + (c - g) * sat) * br
@@ -128,8 +175,9 @@ class Neon:
             c = c + (255 - c) * min(1.0, max(0.0, bright - 1.0))
         if band is not None:
             c = c + (np.array([255, 253, 235], np.float32) - c) * (band[..., None] * 0.92)
-        over(np.clip(c, 0, 255), self.core_a)
-        if self.inner_a is not None and self.glow_a is not None:
+        if not neg:
+            over(np.clip(c, 0, 255), self.core_a)
+        if self.inner_a is not None and self.glow_a is not None and not neg:
             ia = np.clip(self.inner_a * p * glow_k * 0.55, 0, 1)
             out[..., :3] = out[..., :3] + (np.array([255, 255, 220], np.float32) - out[..., :3]) * (ia * self.core_a)[..., None] * 0.35
         out[..., 3] *= op * alpha

@@ -3,7 +3,8 @@
 usage: python3 .claude/skills/yellow-serif/scripts/render.py <video> <plan.json> <out.mp4> [--size 1080x1920] [--frame crop|blur] [--font-size 84]
        python3 .claude/skills/yellow-serif/scripts/render.py <video> <plan.json> <clean.mp4> --no-captions   (vertical, no captions: for the cover)
 
-White heavy-serif captions with a soft dark shadow; key words in #FBC238 at 1.08x; per line one main motion:
+White heavy-serif captions with a soft dark shadow; key words in #FBC238 at 1.08x (plan "key_style": "negative", only on
+the owner's request: a photo negative of the picture behind them over a soft dark shadow); per line one main motion:
   type   characters appear as they are spoken, 2-3 frames each (never ahead of the speech)
   pop    key words pop: 85% -> 108% -> 100% over 0.22 s with a fade in (the rest of the line types)
   burst  a standalone big phrase (brush font, 1.8x) lands over the line: 1.35x -> 1.0 in 0.28 s, short shake, zoom blur;
@@ -22,13 +23,14 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from common import (BASE_PX, BLACK, BOTTOM, BURST, BURST_HOLD, BURST_SCALE, COMMA, FLASH, FPS, FFMPEG, GREY, GREY_ALPHA, KEY_SCALE,  # noqa: E402
-                    LEAK, POP, SHINE, SHINE_RGB, SIDE, WHITE, YELLOW, char_times, check, display, find_all, load, report, save, units,
+                    LEAK, NEG_SHADOW, POP, SHINE, SHINE_RGB, SIDE, WHITE, YELLOW, char_times, check, display, find_all, load, report, save, units,
                     width_units)
 import fonts, leaks  # noqa: E402
 
 BREAK_BEFORE = set("像是在但就而所因如可然还也都又才把被让给从和与或先再即")
 BREAK_AFTER = set("的了吗呢吧啊么着过")
 CJK_MID = 0.38          # a CJK glyph's visual centre sits about 0.38 em above the baseline
+KEY_NEG = False         # key words (everything drawn in YELLOW) as a photo negative; main() sets it for plan["key_style"] "negative"
 
 
 def ease_out(x): x = min(1.0, max(0.0, x)); return 1 - (1 - x) ** 3
@@ -84,8 +86,9 @@ def glow_of(sp):
     return sp["glow"]
 
 
-def blit(fr, arr, x, y, a=1.0, add=False, shine=None):
-    """Composite a premultiplied RGBA float sprite (or an additive RGB glow) onto the uint8 frame at (x, y)."""
+def blit(fr, arr, x, y, a=1.0, add=False, shine=None, neg=None):
+    """Composite a premultiplied RGBA float sprite (or an additive RGB glow) onto the uint8 frame at (x, y).
+    neg: the frame as it was before any caption was drawn; the sprite's alpha is then filled with its photo negative."""
     H, W = fr.shape[:2]; h, w = arr.shape[:2]; x, y = int(round(x)), int(round(y))
     xa, ya, xb, yb = max(0, x), max(0, y), min(W, x + w), min(H, y + h)
     if xb <= xa or yb <= ya or a <= 0.002:
@@ -96,6 +99,8 @@ def blit(fr, arr, x, y, a=1.0, add=False, shine=None):
         reg += sub * (255 * a)
     else:
         rgbp, al = sub[..., :3], sub[..., 3:4]
+        if neg is not None:                                                 # photo negative of the clean picture
+            rgbp = (255.0 - neg[ya:yb, xa:xb].astype(np.float32)) / 255 * al
         if shine is not None:                                               # bright band, only inside the glyphs
             uc, bw, ymid, k = shine
             gy, gx = np.mgrid[ya:yb, xa:xb].astype(np.float32)
@@ -404,14 +409,15 @@ def draw_line(fr, L, t, W, H, stats):
 
     def add(u, s=1.0, a=1.0, cx=None, cy=None, color=None, alpha=1.0, shadow=1.0, shine=None, g=0.0, dx=0.0, dy=0.0):
         col = color or u["color"]
-        sp = sprite(u["text"], u["role"], u["size"] * s, col, alpha * u.get("alpha", 1.0), shadow)
+        neg = KEY_NEG and col == YELLOW
+        sp = sprite(u["text"], u["role"], u["size"] * s, col, alpha * u.get("alpha", 1.0), shadow * (NEG_SHADOW if neg else 1.0))
         if s != 1.0 and cx is not None:
             px = cx + (u["x"] - cx) * s; py = cy + (u["y"] - cy) * s
         else:
             px, py = u["x"], u["y"]
         px += dx; py += dy
         shad.append((sp["shad"], px + sp["ox"], py + sp["oy"], a * out_a))
-        fill.append((sp["fill"], px + sp["ox"], py + sp["oy"], a * out_a, shine))
+        fill.append((sp["fill"], px + sp["ox"], py + sp["oy"], a * out_a, shine, neg))
         if g > 0:
             glow.append((glow_of(sp), px + sp["ox"], py + sp["oy"], g * out_a))
 
@@ -479,35 +485,41 @@ def draw_line(fr, L, t, W, H, stats):
         k = b["size"] * 0.03
         dx, dy = {5: (k, -0.6 * k), 6: (-0.8 * k, 0.7 * k), 7: (0.4 * k, -0.3 * k)}.get(f, (0.0, 0.0))
         copies = [(s * 1.10, 0.28), (s * 1.05, 0.45), (s, 1.0)] if f <= 2 else [(s, 1.0)]       # zoom blur on impact
-        bsp = sprite(b["text"], b["role"], b["size"], YELLOW)
+        bsh_k = NEG_SHADOW if KEY_NEG else 1.0
+        bsp = sprite(b["text"], b["role"], b["size"], YELLOW, shadow=bsh_k)
         for sc, wgt in copies:
-            sp = sprite(b["text"], b["role"], b["size"] * sc, YELLOW)
+            sp = sprite(b["text"], b["role"], b["size"] * sc, YELLOW, shadow=bsh_k)
             px = b["cx"] - sp["adv"] / 2 + dx; py = b["cy"] + sp["size"] * CJK_MID + dy
             bsh.append((sp["shad"], px + sp["ox"], py + sp["oy"], a * wgt * out_a))
             shn = None
             if L.shine and L.shine["target"] == "burst" and sc == s:
                 bx0 = b["cx"] - bsp["adv"] / 2; by = b["cy"] + bsp["size"] * CJK_MID
                 shn = shine_params(L, t, (bx0, bx0 + bsp["adv"], by - bsp["size"] * 0.9, by + bsp["size"] * 0.15))
-            bfill.append((sp["fill"], px + sp["ox"], py + sp["oy"], a * wgt * out_a, shn))
-    items = [(arr, x, y, a, None) for arr, x, y, a in shad] + fill + [(arr, x, y, a, None) for arr, x, y, a in bsh] + bfill
+            bfill.append((sp["fill"], px + sp["ox"], py + sp["oy"], a * wgt * out_a, shn, KEY_NEG))
+    items = [(arr, x, y, a, None, False) for arr, x, y, a in shad] + fill + [(arr, x, y, a, None, False) for arr, x, y, a in bsh] + bfill
+    clean = fr.copy() if any(it[5] for it in items) else None      # the picture under the negative key words
     if any(it[4] is not None for it in items):       # a shine band moves every frame: draw directly
-        for arr, x, y, a, shn in items:
-            blit(fr, arr, x, y, a, shine=shn)
-    elif items:                                      # same picture as last frame (most frames): reuse one composed layer
-        sig = tuple((id(arr), int(round(x)), int(round(y)), round(a, 3)) for arr, x, y, a, _ in items)
+        for arr, x, y, a, shn, ng in items:
+            blit(fr, arr, x, y, a, shine=shn, neg=clean if ng else None)
+    elif items:                                      # same picture as last frame (most frames): reuse composed layers
+        sig = tuple((id(arr), int(round(x)), int(round(y)), round(a, 3), ng) for arr, x, y, a, _, ng in items)
         if getattr(L, "cache", (None,))[0] != sig:
-            L.cache = (sig,) + compose(items, W, H)
-        blit(fr, L.cache[1], L.cache[2], L.cache[3])
+            nrm, ngs = [it for it in items if not it[5]], [it for it in items if it[5]]
+            L.cache = (sig, compose(nrm, W, H) if nrm else None, compose(ngs, W, H) if ngs else None)
+        if L.cache[1]:
+            blit(fr, *L.cache[1])
+        if L.cache[2]:
+            blit(fr, *L.cache[2], neg=clean)
     for arr, x, y, a in glow:
         blit(fr, arr, x, y, a, add=True)
 
 
 def compose(items, W, H):
     """Premultiplied 'over' of all sprites into one canvas: (canvas, x, y)."""
-    x0 = max(0, min(int(round(x)) for _, x, _, _, _ in items)); y0 = max(0, min(int(round(y)) for _, _, y, _, _ in items))
-    x1 = min(W, max(int(round(x)) + arr.shape[1] for arr, x, _, _, _ in items)); y1 = min(H, max(int(round(y)) + arr.shape[0] for arr, _, y, _, _ in items))
+    x0 = max(0, min(int(round(it[1])) for it in items)); y0 = max(0, min(int(round(it[2])) for it in items))
+    x1 = min(W, max(int(round(it[1])) + it[0].shape[1] for it in items)); y1 = min(H, max(int(round(it[2])) + it[0].shape[0] for it in items))
     cv = np.zeros((max(1, y1 - y0), max(1, x1 - x0), 4), np.float32)
-    for arr, x, y, a, _ in items:
+    for arr, x, y, a, *_ in items:
         x, y = int(round(x)), int(round(y)); h, w = arr.shape[:2]
         xa, ya, xb, yb = max(x0, x), max(y0, y), min(x1, x + w), min(y1, y + h)
         if xb <= xa or yb <= ya or a <= 0.002:
@@ -536,7 +548,7 @@ def write_ass(path, Ls, W, H, base, fnt):
     serif, brush = fnt["serif"]["name"] or "Serif", fnt["brush"]["name"] or "Serif"
     sty = "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
     st = lambda n, f, sz, c, al, mv, a=0: f"Style: {n},{f},{int(sz)},{ass_color(c, a)},{ass_color(c, a)},&H64000000,&H8C000000,-1,0,0,0,100,100,0,0,1,{max(2, int(sz * 0.035))},{max(2, int(sz * 0.04))},{al},{int(W * SIDE)},{int(W * SIDE)},{int(mv)},1"
-    out = ["[Script Info]", "; Yellow Serif Kinetic captions (render.py). Key words #FBC238, motions as \\t transforms; shine and light leaks are",
+    out = ["[Script Info]", "; Yellow Serif Kinetic captions (render.py). Key words #FBC238" + (" here; in the mp4 a photo negative of the picture" if KEY_NEG else "") + ", motions as \\t transforms; shine and light leaks are",
            "; only in the rendered mp4. Backgrounds per line are noted in the Comment lines.", "ScriptType: v4.00+", f"PlayResX: {W}", f"PlayResY: {H}",
            "WrapStyle: 2", "ScaledBorderAndShadow: yes", "", "[V4+ Styles]", sty,
            st("YS-Main", serif, base, WHITE, 2, H * BOTTOM), st("YS-Center", serif, base * 1.55, WHITE, 5, 0),
@@ -612,6 +624,8 @@ def main():
     S = W / 1080 if H >= W else H / 1080 * 0.9
     base = a.font_size * S
     plan = load(a.plan)
+    global KEY_NEG
+    KEY_NEG = plan.get("key_style") == "negative"
     err, warn = check(plan)
     if err:
         report(tool="render", ok=False, errors=err, warnings=warn); sys.exit(1)

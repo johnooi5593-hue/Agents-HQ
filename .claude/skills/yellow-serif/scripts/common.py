@@ -28,6 +28,8 @@ SHINE = 0.35                                         # shine 0.25-0.45 s
 FLASH = 0.14                                         # flash 0.10-0.18 s
 LEAK = 0.8                                           # light-leak transition 0.6-1.0 s
 MOTIONS = ("type", "pop", "burst", "flash")
+KEY_STYLES = ("yellow", "negative")                  # plan["key_style"]: yellow key words (also when left out) or, on request, a photo negative
+NEG_SHADOW = 0.6                                     # soft dark shadow under negative key words (x the normal shadow)
 LAYOUTS = ("subtitle", "fullscreen", "darken", "torn")
 
 SENT_END = "。！？!?；;…"
@@ -137,6 +139,8 @@ def find_all(text, kws):
 def check(plan):
     """The guide's rules as errors (must fix) and warnings (look again)."""
     err, warn = [], []
+    if plan.get("key_style", "yellow") not in KEY_STYLES:
+        err.append(f"key_style must be one of {KEY_STYLES} (left out = yellow)")
     bursts = []
     lines = plan.get("lines", [])
     for i, ln in enumerate(lines):

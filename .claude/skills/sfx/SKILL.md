@@ -11,6 +11,21 @@ Never upload, post or delete anything.
 
 ## Steps
 
+0. **Music first** (every edit, owner 2026-11-01). The track the owner gave: in the request, or in `inbox/music/` (a channel's in
+   `inbox/<key>/music/`). If there is none, follow that channel's brand rules (Pong+Gospel: a gentle CC0 piano / pad instrumental,
+   no beat); if they say nothing, ask the owner once and save the answer to the brain.
+   `python3 .claude/skills/sfx/scripts/music.py out/<name>/edit.mp4 <music file or folder> out/<name>/edit-music.mp4`
+   The music sits 12 dB under the voice while someone speaks (`--duck`) and 5 dB under in the gaps (`--bed`): the Sandy blend
+   (owner 2026-11-02), clearly heard under the voice and rising in the pauses, the speaker still easy to follow. It fades in 1.5 s and
+   out 2.5 s, loops with a crossfade if short, then -14 LUFS / -1.5 dBTP. If the video already has music under the talk, the
+   new track sits at that music's level so the two blend (`"video_had_music": true` in its JSON). Steps 1-5 then use
+   `edit-music.mp4` in place of `edit.mp4`; notes.md names the track and its licence. The channel's brand rules can set
+   another level; 21 dB under was too quiet. `--room` when the gaps hold only room sound, not music: without it a
+   loud room can push the music down in the pauses.
+   **Listen to the blend** (earshot skill, every edit): `earshot timeline <edit-music.mp4>` must hear Music together with
+   Speech in every section, with the voice on top. A section heard as Speech only: run again 2 dB louder (`--duck 10 --bed 4`);
+   the voice heard as buried or Music winning over Speech: 2 dB softer (`--duck 14 --bed 6`). notes.md gets the level used and
+   what earshot heard.
 1. **List the moves and hits** of the finished video in `out/<name>/sfx-events.json` (format below). Two sources, best first:
    - **The edit's own plan.** You know when each transition, word hit, card, icon and title happens. Use its frame.
    - **Detection**, for a finished video without a plan, or to catch what you missed:
@@ -43,6 +58,12 @@ Never upload, post or delete anything.
    The picture is copied untouched; levels are set against the video's own voice (moves about 14 dB under it, hits about 5 dB under),
    then -14 LUFS / -1.5 dBTP. It checks that each sound's loudest 5 ms sits inside its frame and writes `edit-sfx.mp4.sfx.json`.
    `"ok": false` means a sound missed its frame: read the log and fix that event. Too loud or too soft by ear: `"db": -3` / `"db": 3` on that event.
+4b. **Listen with earshot** (every edit, owner 2026-11-01): from `D:/Agents HQ/tools/ext/earshot`, run
+   `.venv/Scripts/python -m earshot timeline "<edit-sfx.mp4>" --cues "<sfx-events.json>"` (add `"fps": 30` to the
+   events file if it has frames but no fps). Every cue needs a hit within 100 ms: a "NO HIT" cue is masked by the voice or
+   cut off by the end of the file, so move or raise it and place again. Loudness -14 LUFS, true peak at or under -1 dBTP.
+   When choosing a new sound, `earshot describe <file>` first: it says what the sound is (a riser that reads "dark and
+   tense" is wrong for a sermon). Quote earshot's numbers in notes.md.
 5. **Deliver.** When it passes, `edit-sfx.mp4` becomes the delivered `edit.mp4` (keep the version without effects in `work/`), and
    notes.md gets one line: "Sound effects: real CC0 sounds (Openverse), each peaking on its motion frame; sources in
    .claude/skills/sfx/library/CREDITS.md". Make `clean.mp4` (no text) with the same audio when the folder has one.
