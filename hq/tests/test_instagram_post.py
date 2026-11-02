@@ -36,11 +36,19 @@ class InstagramUploadTests(unittest.TestCase):
             return ("c1", None) if takes(params) else (None, "upload refused")
         mock.patch.object(self.pub, "ig_direct", fake).start()
 
-    def test_refused_with_the_cover_posts_without_it(self):
+    def test_never_posted_without_the_cover(self):
+        # the owner's thumbnail always goes with it: refused with the cover is a refusal, never a post without it
         self.direct(lambda p: "cover_url" not in p)
-        link, extra = self.pub.post_instagram_file("v.mp4", "c.jpg", {"caption": "hi"}, FakeAccounts().get("meta"))
-        self.assertEqual(self.calls, ["cover", "cover", "plain"])
-        self.assertIn("without your cover", extra["warning"])
+        with self.assertRaises(publish.IgRefused):
+            self.pub.post_instagram_file("v.mp4", "c.jpg", {"caption": "hi"}, FakeAccounts().get("meta"))
+        self.assertEqual(self.calls, ["cover", "cover", "cover"])
+
+    def test_no_cover_link_waits_instead_of_posting_without(self):
+        self.direct(lambda p: True)
+        mock.patch.object(self.pub, "cover_url", lambda cover, m, parked: "").start()
+        with self.assertRaises(publish.IgRefused):
+            self.pub.post_instagram_file("v.mp4", "c.jpg", {"caption": "hi"}, FakeAccounts().get("meta"))
+        self.assertEqual(self.calls, [])
 
     def test_the_cover_is_kept_when_instagram_takes_it(self):
         self.direct(lambda p: True)
@@ -52,7 +60,7 @@ class InstagramUploadTests(unittest.TestCase):
         self.direct(lambda p: False)
         with self.assertRaises(publish.IgRefused):
             self.pub.post_instagram_file("v.mp4", "c.jpg", {"caption": "hi"}, FakeAccounts().get("meta"))
-        self.assertEqual(self.calls, ["cover", "cover", "plain", "plain"])
+        self.assertEqual(self.calls, ["cover", "cover", "cover"])
 
     def test_a_refusal_is_tried_again_later_then_fails_with_a_reason(self):
         folder = tempfile.mkdtemp()
@@ -79,6 +87,15 @@ class InstagramUploadTests(unittest.TestCase):
         self.pub.run_due(now=1000 + publish.IG_LATER[0] + 1)
         r = self.pub.record(str(folder))["instagram"]
         self.assertEqual((sent, r["state"], r["link"], r.get("warning")), (["instagram"], "posted", "https://ig/1", ""))
+
+
+class DefaultVideoTests(unittest.TestCase):
+    def test_edit_mp4_is_the_default_over_kept_versions(self):
+        d = tempfile.mkdtemp()
+        for n in ("edit-v1.mp4", "edit-v2.mp4", "edit-v3-softmusic.mp4", "edit.mp4", "clean.mp4", "cut.mp4"):
+            Path(d, n).write_bytes(b"v")
+        self.assertEqual(publish.media_files(d)["video"][0], "edit.mp4")
+        self.assertEqual(Path(publish.media(d)[0]).name, "edit.mp4")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")

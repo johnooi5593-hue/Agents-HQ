@@ -524,8 +524,10 @@ def media_files(folder):
         root = office_root(folder)
         for rel in linked_videos(folder):
             found["video"].append(rel); found["abs"][rel] = os.path.join(root, rel)
-    rank = lambda n: (0 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I) else 2 if re.search(r"clean|nocap|no-captions", n, re.I)
-                      else 3 if os.path.basename(n).lower().startswith("cut") else 1)
+    # edit.mp4 itself first: kept older versions (edit-v1.mp4, edit-v3-softmusic.mp4) sort before it by name, and CAN 1030
+    # reel 2 went to Facebook and YouTube as edit-v1 instead of the approved edit.mp4 (2026-11-02)
+    rank = lambda n: (0 if re.fullmatch(r"(edit|final|reel)\.\w+", os.path.basename(n), re.I) else 1 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I)
+                      else 3 if re.search(r"clean|nocap|no-captions", n, re.I) else 4 if os.path.basename(n).lower().startswith("cut") else 2)
     found["video"].sort(key=rank)
     found["image"].sort(key=lambda n: (0 if os.path.basename(n).lower() == "cover-codex.png" else 1 if "cover" in os.path.basename(n).lower() else 2, n))   # the owner's Codex pick first
     return found
@@ -696,8 +698,8 @@ class Publisher:
         n = int(job.get("tries") or 0)
         if n >= len(IG_LATER):
             self.note(folder, p, state="failed", job=None, error=(
-                f"Instagram refused this Reel {n + 1} times over about {sum(IG_LATER) // 3600} hours, with and without the cover. "
-                "Post it by hand in the Instagram app (the 1080p video is in this folder), and tell Claude."))
+                f"Instagram refused this Reel {n + 1} times over about {sum(IG_LATER) // 3600} hours. It was never posted without "
+                "your thumbnail. Post it by hand in the Instagram app with your thumbnail, and tell Claude."))
             return
         at = int((now or time.time()) + IG_LATER[n])
         self.note(folder, p, state="scheduled", when=at, job=dict(job, tries=n + 1), error="",
@@ -911,27 +913,21 @@ class Publisher:
         parked, extra = [], {}                                 # the hidden cover on the Page
         try:
             progress(3, "sending your thumbnail")
-            url = self.cover_url(cover, m, parked)
-            # with the cover, again after a pause (a refusal can pass later), then without it: a cover Instagram
-            # dislikes makes it refuse the whole upload, and the video matters more than the cover
-            tries = ([("cover", 0), ("cover", 30)] if url else []) + [("plain", 0), ("plain", 90)]
+            # the owner's thumbnail always goes with it (owner, 2026-11-02: "don't keep forgetting"): never post without
+            # it. No cover link, or Instagram refuses: try again in a moment, then later by itself (IgRefused)
+            url = self.cover_url(cover, m, parked) if cover else ""
+            if cover and not url:
+                raise IgRefused("Instagram's copy of your thumbnail could not be made")
             cid = err = None
-            for kind, wait in tries:
+            for wait in (0, 30, 90):                           # a refusal can pass a moment later
                 if wait:
                     progress(5, f"Instagram refused the upload, trying again in {wait} seconds")
                     time.sleep(wait)
-                elif kind == "plain" and url:
-                    progress(5, "Instagram refused it with your cover, trying without the cover")
-                cid, err = self.ig_direct(video, dict(base, cover_url=url) if kind == "cover" else base, m)
-                if cid:
-                    if kind == "plain" and url:
-                        extra["warning"] = ("Posted without your cover: Instagram would not take the upload with it. "
-                                            "Set the cover in the Instagram app (the Reel → ⋯ → Edit → Edit cover).")
+                cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
+                if cid or err != "upload refused":
                     break
-                if err != "upload refused" and kind == "plain":
-                    break                                      # taken but not processed, cover or not: not a refusal
             if not cid and err == "upload refused":
-                raise IgRefused("Instagram refused the upload (with and without the cover).")
+                raise IgRefused("Instagram refused the upload")
             if not cid:
                 raise PostError(f"Instagram could not process the video ({err}). Try Post again in a few minutes; if it keeps failing, "
                                 "post this one by hand in the Instagram app.")
