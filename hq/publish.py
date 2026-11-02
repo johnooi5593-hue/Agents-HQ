@@ -701,7 +701,7 @@ class Publisher:
             return
         at = int((now or time.time()) + IG_LATER[n])
         self.note(folder, p, state="scheduled", when=at, job=dict(job, tries=n + 1), error="",
-                  warning=f"Instagram refused the upload just now ({err}). Agents HQ tries again by itself at "
+                  warning=f"Instagram refused the upload just now ({str(err).rstrip('.')}). Agents HQ tries again by itself at "
                           f"{time.strftime('%H:%M', time.localtime(at))} (try {n + 2} of {len(IG_LATER) + 1}); keep the computer on.")
 
     def cancel(self, folder, platform):
