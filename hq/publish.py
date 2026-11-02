@@ -21,7 +21,8 @@ import json, math, os, re, secrets, shutil, subprocess, tempfile, threading, tim
 from channels import folder_channel
 
 GRAPH = "https://graph.facebook.com/v23.0"
-YT_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+YT_SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly "
+             "https://www.googleapis.com/auth/youtube")        # youtube: open a Short only once its thumbnail is on
 PLATFORMS = ("facebook", "instagram", "youtube", "tiktok")
 TT_API = "https://open.tiktokapis.com/v2"
 TT_SCOPES = "user.info.basic,video.upload"                      # drafts: the video lands in the TikTok inbox, the owner posts it
@@ -633,6 +634,8 @@ class Publisher:
         todo = [p for p in PLATFORMS if p in chosen and summary[p]["connected"]]
         if not todo:
             raise PostError("pick at least one connected account")
+        if not cover and any(p != "tiktok" for p in todo):      # owner, 2026-11-02: never posted without the thumbnail
+            raise PostError("pick your thumbnail first: nothing is posted without it")
         done = self.record(folder)
         again = [p for p in todo if (done.get(p) or {}).get("state") in ("posted", "scheduled") and not chosen[p].get("again")]
         if again:
@@ -663,7 +666,7 @@ class Publisher:
             except IgRefused as e:                              # Instagram said no for now: Agents HQ tries again later
                 self.later(folder, p, {"text": chosen[p], "video": rel(video), "cover": rel(cover_of(p))}, e)
             except Exception as e:                              # one platform failing never stops the others
-                self.note(folder, p, state="failed", error=str(e)[:400])
+                self.note(folder, p, state="failed", error=str(e)[:600])
             finally:
                 PROGRESS.report = None
 
@@ -766,7 +769,7 @@ class Publisher:
                 except IgRefused as ex:
                     self.later(folder, p, job, ex, now)
                 except Exception as ex:
-                    self.note(folder, p, state="failed", error=str(ex)[:400])
+                    self.note(folder, p, state="failed", error=str(ex)[:600])
                 finally:
                     PROGRESS.report = None
             self.check_finished(folder)
@@ -812,25 +815,38 @@ class Publisher:
         with open(video, "rb") as f:
             http("POST", upload, body=Sending(f, size, 5, 85), headers={"Authorization": "OAuth " + tok, "offset": "0", "file_size": str(size),
                                                     "Content-Length": str(size)}, timeout=1800)
+        if cover:                                              # owner, 2026-11-02: never public without the thumbnail, so it goes
+            progress(86, "setting your thumbnail")             # on before the finish call publishes the Reel
+            try:
+                self.fb_thumb(vid, cover, tok, waits=(0, 10, 20))
+            except (PostError, OSError) as e:                  # before the finish Facebook may not take it yet: keep it a
+                draft = {"upload_phase": "finish", "video_id": vid, "video_state": "DRAFT",     # draft, never public
+                         "description": text.get("caption", ""), "access_token": tok}
+                try:
+                    http("POST", f"{GRAPH}/{page}/video_reels", data=draft)
+                    self.fb_thumb(vid, cover, tok)
+                    how = "Your thumbnail is on it: check it in Meta Business Suite (Content → Drafts) and publish it there"
+                except (PostError, OSError):
+                    how = "Set your thumbnail on it in Meta Business Suite (Content → Drafts), then publish it there"
+                raise PostError(f"Facebook would not take your thumbnail before publishing ({str(e)[:120]}), so the Reel was saved as "
+                                f"a draft, not public. {how}.") from None
         finish = {"upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED", "description": text.get("caption", ""), "access_token": tok}
         if when:                                               # Facebook holds it and publishes it at that time
             finish.update(video_state="SCHEDULED", scheduled_publish_time=str(int(when)))
-        progress(88, "publishing")
+        progress(90, "publishing")
         http("POST", f"{GRAPH}/{page}/video_reels", data=finish)
-        extra = {}
-        if cover:                                              # without this Facebook shows a frame of the video
-            progress(92, "setting your thumbnail")
+        if cover:                                              # once more after the finish, in case processing dropped it
             try:
-                self.fb_thumb(vid, cover, tok)
-            except (PostError, OSError) as e:
-                extra["warning"] = f"Posted, but Facebook did not take your thumbnail ({e}). Set it in Meta Business Suite."
-        return f"https://www.facebook.com/reel/{vid}", extra
+                self.fb_thumb(vid, cover, tok, waits=(5,))
+            except (PostError, OSError):
+                pass                                           # the one set before the finish stays
+        return f"https://www.facebook.com/reel/{vid}", {}
 
-    def fb_thumb(self, vid, cover, tok):
+    def fb_thumb(self, vid, cover, tok, waits=(0, 15, 30, 60)):
         """The owner's thumbnail on a Facebook video; Facebook may still be processing it, so a few tries."""
         with open(cover, "rb") as f:
             img = f.read()
-        for wait in (0, 15, 30, 60):
+        for wait in waits:
             time.sleep(wait)
             body, headers = multipart({"is_preferred": "true", "access_token": tok}, "source", os.path.basename(cover), img,
                                       "image/png" if cover.lower().endswith(".png") else "image/jpeg")
@@ -986,8 +1002,12 @@ class Publisher:
         meta = {"snippet": {"title": text.get("title") or "Short", "description": text.get("description", ""), "categoryId": "22"},
                 "status": {"privacyStatus": text.get("privacy") if text.get("privacy") in ("public", "unlisted", "private") else "public",
                            "selfDeclaredMadeForKids": False}}
-        if when:                                               # uploaded private now, YouTube makes it public at that time
-            meta["status"].update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(when))))
+        want = dict(meta["status"])
+        if when:                                               # private now, YouTube makes it public at that time
+            want.update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(when))))
+        # owner, 2026-11-02: never public without the thumbnail. With one it goes up private (no publish time) and opens
+        # (or gets its schedule) only once the thumbnail is on; if YouTube refuses the thumbnail it simply stays private.
+        meta["status"] = {k: v for k, v in dict(want, privacyStatus="private").items() if k != "publishAt"} if cover else want
         size = os.path.getsize(video)
         _, h, _ = http("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
                        body=json.dumps(meta).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json; charset=UTF-8",
@@ -998,20 +1018,41 @@ class Publisher:
         with open(video, "rb") as f:
             _, _, v = http("PUT", where, body=Sending(f, size, 3, 92), headers={"Authorization": "Bearer " + tok, "Content-Type": "video/*", "Content-Length": str(size)}, timeout=3600)
         vid, extra = v["id"], {}
+        auth = {"Authorization": "Bearer " + tok}
+        if cover:
+            progress(94, "setting your thumbnail")
+            err = None
+            with open(cover, "rb") as f:
+                img = f.read()
+            for wait in (0, 15, 45):                           # YouTube may still be processing the upload
+                time.sleep(wait)
+                try:
+                    http("POST", f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={vid}", body=img,
+                         headers=dict(auth, **{"Content-Type": "image/png" if cover.lower().endswith(".png") else "image/jpeg"}))
+                    err = None
+                    break
+                except (PostError, OSError) as e:
+                    err = e
+            if err:                                            # it went up private, so it simply stays private
+                raise PostError(f"YouTube would not take your thumbnail ({err}), so the Short stays private, never public: "
+                                f"https://youtube.com/shorts/{vid} . Set the thumbnail in YouTube Studio and make it public there.")
+            if when and when - time.time() < 120:              # the upload took past the time: open it now
+                want = {k: v for k, v in want.items() if k != "publishAt"}
+                want["privacyStatus"] = text.get("privacy") if text.get("privacy") in ("public", "unlisted") else "public"
+            if want != meta["status"]:
+                progress(97, "scheduling it" if "publishAt" in want else f"making it {want['privacyStatus']}")
+                try:
+                    _, _, v = http("PUT", "https://www.googleapis.com/youtube/v3/videos?part=status", body=json.dumps(
+                        {"id": vid, "status": want}).encode(), headers=dict(auth, **{"Content-Type": "application/json; charset=UTF-8"}))
+                except (PostError, OSError) as e:              # e.g. connected before the edit permission was asked for
+                    raise PostError(f"On YouTube with your thumbnail, but still private ({e}): https://youtube.com/shorts/{vid} . "
+                                    f"Make it {'scheduled' if 'publishAt' in want else want['privacyStatus']} in YouTube Studio, and "
+                                    "reconnect YouTube once (user menu → Accounts) so it happens by itself.") from None
         privacy = (v.get("status") or {}).get("privacyStatus", "")
-        if privacy and privacy != meta["status"]["privacyStatus"] and not when:
+        if privacy and privacy != want["privacyStatus"] and not when:
             extra["warning"] = (f"YouTube set it to {privacy}: uploads from a new Google API project stay private until Google audits "
                                 "the project. Make it public in YouTube Studio if it lets you, or apply for the audit.")
         if when:
             extra["warning"] = ("Scheduled in YouTube Studio for that time. If your Google project hasn't passed the YouTube audit yet, "
                                 "YouTube keeps it private even then.")
-        if cover:
-            progress(95, "setting your thumbnail")
-            try:
-                with open(cover, "rb") as f:
-                    img = f.read()
-                http("POST", f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={vid}", body=img,
-                     headers={"Authorization": "Bearer " + tok, "Content-Type": "image/png" if cover.lower().endswith(".png") else "image/jpeg"})
-            except PostError as e:
-                extra["warning"] = (extra.get("warning", "") + f" The cover was not set ({e}); custom thumbnails need a verified channel.").strip()
         return f"https://youtube.com/shorts/{vid}", extra
