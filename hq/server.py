@@ -25,6 +25,7 @@ import base64, datetime, gzip, hashlib, hmac, html, json, mimetypes, os, re, sec
 import datetime, gzip, hashlib, hmac, html, json, math, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from followups import FollowUps
+import covers_back
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs
@@ -1919,6 +1920,11 @@ def on_approved(name):
                 notifier.refresh()
         except Exception as e:
             sys.stderr.write(f"follow-ups for {name}: {e}\n")
+        try:                                              # its covers into the week's Drive folder (channels with coversBack)
+            key = channels_mod.folder_channel(os.path.join(ROOT, "approved", name))
+            covers_back.copy_back(ROOT, name, key, channels.get(key))
+        except Exception as e:
+            sys.stderr.write(f"covers back for {name}: {e}\n")
     threading.Thread(target=work, daemon=True).start()
 
 
