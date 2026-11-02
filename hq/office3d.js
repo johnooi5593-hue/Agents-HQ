@@ -257,12 +257,12 @@
   const rbox = (w, h, d, r) => { const k = [w, h, d, r].join(','); if (!geoCache.has(k)) geoCache.set(k, THREE.RoundedBoxGeometry ? new THREE.RoundedBoxGeometry(w, h, d, 3, r) : new THREE.BoxGeometry(w, h, d)); return geoCache.get(k); };
 
   // ------------------------------------------------------------------ renderer, scene, camera
-  let renderer, scene, camera, controls, composer, bloomPass, css, clock;
+  let renderer, scene, camera, controls, composer, bloomPass, dofPass, gradePass, css, clock;
   const state = {
     teams: [], agents: [], rooms: {}, roomList: [], seats: {}, walkers: [], subs: {}, built: false,
     mode: 'overview', userActiveUntil: 0, tween: null, selected: null, selectRing: null, fallbackRunning: {},
     size: { w: 0, h: 0 }, labelRules: { agentMaxDist: 110 },
-    phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
+    phone: PHONE_AT_BOOT, lowFx: FX === 'low', cinema: !/[?&]cinema=off/.test(location.search), fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
     floors: [], floorView: null, commons: [], lifts: [], people: null, wires: [],
   };
   const floorOfY = (y) => clamp(Math.floor((y + 3) / FLOOR_H), 0, FLOORS - 1);
@@ -284,6 +284,61 @@
   const pickables = [];
   const anim = { dashboards: [], crawlers: [], glows: [], particles: null, rings: [], brain: {}, dust: null };
 
+  // ---- the cinematic passes ----
+  // Depth of field: the depth of the rendered scene (a depth texture on the composer's two buffers) sets each pixel's
+  // blur: sharp within DOF.band of the tower (focused on its middle, or on what the camera looks at inside it), softer
+  // with distance beyond it (the city behind; the plaza in front half as much), up to DOF.maxBlur pixels. A 16-tap
+  // golden-angle disc.
+  const _fp = new THREE.Vector3();
+  const DOF = { band: 22, aperture: 7, maxBlur: 8, near: 0.5 };   // band: world units kept sharp each side of the focus
+  function makeDofPass() {
+    const pass = new THREE.ShaderPass({
+      uniforms: { tDiffuse: { value: null }, tDepth: { value: null }, near: { value: 1 }, far: { value: 900 }, focus: { value: 150 }, nearK: { value: DOF.near },
+                  band: { value: DOF.band }, aperture: { value: DOF.aperture }, maxBlur: { value: DOF.maxBlur }, px: { value: new THREE.Vector2(1 / 800, 1 / 450) } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform float near, far, focus, band, aperture, maxBlur, nearK; uniform vec2 px;
+        varying vec2 vUv;
+        float dist(vec2 uv) { float z = texture2D(tDepth, uv).x; return near * far / (far - z * (far - near)); }
+        float coc(float d) { return clamp(max(0.0, abs(d - focus) - band) / d * aperture * (d < focus ? nearK : 1.0), 0.0, 1.0) * maxBlur; }
+        void main() {
+          float c0 = coc(dist(vUv));
+          vec4 base = texture2D(tDiffuse, vUv);
+          if (c0 < 0.35) { gl_FragColor = base; return; }
+          vec3 acc = base.rgb; float wsum = 1.0;
+          for (int i = 1; i < 16; i++) {
+            float r = sqrt(float(i) / 15.0) * c0, a = float(i) * 2.39996;
+            vec2 uv = vUv + vec2(cos(a), sin(a)) * r * px;
+            float w = smoothstep(0.0, 1.0, coc(dist(uv)) / max(r, 0.5) + 0.25);   // a sharp pixel nearby doesn't bleed in
+            acc += texture2D(tDiffuse, uv).rgb * w; wsum += w;
+          }
+          gl_FragColor = vec4(acc / wsum, base.a);
+        }`,
+    });
+    const render = pass.render.bind(pass);
+    pass.render = (r, writeBuffer, readBuffer, dt, mask) => { pass.uniforms.tDepth.value = readBuffer.depthTexture; render(r, writeBuffer, readBuffer, dt, mask); };
+    return pass;
+  }
+  // The grade: a gentle S-curve, teal in the shadows and warmth in the highlights, a vignette and fine moving film grain.
+  function makeGradePass() {
+    return new THREE.ShaderPass({
+      uniforms: { tDiffuse: { value: null }, time: { value: 0 }, grain: { value: 0.03 }, vignette: { value: 0.42 } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D tDiffuse; uniform float time, grain, vignette; varying vec2 vUv;
+        void main() {
+          vec4 t = texture2D(tDiffuse, vUv); vec3 c = clamp(t.rgb, 0.0, 1.0);
+          c = mix(c, c * c * (3.0 - 2.0 * c), 0.22);                                       // contrast
+          float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          c += vec3(-0.018, 0.004, 0.03) * (1.0 - l) + vec3(0.035, 0.012, -0.028) * l;    // teal shadows, warm highlights
+          vec2 q = (vUv - 0.5) * vec2(1.0, 1.18);
+          c *= 1.0 - vignette * smoothstep(0.28, 0.86, length(q));                          // vignette
+          float n = fract(sin(dot(floor(gl_FragCoord.xy) + fract(time) * 97.0, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+          c += n * grain;                                                                    // film grain
+          gl_FragColor = vec4(c, t.a);
+        }`,
+    });
+  }
   function setupRenderer() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     renderer.setPixelRatio(maxPixelRatio());
@@ -314,13 +369,17 @@
 
     composer = new THREE.EffectComposer(renderer);
     composer.addPass(new THREE.RenderPass(scene, camera));
+    dofPass = makeDofPass(); composer.addPass(dofPass);                   // depth of field: the office sharp, the city soft
     bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(800, 450), 0.9, 0.4, 0.85);   // strength, radius, threshold: glows bloom, rooms stay crisp
     composer.addPass(bloomPass);
+    gradePass = makeGradePass(); composer.addPass(gradePass);             // the film look: contrast, split tone, vignette, grain
 
-    // Lights: cool ambient, a warm key from the camera side so the inner wall faces are lit, a faint fill.
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x55607a, 0.56));
-    const key = new THREE.DirectionalLight(0xfff3e4, 0.48); key.position.set(60, 54, 60); scene.add(key);
-    const fill = new THREE.DirectionalLight(0xbcd0ff, 0.16); fill.position.set(-40, 30, -25); scene.add(fill);
+    // Lights (cinematic): a softer ambient, a warm key from the camera side so the inner wall faces are lit, a faint cool
+    // fill, and a cool rim from high behind that edges the tower against the night.
+    scene.add(new THREE.HemisphereLight(0xfff6ec, 0x4a5370, 0.5));
+    const key = new THREE.DirectionalLight(0xffe4c4, 0.62); key.position.set(60, 54, 60); scene.add(key);
+    const fill = new THREE.DirectionalLight(0xbcd0ff, 0.14); fill.position.set(-40, 30, -25); scene.add(fill);
+    const rim = new THREE.DirectionalLight(0x8fb6ff, 0.3); rim.position.set(-30, 90, -110); scene.add(rim);
     const brainLight = new THREE.PointLight(0x9fd8ff, 0.75, 70, 1.6); brainLight.position.set(0, CORE_Y + 3.5, 0); scene.add(brainLight); anim.brain.light = brainLight;
 
     // The void: a gradient floor far below, dust dots on it and a few in the air.
@@ -348,8 +407,15 @@
     const pr = maxPixelRatio();
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); if (composer.setPixelRatio) composer.setPixelRatio(pr); }
     renderer.setSize(w, h); composer.setSize(w, h); css.setSize(w, h);
+    for (const rt of [composer.renderTarget1, composer.renderTarget2]) {           // the depth of field reads the scene's depth
+      if (rt.depthTexture) rt.depthTexture.dispose();
+      rt.depthTexture = new THREE.DepthTexture(rt.width, rt.height); rt.dispose();
+    }
+    dofPass.uniforms.px.value.set(1 / (w * pr), 1 / (h * pr));
     if (state.phone) bloomPass.setSize(Math.round(w * pr * 0.5), Math.round(h * pr * 0.5));   // half-resolution bloom on a phone
     bloomPass.enabled = !state.lowFx;
+    dofPass.enabled = !state.lowFx && !state.phone && state.cinema;           // phones keep the grade, skip the depth of field
+    gradePass.enabled = state.cinema;
     camera.aspect = w / h; camera.updateProjectionMatrix();
     // The overview frames the tower from the plaza: its full height with a little of the plaza below; a portrait screen
     // fits the height and crops the sides (pan to see the ends), a landscape one fits the width too.
@@ -723,6 +789,37 @@
   }
   const tree = (M, x, y, z, k) => { M.cyl(0.6 * k, 1.0 * k, x, y + 0.5 * k, z, 0xd3d7ce); M.cyl(0.14 * k, 2.6 * k, x, y + 2.2 * k, z, 0x6b4a2e); M.ball(1.6 * k, x, y + 4.0 * k, z, 0x3f9e64); M.ball(1.2 * k, x + 0.8 * k, y + 4.7 * k, z + 0.3 * k, 0x52a775); M.ball(1.1 * k, x - 0.7 * k, y + 4.8 * k, z - 0.4 * k, 0x5db87c); };
   const sofa = (M, x, y, z, w, c, rot) => { M.box(w, 0.7, 1.7, x, y + 0.45, z, c, { ry: rot || 0 }); M.box(w, 1.0, 0.45, x - Math.sin(rot || 0) * 0.65, y + 1.15, z - Math.cos(rot || 0) * 0.65, c, { ry: rot || 0 }); };
+  // A modern ceiling (the underside of a floor plate, y): continuous LED strips (a cove along the back and the glass front,
+  // linear runs across the floor) and two track-light rails with angled spot heads, all kept clear of the stair opening
+  // and the lift shafts. Merged meshes only, no real lights: the bright lenses and strips glow through the bloom.
+  function ceilingLights(M, GL, y) {
+    const H = STAIR.hole + 0.3, L0 = LIFTS[0], L1 = LIFTS[LIFTS.length - 1];
+    const runs = (z) => {                                                      // the x spans at depth z that miss the openings
+      const cut = [];
+      if (Math.abs(z - STAIR.z) < H) cut.push([STAIR.x - H, STAIR.x + H]);
+      if (Math.abs(z - L0.z) < L0.r + 0.4) cut.push([L0.x - L0.r - 0.4, L1.x + L1.r + 0.4]);
+      cut.sort((a, b) => a[0] - b[0]);
+      const out = []; let x = -WX + 1.5;
+      for (const [a, b] of cut) { if (a > x) out.push([x, a]); x = Math.max(x, b); }
+      if (x < WX - 1.5) out.push([x, WX - 1.5]);
+      return out;
+    };
+    for (const [z, c, d] of [[-DZ + 0.7, 0xeef6ff, 0.16], [DZ - 0.9, 0xeef6ff, 0.16], [-11.5, 0xf4f8ff, 0.2], [-1, 0xf4f8ff, 0.2], [9, 0xf4f8ff, 0.2]]) {
+      for (const [a, b] of runs(z)) GL.box(b - a, 0.06, d, (a + b) / 2, y - 0.05, z, c);                 // LED strips
+    }
+    for (const z of [-6, 4]) {                                                 // track rails with spot heads
+      for (const [a, b] of runs(z)) {
+        if (b - a < 3) continue;
+        M.box(b - a, 0.12, 0.14, (a + b) / 2, y - 0.4, z, 0x23262d);
+        M.box(0.06, 0.34, 0.06, a + 0.4, y - 0.2, z, 0x23262d); M.box(0.06, 0.34, 0.06, b - 0.4, y - 0.2, z, 0x23262d);   // the hangers
+        for (let x = a + 1.6, k = 0; x < b - 1.2; x += 4.2, k++) {
+          const tilt = (k % 2 ? 1 : -1) * 0.55;                                // heads alternate, aimed fore and aft
+          M.cyl(0.2, 0.62, x, y - 0.78, z, 0x1b1d22, { rx: tilt });
+          GL.ball(0.13, x, y - 1.05, z + Math.sin(tilt) * 0.3, 0xfff1d2);      // the lens
+        }
+      }
+    }
+  }
   function buildPaths() {
     for (let f = 0; f < FLOORS; f++) {
       const g = state.floors[f], Y = f * FLOOR_H, top = Y + WALK_Y, th = 0.9, cy = top - th / 2, roof = f === ROOF, inner = FLOOR_H - th;
@@ -735,8 +832,7 @@
         const H = STAIR.hole, x0 = STAIR.x - H, x1 = STAIR.x + H, z0 = STAIR.z - H, z1 = STAIR.z + H;
         M.box(x0 + WX, th, 2 * DZ, (-WX + x0) / 2, cy, 0, floorC); M.box(WX - x1, th, 2 * DZ, (x1 + WX) / 2, cy, 0, floorC);
         M.box(2 * H, th, z0 + DZ, STAIR.x, cy, (-DZ + z0) / 2, floorC); M.box(2 * H, th, DZ - z1, STAIR.x, cy, (z1 + DZ) / 2, floorC);
-        // ceiling lights for the floor below: rows of warm panels under this plate
-        for (let x = -54; x <= 54; x += 12) for (const z of [-9, 1, 10]) if (Math.abs(x - STAIR.x) > 5 || Math.abs(z - STAIR.z) > 5) GL.box(5, 0.08, 0.8, x, top - th - 0.06, z, 0xfff0d6);
+        ceilingLights(M, GL, top - th);                       // the floor below's ceiling: LED strips and track lights
       }
       // the slab edge: the lit floor line of a glass tower
       GL.box(2 * WX + 0.4, 0.2, 0.14, 0, top - 0.3, DZ + 0.42, f ? [0x8ab4f8, 0xf28b82, 0xfdd663, 0x81c995][f % 4] : 0xffe2b4);   // each floor's line glows in its own colour
@@ -744,6 +840,8 @@
       if (!roof) {
         M.box(2 * WX, inner, 0.5, 0, top + inner / 2, -DZ - 0.25, 0xeeeae3);                 // the back wall: warm white
         GL.box(2 * WX, 0.22, 0.06, 0, top + inner - 0.6, -DZ + 0.02, [0x4285f4, 0xea4335, 0xfbbc05, 0x34a853][f % 4]);   // a stripe in one of the brand colours
+        GL.box(2 * WX, 0.07, 0.08, 0, top + inner - 0.22, -DZ + 0.06, 0xeef6ff);            // an LED cove where the wall meets the ceiling
+        GL.box(2 * WX, 0.05, 0.06, 0, top + 0.1, -DZ + 0.05, 0xffe2b0);                     // and a warm LED skirting along the floor
         const gf = new THREE.Mesh(new THREE.BoxGeometry(2 * WX, inner, 0.08), glassMat); gf.position.set(0, top + inner / 2, DZ + 0.3); gf.renderOrder = 3; g.add(gf);
         for (let x = -WX; x <= WX + 0.1; x += 10) M.box(0.28, inner, 0.32, x, top + inner / 2, DZ + 0.3, 0x1c2130);   // mullions
         for (const sx of [-1, 1]) { glassBox(g, 0.08, inner, 2 * DZ, sx * WX, top + inner / 2, 0, false); M.box(0.32, inner, 0.32, sx * WX, top + inner / 2, -DZ, 0x1c2130); }
@@ -851,7 +949,9 @@
   const HALL_ROWS = [-6.2, -2.2, 1.8, 5.8], HALL_COLS = [18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54];
   const HALL_SCREEN = { x: 36, w: 24, h: 10.5 };
   // the TVs: x, height, width, (with several channels: which channel, which of its videos)
-  const HALL_TVS = [[15, 6.2, 4.4, 0, 0], [20.6, 6.2, 4.4, 0, 1], [51.6, 6.2, 4.4, 1, 0], [57, 6.2, 4.4, 1, 1], [-41, 4.6, 3.6, 0, 2], [-31, 4.6, 3.6, 1, 2]];
+  const HALL_TVS = [[15, 6.2, 4.4, 0, 0], [20.6, 6.2, 4.4, 0, 1], [51.6, 6.2, 4.4, 1, 0], [57, 6.2, 4.4, 1, 1],
+    [-51, 5.4, 3.6, 0, 3], [-41, 4.6, 3.6, 0, 2], [-31, 4.6, 3.6, 1, 2], [-21.5, 5.4, 3.6, 1, 3],
+    [-16.2, 6.4, 4.0, 0, 4], [-11.6, 6.4, 4.0, 1, 4]];
   function hallProps(M, GL, g, top) {
     const S0 = HALL_SCREEN, back = -DZ + 0.02;
     M.box(44, 0.06, 30, 36, top + 0.03, -1, 0x3b3550);                            // the auditorium carpet
@@ -886,7 +986,7 @@
     for (let x = -50; x <= 54; x += 13) { if (Math.abs(x - STAIR.x) < 6 || LIFTS.some((l) => Math.abs(x - l.x) < 3.5)) continue; GL.ball(0.5, x, top + 11.2, -2, 0xfff1d0); M.cyl(0.03, 2.6, x, top + 12.6, -2, 0x2a2d35); }
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(20, 2.4), new THREE.MeshBasicMaterial({ map: signTex('ALL-HANDS HALL', '#fbbc05'), transparent: true, depthWrite: false }));
     sign.position.set(-36, top + 9.2, back + 0.2); g.add(sign);
-    state.hall = { screen: scr, tvs, beam, top, slide: 0, slideAt: 0, data: null, imgs: {}, videos: [], drawn: 0 };
+    state.hall = { screen: scr, tvs, beam, top, slide: 0, slideAt: 0, data: null, imgs: {}, videos: {}, drawn: 0 };
   }
 
   // ---------- the hall's screens: drawn into canvases a few times a second ----------
@@ -984,7 +1084,7 @@
   }
   function tvPick(D, i) {                                                     // which channel and video a TV shows
     const chs = hallChannels(D), [, , , side, slot] = HALL_TVS[i];
-    if (chs.length < 2) return { c: chs[0] || {}, k: 0, v: (D.videos || [])[i] };
+    if (chs.length < 2) { const vs = D.videos || []; return { c: chs[0] || {}, k: 0, v: vs[i % Math.max(1, vs.length)] }; }   // more TVs than videos: they repeat
     const k = side % chs.length, c = chs[k];
     const vids = c.videos || [];
     return { c, k, v: vids[slot] || vids[slot % Math.max(1, vids.length)] };   // fewer videos than TVs: they repeat
@@ -1006,8 +1106,8 @@
   }
   function hallVideo(i, v) {                                                   // the TVs play the latest videos, muted, only while the hall is in use
     const H = state.hall; if (state.phone || !v.video) return null;
-    let el = H.videos[i];
-    if (!el || el.dataset.src !== v.video) { if (el) el.pause(); el = document.createElement('video'); el.muted = true; el.loop = true; el.playsInline = true; el.preload = 'none'; el.dataset.src = v.video; el.src = v.video + (v.video.includes('?') ? '&' : '?') + 'phone=1'; H.videos[i] = el; }
+    let el = H.videos[v.video];                                                // one decoder per clip, shared by the TVs that show it
+    if (!el) { el = document.createElement('video'); el.muted = true; el.loop = true; el.playsInline = true; el.preload = 'none'; el.dataset.src = v.video; el.src = v.video + (v.video.includes('?') ? '&' : '?') + 'phone=1'; H.videos[v.video] = el; }
     const want = MEET.on || state.floorView === HALL;
     if (want && el.paused) el.play().catch(() => {}); else if (!want && !el.paused) el.pause();
     return el;
@@ -2370,6 +2470,9 @@
       if (sel && sel.life) { const q = sel.ch.group.position; state.selectRing.position.set(q.x, (sel.life.mode === 'seated' ? sel.room.y + SLAB_H : sel.life.base.y) + 0.07, q.z); }
       if (!sel || !sel.ch.group.visible) state.selectRing.material.opacity = 0;   // on a hidden floor
     }
+    if (dofPass.enabled) {                                                    // focus: the tower's depth from the camera at the look-at point
+      _fp.copy(controls.target); _fp.z = clamp(_fp.z, -6, 6); _fp.applyMatrix4(camera.matrixWorldInverse); dofPass.uniforms.focus.value = Math.max(1, -_fp.z); dofPass.uniforms.near.value = camera.near; dofPass.uniforms.far.value = camera.far; }
+    gradePass.uniforms.time.value = t;
     if (bloomPass.enabled) composer.render(); else renderer.render(scene, camera);
     css.render(scene, camera);
   }
@@ -2432,7 +2535,9 @@
     fullscreen, resize, minimapState: () => (state.built ? minimapState() : { rooms: [], brain: { x: 0.5, y: 0.5 }, camera: { x: 0.5, y: 0.5 }, target: { x: 0.5, y: 0.5 }, zoom: 100 }),
     bloom: (strength, threshold, radius) => { if (!bloomPass) return; if (strength != null) bloomPass.strength = +strength; if (threshold != null) bloomPass.threshold = +threshold; if (radius != null) bloomPass.radius = +radius; return { strength: bloomPass.strength, threshold: bloomPass.threshold, radius: bloomPass.radius }; },
     labelRules: (rules) => Object.assign(state.labelRules, rules || {}),
-    pause: (on) => { state.paused = !!on; }, fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
+    pause: (on) => { state.paused = !!on; },
+    cinema: (on) => { if (on != null) { state.cinema = !!on; if (renderer) resize(); } return { cinema: state.cinema, dof: !!(dofPass && dofPass.enabled) }; },   // the film look on / off
+    fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
     teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size, floor: r.floor })),
     meeting: (what, minutes) => (what === 'start' ? startMeeting(minutes, 'meeting now') : what === 'end' ? endMeeting() : { on: MEET.on, until: MEET.endMs, label: MEET.label, schedule: MEET.schedule, inHall: LIFE.actors.filter((L) => L.inMeeting).length }),
     life: (on) => lifeSwitch(on), lifeOf: (n) => lifeOf(n), lifeState: () => lifeState(), lifeDebug: (o) => lifeDebug(o), lifeTalkers: () => LIFE.talkers,
