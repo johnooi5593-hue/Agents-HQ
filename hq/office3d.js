@@ -2,7 +2,7 @@
 // examples (EffectComposer, UnrealBloomPass, RoundedBoxGeometry, CSS2DRenderer, OrbitControls).
 //
 // The Tower: a glass office tower in the courtyard of a ring campus (a white four-storey glass ring with an orchard, a
-// pond and parkland round it; lit windows at night). Ground: the lobby with the
+// pond and parkland round it; lit windows at night) with a Dubai-style skyline beyond. Ground: the lobby with the
 // reception, the canteen + kitchen and the lounge. Floors 1-4: two team rooms each (floor, carpet, two back walls, trims,
 // desks, monitors, dashboards, lamps, shelves, plants, sofas) with glass meeting rooms and nooks at the ends. The roof:
 // a terrace under a pergola, the game room and a coffee bar. Spiral stairs and three glass lifts join the floors. In the plaza
@@ -357,7 +357,7 @@
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x13151f);
-    camera = new THREE.PerspectiveCamera(26, 1, 1, 900);
+    camera = new THREE.PerspectiveCamera(26, 1, 1, 1400);
 
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.dampingFactor = 0.08;
@@ -1471,6 +1471,84 @@
       const m = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), hill); m.scale.set(70 + r() * 60, 18 + r() * 22, 50 + r() * 30);
       m.position.set(Math.cos(a) * rad, -4, Math.sin(a) * rad); scene.add(m);
     }
+    buildSkyline();
+  }
+
+  // A Dubai-style skyline beyond the ring, behind and beside the tower (never in front of the camera): a needle supertall
+  // with stepped setbacks and a spire, a sail-shaped hotel, a twisting tower, twin wedge towers and a cluster of sleek
+  // glass towers. Glass reflects the sky by day; at night the windows light up and red lights blink on the tops.
+  const towerTex = canvasTex(256, 256, (g, w, h) => {                        // 24 x 24 units of curtain wall: 6 floors
+    const gr = g.createLinearGradient(0, 0, w, h); gr.addColorStop(0, '#5d7f9c'); gr.addColorStop(0.5, '#a8c3d8'); gr.addColorStop(1, '#4a6a86');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,0.55)'; for (let k = 0; k < 6; k++) g.fillRect(0, k * h / 6, w, 3);
+    g.fillStyle = 'rgba(60,90,120,0.25)'; for (let x = 0; x < w; x += 16) g.fillRect(x, 0, 2, h);
+  });
+  const towerGlow = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#000'; g.fillRect(0, 0, w, h); const r = rng(53);
+    for (let k = 0; k < 6; k++) for (let x = 0; x < w; x += 16) { const v = r(); if (v < 0.35) continue; g.fillStyle = v < 0.55 ? '#ffcf8a' : v < 0.9 ? '#fff0d2' : '#bfe0ff'; g.fillRect(x + 3, k * h / 6 + 6, 12, h / 6 - 8); }
+  });
+  for (const t of [towerTex, towerGlow]) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  function buildSkyline() {
+    const r = rng(2024), TILE = 24;
+    const mats = [0xd8e6f2, 0x8fa3b8, 0xe8cf9e].map((c) => new THREE.MeshLambertMaterial({ map: towerTex, color: c, emissive: 0xffffff, emissiveMap: towerGlow, emissiveIntensity: 0 }));
+    const metal = new THREE.MeshLambertMaterial({ color: 0xc9d0d8 });
+    const tops = [], sky = new THREE.Group(), SQUASH = 0.6;   // the camera looks across, so the skyline is kept low enough for its spires to show
+    const uvScale = (geo, su, sv) => { const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv); return geo; };
+    const put = (geo, mat, x, y, z, ry) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.y = ry || 0; sky.add(m); return m; };
+    const prism = (rad, rTop, h, sides, x, y, z, mat, ry) =>                  // a glass prism standing on y
+      put(uvScale(new THREE.CylinderGeometry(rTop, rad, h, sides), 2 * Math.PI * rad / TILE, h / TILE), mat, x, y + h / 2, z, ry);
+    const top = (x, y, z) => tops.push(new THREE.Vector3(x, y * SQUASH, z));
+
+    // the needle: a Y-plan core of stepped hexagonal tiers with three wings ending at different heights, then the spire
+    { const x = 165, z = -500; let y = 0;
+      const tiers = [[26, 40], [23, 36], [20, 34], [17, 30], [14, 28], [11, 26], [8.5, 22], [6, 20], [4, 16]];
+      for (const [rad, h] of tiers) { prism(rad, rad * 0.94, h, 6, x, y, z, mats[0], Math.PI / 6); y += h; }
+      for (let k = 0; k < 3; k++) {
+        const a = k * 2 * Math.PI / 3 + Math.PI / 2, d = 20, h = 70 + k * 45;
+        prism(9, 7, h, 6, x + Math.cos(a) * d, 0, z + Math.sin(a) * d, mats[0], Math.PI / 6);
+      }
+      put(new THREE.ConeGeometry(2.6, 70, 8), metal, x, y + 35, z); top(x, y + 70, z);
+    }
+    // the sail hotel on its own island at the right
+    { const H = 150, W = 58, sh = new THREE.Shape();
+      sh.moveTo(0, 0); sh.lineTo(0, H); sh.quadraticCurveTo(W * 1.15, H * 0.5, W * 0.9, 0); sh.lineTo(0, 0);
+      const geo = uvScale(new THREE.ExtrudeGeometry(sh, { depth: 22, bevelEnabled: false }), 1 / TILE, 1 / TILE);
+      put(geo, mats[1], 330, 0, -300, -0.9);
+      put(new THREE.CylinderGeometry(1.4, 1.4, 40, 8), metal, 330 + Math.cos(0.9) * 0.5, H + 20, -300 - Math.sin(0.9) * 0.5); top(330, H + 40, -300);
+      const isle = new THREE.Mesh(new THREE.CylinderGeometry(46, 50, 2, 40), new THREE.MeshLambertMaterial({ color: 0xd9c9a3 })); isle.position.set(350, 0.4, -290); scene.add(isle);
+    }
+    // the twisting tower at the left: 90 degrees over its height
+    { const h = 190, geo = new THREE.BoxGeometry(22, h, 22, 1, 48, 1), P = geo.attributes.position;
+      for (let i = 0; i < P.count; i++) { const yy = P.getY(i), a = (yy / h + 0.5) * Math.PI / 2, px = P.getX(i), pz = P.getZ(i); P.setXYZ(i, px * Math.cos(a) - pz * Math.sin(a), yy, px * Math.sin(a) + pz * Math.cos(a)); }
+      geo.computeVertexNormals(); uvScale(geo, 22 / TILE, h / TILE);
+      put(geo, mats[1], -300, h / 2, -350); top(-300, h, -350);
+    }
+    // twin wedge towers
+    for (const [x, h] of [[-150, 175], [-122, 150]]) { prism(15, 12, h, 3, x, 0, -430, mats[2], 0.4); put(new THREE.ConeGeometry(12, 26, 3), mats[2], x, h + 13, -430, 0.4); top(x, h + 26, -430); }
+    // the cluster: sleek towers in two bands behind the ring, a few beside it
+    const spots = [];
+    for (let i = 0; i < (PHONE_AT_BOOT ? 14 : 32); i++) {
+      const a = -Math.PI * (0.06 + r() * 0.88), rad = 300 + r() * 220, x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+      if (spots.some((q) => Math.hypot(q[0] - x, q[1] - z) < 34) || Math.hypot(x - 165, z + 500) < 60 || Math.hypot(x - 340, z + 295) < 60 || Math.hypot(x + 300, z + 350) < 36 || Math.hypot(x + 136, z + 430) < 40) continue;
+      spots.push([x, z]);
+      const h = 70 + Math.pow(r(), 0.8) * 130, kind = r(), mat = mats[Math.floor(r() * 3)];
+      if (kind < 0.4) {                                                        // round glass tower with a slimmer crown
+        const rad0 = 9 + r() * 6; prism(rad0, rad0 * 0.9, h, 24, x, 0, z, mat); prism(rad0 * 0.6, rad0 * 0.4, 14, 24, x, h, z, mat); top(x, h + 14, z);
+      } else if (kind < 0.75) {                                                // square tower with a setback
+        const w = 16 + r() * 10, ry = r() * Math.PI;
+        put(uvScale(new THREE.BoxGeometry(w, h, w), w / TILE, h / TILE), mat, x, h / 2, z, ry);
+        put(uvScale(new THREE.BoxGeometry(w * 0.65, 24, w * 0.65), w * 0.65 / TILE, 1), mat, x, h + 12, z, ry);
+        put(new THREE.CylinderGeometry(0.5, 0.5, 18, 6), metal, x, h + 33, z); top(x, h + 42, z);
+      } else {                                                                 // octagon tapering to a point
+        const rad0 = 10 + r() * 5; prism(rad0, rad0 * 0.55, h, 8, x, 0, z, mat, r()); put(new THREE.ConeGeometry(rad0 * 0.55, 30, 8), metal, x, h + 15, z); top(x, h + 30, z);
+      }
+    }
+    // red aviation lights on the tops (seen at night)
+    sky.scale.y = SQUASH; scene.add(sky);
+    const land = new THREE.Mesh(new THREE.RingGeometry(370, 1100, 64, 1), new THREE.MeshLambertMaterial({ color: 0x8fae78 }));   // the land beyond the park
+    land.rotation.x = -Math.PI / 2; land.position.y = GROUND_Y - 0.05; scene.add(land); anim.cityLand = land;
+    const red = tops.map((v) => { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xff3b30, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false })); sp.scale.set(7, 7, 1); sp.position.copy(v); scene.add(sp); return sp; });
+    anim.city = { mats, red };
   }
 
   const _a = new THREE.Vector3(), _b = new THREE.Vector3();
@@ -2934,8 +3012,13 @@
     if (anim.campus) {                                                         // the ring's windows light up after dark
       const C = anim.campus; C.night += ((SKY.day ? 0 : 1) - C.night) * k;
       C.glass.emissiveIntensity = 0.85 * C.night; C.glass.color.setScalar(1 - 0.55 * C.night);
-      anim.ground.material.color.setScalar(1 - 0.45 * C.night);
+      anim.ground.material.color.setScalar(1 - 0.45 * C.night); if (anim.cityLand) anim.cityLand.material.color.setHex(0x8fae78).multiplyScalar(1 - 0.6 * C.night);
       if (bloomPass) { bloomPass.strength = 0.3 + 0.6 * C.night; bloomPass.threshold = 0.95 - 0.1 * C.night; }   // daylight: soft glow, rooms not washed out
+      if (anim.city) {                                                         // the skyline's windows, and its red lights blinking
+        for (const m of anim.city.mats) { m.emissiveIntensity = 0.9 * C.night; m.color.setScalar(1 - 0.6 * C.night); }
+        const on = (t % 1.6) < 0.8 ? 1 : 0.15;
+        anim.city.red.forEach((sp, i) => { sp.material.opacity = C.night * (i % 2 ? on : 1.15 - on) * 0.95; });
+      }
     }
     if (SKY.rain) {
       const a = SKY.cur[4], R = SKY.rain;
