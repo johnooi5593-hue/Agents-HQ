@@ -136,7 +136,15 @@
   }
   const STAGES = { "clip-editor": ["cutting", "captions", "thumbnail"], "thumbnail-designer": ["thumbnail"], "brand-checker": ["checking"], "hook-writer": ["drafting"], "copywriter": ["writing"], "qa-tester": ["testing"], "code-reviewer": ["reviewing"] };
   function stageOf(agent, p) { const s = STAGES[agent] || ["working"]; return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))]; }
-  function pseudoProgress(start) { return clamp(Math.floor((Date.now() - (start || Date.now())) / 1200), 1, 96); }   // ~1 % per 1.2 s
+  // Real progress only: what a team reported on its board task (tasks.js progress <id> <pct> "<STAGE> · <detail>"). The
+  // edit stages, in order; a report's stage is the word before the first " · ".
+  const EDIT_STAGES = ["cut", "edit", "render", "sound", "check"];
+  const stageWord = (t) => ((t && t.subtitle) || "").split(" · ")[0].trim();
+  const reportedFresh = (t) => t && t.progress != null && t.status === "doing" && Date.now() - Date.parse(t.updated || 0) < 30 * 60 * 1000;
+  function reportedTasks(teamKey) {                          // a team's board tasks with a fresh real report, oldest first
+    const tasks = (state.status && state.status.tasks) || [];
+    return tasks.filter((t) => reportedFresh(t) && (teamByName(t.team) || {}).key === teamKey).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+  }
   function noteHookStarts(run) {                           // remember when each parallel copy first showed up (for its % line)
     run = run || {};
     for (const [name, n] of Object.entries(run)) for (let i = 0; i < n; i++) { const k = `${name}#${i + 1}`; if (!state.firstSeen[k]) state.firstSeen[k] = Date.now(); }
@@ -169,18 +177,25 @@
     const out = {};
     for (const [key, items] of Object.entries(byTeam)) {
       if (items.length < 2) continue;
+      const real = reportedTasks(key);
       out[key] = items.slice(0, 6).map((it, i) => {
-        const prog = pseudoProgress(it.start), a = agentByName(it.agent);
-        const short = it.clip ? it.clip.replace(/\.[a-z0-9]+$/i, "") : shortTask(it.text || (a ? a.label : it.agent), 34);
-        return { id: it.id, label: `Sub ${i + 1} · ${short}`, subtitle: `${stageOf(it.agent, prog)} · ${prog}%`, progress: prog, agent: it.agent, file: it.clip || "", team: key };
+        const r = real[i], a = agentByName(it.agent), prog = r ? r.progress : null;
+        const short = r ? shortTask(r.title, 40) : it.clip ? it.clip.replace(/\.[a-z0-9]+$/i, "") : shortTask(it.text || (a ? a.label : it.agent), 34);
+        return { id: it.id, label: `Sub ${i + 1} · ${short}`, subtitle: r ? `${r.subtitle || "working"} · ${prog}%` : "working · no report yet", progress: prog, agent: it.agent, file: r ? "" : it.clip || "", team: key };
       });
+    }
+    // reels whose editors report on the board but are not in the hook feed (run from another session): one card each
+    for (const t of tasks) {
+      const tm = teamByName(t.team); if (!tm || out[tm.key] || !reportedFresh(t)) continue;
+      const real = reportedTasks(tm.key); if (!real.length) continue;
+      out[tm.key] = real.slice(0, 6).map((r, i) => ({ id: "task:" + r.id, label: `Sub ${i + 1} · ${shortTask(r.title, 40)}`, subtitle: `${r.subtitle || "working"} · ${r.progress}%`, progress: r.progress, agent: "clip-editor", file: "", team: tm.key }));
     }
     return out;
   }
   // Sub-agents spawned straight on the scene (a test harness, the console) win over the derived ones for that team: the
   // scene shows exactly those figures, so the pills, cards and counters follow them. Their % ticks on from the given value.
   function tickSceneSub(it) {
-    const prog = clamp(Math.floor((it.progress0 || 0) + (Date.now() - (it.start || Date.now())) / 1200), 0, 96);
+    const prog = clamp(Math.floor(it.progress0 || 0), 0, 100);                // as given: no clock ticking it up
     const m = /^(.+?)\s*·\s*\d+%$/.exec(it.subtitle0 || "");
     const stage = m ? m[1].trim() : stageOf(it.agent || (it.file || /clip/i.test(it.label) ? "clip-editor" : ""), prog);
     return Object.assign({}, it, { progress: prog, subtitle: `${stage} · ${prog}%` });
@@ -432,7 +447,18 @@
     const members = membersOf(t);
     return `<span class="ticon" style="background:${accent(t)}">${teamGlyph(t)}</span><span class="txt"><span class="name">${esc(t.name)}</span><span class="line2 ${line.on ? "" : "idle"}"><i class="dot"></i>${esc(line.text)}</span></span><span class="avs">${members.slice(0, 3).map((a, i) => `<span class="av" style="background:${avColor(a, t, i)}" title="${esc(a.label)}">${esc(initials(a.label))}</span>`).join("")}</span>`;
   }
+  // A direct home shortcut; opening it never starts generation or creates a task.
+  function renderPosterHomeCard() {
+    let card = $("#poster-design-home-card");
+    if (!studios()) { if (card) card.remove(); return; }
+    if (!card) {
+      card = el(`<a id="poster-design-home-card" class="poster-design-home-card" href="/sermon-studio.html?mode=poster"><span class="poster-home-icon" aria-hidden="true">✦</span><span class="poster-home-copy"><strong>Poster Design</strong><small>Your words · multiple references</small></span><span class="poster-home-arrow" aria-hidden="true">↗</span></a>`);
+      $("#hud").appendChild(card);
+    }
+    card.hidden = !!(state.focused && state.zoom >= 140);
+  }
   function renderTeamCards() {
+    renderPosterHomeCard();
     const host = $("#team-cards"), run = runningMap(), subs = subagentsMap(), O = window.HQ_OFFICE;
     const project = hasProject(), useSetLabel = !project && hasFn("setLabel");
     for (const t of state.teams) {
@@ -526,7 +552,7 @@
     // the sub-agent progress cards belong to the close-up (the video shows them beside the zoomed room); at office-wide
     // zoom the team cards say "3 sub-agents" and keep the right side free
     const subHost = $("#subagent-cards"); subHost.classList.toggle("away", state.view === "office" && state.zoom < 140);
-    const blockers = [$("#team-cards .team-card.docked"), subHost.children.length && !subHost.classList.contains("away") ? subHost : null].filter(Boolean).map((n) => n.getBoundingClientRect());
+    const blockers = [$("#poster-design-home-card"), $("#team-cards .team-card.docked"), subHost.children.length && !subHost.classList.contains("away") ? subHost : null].filter(Boolean).map((n) => n.getBoundingClientRect());
     const blocked = (l, t, r, b) => blockers.some((k) => r > k.left - 8 && l < k.right + 8 && b > k.top - 8 && t < k.bottom + 8);
     for (const card of $("#team-cards").children) {
       if (!card.classList.contains("team-card")) continue;
@@ -629,17 +655,19 @@
     if (mode === "brain") return "0";
     return ms && ms.floorView != null ? String(ms.floorView) : "all";
   }
-  function syncFloors(ms) { const on = floorOfMode(ms); for (const b of $$("#floor-ctl button")) b.classList.toggle("on", b.dataset.floor === on); }
+  function syncFloors(ms) { const on = floorOfMode(ms); for (const b of $$("#floor-ctl button[data-floor]")) b.classList.toggle("on", b.dataset.floor === on); }
   function buildFloorButtons() {                         // one button per floor of the office, top floor first, then All
     const host = $("#floor-ctl"), floors = hasFn("floors") ? callScene("floors") : null;
     if (!host || !Array.isArray(floors) || !floors.length) return;
     const short = (f) => (f.floor === 0 ? "G" : f.floor === floors.length - 1 && /roof/i.test(f.name) ? "R" : f.floor + "F");
     const title = (f) => esc(f.rooms && f.rooms.length ? `${f.name} · ${f.rooms.map((k) => (teamByKey(k) || { name: k }).name).join(", ")}` : f.name);
-    host.innerHTML = floors.slice().reverse().map((f) => `<button type="button" data-floor="${f.floor}" title="${title(f)}">${short(f)}</button>`).join("") + '<button type="button" data-floor="all" class="on" title="The whole building">All</button>';
+    const walk = hasFn("walk") ? '<button type="button" data-walk-btn title="Walk in: W A S D to walk, E to talk to your staff, the lifts and stairs to change floor">🚶</button>' : "";
+    host.innerHTML = walk + floors.slice().reverse().map((f) => `<button type="button" data-floor="${f.floor}" title="${title(f)}">${short(f)}</button>`).join("") + '<button type="button" data-floor="all" class="on" title="The whole building">All</button>';
     host.hidden = false;
     for (const b of $$("#floor-ctl button")) b.addEventListener("click", () => {
       if (isPhone() && !host.classList.contains("open")) { host.classList.add("open"); return; }   // a phone shows one button: open the list first
       host.classList.remove("open");
+      if (b.hasAttribute("data-walk-btn")) { callScene("walk", !callScene("walk")); return; }   // walk in, or back out
       state.focused = null; callScene("showFloor", b.dataset.floor === "all" ? null : +b.dataset.floor); renderAll();
       syncFloors(callScene("minimapState"));
     });
@@ -749,6 +777,7 @@
     const ts = Object.values(pkg.thumbs || { main: pkg.thumb }).filter(Boolean), busyT = ts.filter((x) => ["watching", "dispatching"].includes(x.status));
     const picking = s === "thumbnail" && !pkg.done[s] && !busyT.length && ts.some((x) => x.status === "delivered" && !x.picked);
     const making = pkg.done[s] ? null : (s === "caption" ? (pkg.captionsBusy ? pkg.captionsProgress || 0 : null) : s === "thumbnail" && busyT.length ? Math.min(...busyT.map((x) => x.progress || 0)) : null);
+    if (s === "caption" && making != null) return `<span class="pk-step making" style="--p:0%"><span class="spin"></span>${PKG_STEPS[s]} · writing…</span>`;   // no guessed %: Social reports no real count
     if (making != null) return `<span class="pk-step making" style="--p:${Math.max(3, Math.round(making))}%"><span class="spin"></span>${PKG_STEPS[s]} · ${Math.round(making)}%</span>`;
     return `<span class="pk-step ${pkg.done[s] ? "ok" : picking ? "pick" : ""}" ${picking ? 'title="Thumbnails are ready: open the video and pick one"' : ""}>${pkg.done[s] ? svg("check") : `<i>${i + 1}</i>`}${PKG_STEPS[s]}${picking ? " · pick one" : ""}</span>`;
   }).join("");
@@ -779,10 +808,18 @@
       act = `<button class="btn sm primary" data-manage="${esc(t.id)}" type="button">Answer</button>`;
     } else if (t.status === "doing") {
       const live = t.live && t.live.state;                  // the lead is on it now, it waits in line, or nothing runs it (stopped)
-      if (live === "working") {                             // the team's own % when it reports one, else HQ's estimate from similar jobs
-        const own = t.progress != null && t.progress < 100 ? t.progress : null, p = Math.max(own || 0, t.live.progress || 0);
-        glyph = '<span class="spin"></span>'; meta = `working · ${p}% · ` + (t.live.step || t.subtitle || "the lead is on it");
-        act = `<span title="${own != null ? "As reported by the team" : "About this far, from how long similar jobs took"}">${ring(p)}</span><button class="btn sm stop-btn" data-stop-task="${esc(t.id)}" type="button" title="Stop this job">■ Stop</button>`;
+      // a reel task (parent:<id>) or a task whose reels are being edited is working, never "stopped · Run again"
+      const kids = ((state.status && state.status.tasks) || []).filter((x) => x.status === "doing" && new RegExp("(?:^|\\s)parent:" + t.id + "(?:\\s|$)").test(x.note || ""));
+      const reel = /(?:^|\s)parent:t\d+/.test(t.note || "") && Date.now() - Date.parse(t.updated || 0) < 3 * 3600 * 1000;
+      if (kids.length && live !== "working") {
+        glyph = '<span class="spin"></span>'; act = "";
+        meta = `editing · ${kids.length} reel${kids.length > 1 ? "s" : ""} · ` + kids.map((k, i) => `reel ${i + 1} ${k.progress != null ? stageWord(k) + " " + k.progress + "%" : "starting"}`).join(" · ");
+      } else if (live === "working" || reportedFresh(t) || reel) {         // only the % the team really reported (CUT → EDIT → RENDER → SOUND → CHECK), never an estimate
+        const own = t.progress != null && t.progress < 100 && reportedFresh(t) ? t.progress : null, stop = live === "working" ? `<button class="btn sm stop-btn" data-stop-task="${esc(t.id)}" type="button" title="Stop this job">■ Stop</button>` : "";
+        const rest = (t.subtitle || "").split(" · ").slice(1).join(" · ");
+        glyph = '<span class="spin"></span>';
+        meta = own != null ? `${stageWord(t) || "working"} · ${own}%${rest ? " · " + rest : ""}` : reel && live !== "working" ? "editing · CUT · waiting for the editor's first report" : "working · " + ((t.live && t.live.step) || t.subtitle || "the lead is on it");
+        act = (own != null ? `<span title="As reported by the team, from the work really finished">${ring(own)}</span>` : "") + stop;
       }
       else if (live === "queued") { glyph = '<span class="wait-g" title="Waiting for the lead">…</span>'; meta = "waiting in line · starts when a slot is free or its video's earlier job is done"; act = `<button class="btn sm stop-btn" data-stop-task="${esc(t.id)}" type="button" title="Take it out of line">■ Stop</button>`; }
       else { glyph = '<span class="stop-g" title="Nothing is working on this now">❚❚</span>'; meta = "stopped · nothing is working on it" + (t.subtitle ? " · last note: " + t.subtitle : ""); act = `<button class="btn sm blue" data-run="${esc(t.id)}" type="button" title="Start this task again">Run again</button>`; cls = "stopped"; }
@@ -1513,7 +1550,10 @@
   function renderSubCards() {
     const host = $("#subagent-cards"), subs = subagentsMap(), items = Object.values(subs).flat();
     if (!items.length) { host.innerHTML = ""; return; }
-    const steps = (it) => { const clip = it.agent === "clip-editor" || /\.(mp4|mov|m4v|mkv|webm)$/i.test(it.file || "") || /clip/i.test(it.label || ""); const names = clip ? ["cut", "captions", "thumbnail"] : ["start", "work", "report"]; const idx = Math.min(names.length - 1, Math.floor((it.progress / 100) * names.length)); return names.map((n, i) => `<span class="step ${i < idx ? "ok" : i === idx ? "on" : ""}">${n}</span>`).join(""); };
+    const steps = (it) => {                                  // the stage the editor reported (never guessed from a clock)
+      const w = String(it.subtitle || "").split(" · ")[0].trim().toLowerCase(), idx = w === "done" ? EDIT_STAGES.length : EDIT_STAGES.indexOf(w);
+      return EDIT_STAGES.map((n, i) => `<span class="step ${i < idx ? "ok" : i === idx ? "on" : ""}">${n}</span>`).join("") + (it.progress != null ? `<span class="step pct">${it.progress}%</span>` : "");
+    };
     // update the cards in place (a rebuild every second would restart their rise animation and flicker)
     const live = new Set(items.map((it) => it.id));
     for (const c of Array.from(host.children)) if (!live.has(c.dataset.sub)) c.remove();
@@ -1524,7 +1564,7 @@
       const title = `Sub-agent ${i + 1} · ${it.file || it.label.replace(/^Sub \d+ · /, "")}`, st = steps(it);
       if (card.firstChild.textContent !== title) card.firstChild.textContent = title;
       if (card.dataset.steps !== st) { card.querySelector(".steps").innerHTML = st; card.dataset.steps = st; }
-      card.querySelector(".line").style.width = `${it.progress}%`;
+      card.querySelector(".line").style.width = `${it.progress || 0}%`;
     });
   }
 
@@ -1570,6 +1610,15 @@
     O.onAgentClick = (name) => showAgentCard(name);
     O.onBrainClick = () => openPanel(state.view === "brain" ? "office" : "brain");
     O.onLife = (ev) => lifeEvent(ev);
+    O.onWeather = (w) => {                                // the live PJ weather pill: 🌧️ PJ 25° · Rain
+      const icon = { clear: w.day ? "☀️" : "🌙", cloudy: "☁️", fog: "🌫️", drizzle: "🌦️", rain: "🌧️", storm: "⛈️" }[w.kind] || "☁️";
+      $("#weather-icon").textContent = icon;
+      $("#weather-text").textContent = isPhone() ? (w.temp != null ? `${w.temp}°` : "") : `PJ${w.temp != null ? " " + w.temp + "°" : ""} · ${w.label}${w.shown && w.shown !== w.kind ? " (preview: " + w.shown + ")" : ""}`;
+      $("#weather-pill").title = `${w.place}: ${w.label}${w.temp != null ? ", " + w.temp + "°C" : ""}${w.day ? "" : ", night"}${w.at ? " · " + w.at.replace("T", " ") : ""}. The office's sky, rain and lightning follow it.`;
+      $("#weather-pill").hidden = false;
+    };
+    O.onWalk = (on) => { $("#hud").classList.toggle("walking", on); const b = $("#floor-ctl [data-walk-btn]"); if (b) b.classList.toggle("on", on); if (on) hideAgentCard(); };
+    O.onTalk = (name) => { showAgentCard(name, true); pickAgent(name); focusAsk(); };   // walking: talk to the agent in front of you
     callScene("life", state.life);
     // Notice sub-agents spawned straight on the scene (tests, the console) so the pills, cards and counters agree.
     if (typeof O.spawnSubagents === "function" && !O.spawnSubagents.hqWrapped) {
@@ -2385,7 +2434,12 @@
       if (d.review) { openReview({ taskId: d.review }); return; }
       if (d.open) { const t = ((state.status && state.status.tasks) || []).find((x) => x.id === d.open); if (t && (t.status === "review" || folderOfTask(t))) { openReview({ taskId: t.id }); return; } state.openDetail = state.openDetail === d.open ? null : d.open; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
-      if (d.editFootage != null) { state.editPick = d.editFootage || null; renderBoard(); return; }   // pick the package, then edit
+      if (d.editFootage) {                                   // Edit starts the edit at once (owner, 2026-11-02: "i say edit, then start the edit job"): the full set, changeable later on the video's card
+        const id = d.editFootage; state.editPick = null;
+        taskAction({ action: "edit", id, package: "full" }, "Editing started: the Creative team is on it, in your saved style. Nothing posts until you approve.").then((r) => { if (r) setLead(true); });
+        return;
+      }
+      if (d.editFootage != null) { state.editPick = null; renderBoard(); return; }
       if (d.editVideos != null) { state.editVideos = +d.editVideos; renderBoard(); return; }
       if (d.editGo) {
         const [id, pkg] = d.editGo.split(":"); state.editPick = null;

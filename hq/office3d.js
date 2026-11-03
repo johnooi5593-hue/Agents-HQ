@@ -1,7 +1,8 @@
 // Agents HQ: the 3D office (hq/office3d.js). Built on Three.js r128 (hq/vendor/three.min.js) and the vendored UMD
 // examples (EffectComposer, UnrealBloomPass, RoundedBoxGeometry, CSS2DRenderer, OrbitControls).
 //
-// The Tower: a glass office tower seen from the front at night, a city skyline behind it. Ground: the lobby with the
+// The Tower: a glass office tower in the courtyard of a ring campus (a white four-storey glass ring with an orchard, a
+// pond and parkland round it; lit windows at night). Ground: the lobby with the
 // reception, the canteen + kitchen and the lounge. Floors 1-4: two team rooms each (floor, carpet, two back walls, trims,
 // desks, monitors, dashboards, lamps, shelves, plants, sofas) with glass meeting rooms and nooks at the ends. The roof:
 // a terrace under a pergola, the game room and a coffee bar. Spiral stairs and three glass lifts join the floors. In the plaza
@@ -136,12 +137,17 @@
   // Dashes for the walkway centre lines (repeat along v).
   const dashTex = canvasTex(16, 64, (g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#fff'; g.fillRect(4, 6, w - 8, h / 2 - 6); });
   dashTex.wrapS = dashTex.wrapT = THREE.RepeatWrapping;
-  // The void floor: lit near the Brain, dark at the corners.
-  const groundTex = canvasTex(1024, 1024, (g, w, h) => {
-    const r = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
-    // the visible area is ~190 units around the Brain on a 760-unit plane, so the fall-off has to happen within r < 0.3
-    r.addColorStop(0, '#4a5470'); r.addColorStop(0.08, '#3d4660'); r.addColorStop(0.17, '#2c3245'); r.addColorStop(0.3, '#1b1e2c'); r.addColorStop(1, '#13151f');
-    g.fillStyle = r; g.fillRect(0, 0, w, h);
+  // The park floor of the ring campus (760 units across, the tower in the middle): mown grass with lighter stripes, a
+  // pale path round the outside of the ring and a paved band under it.
+  const RING = { r0: 132, r1: 152, h: 17.6, floors: 4 };                     // the ring building: inner / outer radius, height
+  const groundTex = canvasTex(2048, 2048, (g, w, h) => {
+    const u = w / 760, cx = w / 2, cy = h / 2, r = rng(5);
+    g.fillStyle = '#76a957'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 26; i++) { g.fillStyle = i % 2 ? 'rgba(255,255,255,0.035)' : 'rgba(0,40,0,0.03)'; g.fillRect(0, i * h / 26, w, h / 26); }
+    for (let i = 0; i < 900; i++) { g.fillStyle = r() < 0.5 ? 'rgba(40,80,20,0.10)' : 'rgba(190,220,120,0.08)'; g.beginPath(); g.arc(r() * w, r() * h, (2 + r() * 10) * u, 0, Math.PI * 2); g.fill(); }
+    const ring = (rad, wid, color) => { g.strokeStyle = color; g.lineWidth = wid * u; g.beginPath(); g.arc(cx, cy, rad * u, 0, Math.PI * 2); g.stroke(); };
+    ring((RING.r0 + RING.r1) / 2, RING.r1 - RING.r0 + 6, '#c9ccc4');      // paving under the ring
+    ring(RING.r1 + 12, 3.2, '#d8d4c4'); ring(RING.r0 - 8, 2.4, '#d8d4c4');   // the walking paths outside and inside it
   });
 
   // Screen pictures drawn once and shared.
@@ -257,12 +263,12 @@
   const rbox = (w, h, d, r) => { const k = [w, h, d, r].join(','); if (!geoCache.has(k)) geoCache.set(k, THREE.RoundedBoxGeometry ? new THREE.RoundedBoxGeometry(w, h, d, 3, r) : new THREE.BoxGeometry(w, h, d)); return geoCache.get(k); };
 
   // ------------------------------------------------------------------ renderer, scene, camera
-  let renderer, scene, camera, controls, composer, bloomPass, css, clock;
+  let renderer, scene, camera, controls, composer, bloomPass, dofPass, gradePass, css, clock;
   const state = {
     teams: [], agents: [], rooms: {}, roomList: [], seats: {}, walkers: [], subs: {}, built: false,
     mode: 'overview', userActiveUntil: 0, tween: null, selected: null, selectRing: null, fallbackRunning: {},
     size: { w: 0, h: 0 }, labelRules: { agentMaxDist: 110 },
-    phone: PHONE_AT_BOOT, lowFx: FX === 'low', fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
+    phone: PHONE_AT_BOOT, lowFx: FX === 'low', cinema: !/[?&]cinema=off/.test(location.search), fit: 1, fitBrain: 1, paused: false, perf: { n: 0, sum: 0, t0: 0 },
     floors: [], floorView: null, commons: [], lifts: [], people: null, wires: [],
   };
   const floorOfY = (y) => clamp(Math.floor((y + 3) / FLOOR_H), 0, FLOORS - 1);
@@ -274,6 +280,7 @@
     if (m.startsWith('room:')) { const r = state.rooms[m.slice(5)]; return r ? r.floor : null; }
     if (m.startsWith('floor:')) return +m.slice(6);
     if (m === 'brain') return 0;
+    if (m === 'walk') return W.floor;
     if (m.startsWith('agent:')) { const st = state.seats[m.slice(6)]; return st ? floorOfY(st.ch.group.position.y) : null; }
     return null;
   }
@@ -284,6 +291,61 @@
   const pickables = [];
   const anim = { dashboards: [], crawlers: [], glows: [], particles: null, rings: [], brain: {}, dust: null };
 
+  // ---- the cinematic passes ----
+  // Depth of field: the depth of the rendered scene (a depth texture on the composer's two buffers) sets each pixel's
+  // blur: sharp within DOF.band of the tower (focused on its middle, or on what the camera looks at inside it), softer
+  // with distance beyond it (the city behind; the plaza in front half as much), up to DOF.maxBlur pixels. A 16-tap
+  // golden-angle disc.
+  const _fp = new THREE.Vector3();
+  const DOF = { band: 22, aperture: 7, maxBlur: 8, near: 0.5 };   // band: world units kept sharp each side of the focus
+  function makeDofPass() {
+    const pass = new THREE.ShaderPass({
+      uniforms: { tDiffuse: { value: null }, tDepth: { value: null }, near: { value: 1 }, far: { value: 900 }, focus: { value: 150 }, nearK: { value: DOF.near },
+                  band: { value: DOF.band }, aperture: { value: DOF.aperture }, maxBlur: { value: DOF.maxBlur }, px: { value: new THREE.Vector2(1 / 800, 1 / 450) } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform float near, far, focus, band, aperture, maxBlur, nearK; uniform vec2 px;
+        varying vec2 vUv;
+        float dist(vec2 uv) { float z = texture2D(tDepth, uv).x; return near * far / (far - z * (far - near)); }
+        float coc(float d) { return clamp(max(0.0, abs(d - focus) - band) / d * aperture * (d < focus ? nearK : 1.0), 0.0, 1.0) * maxBlur; }
+        void main() {
+          float c0 = coc(dist(vUv));
+          vec4 base = texture2D(tDiffuse, vUv);
+          if (c0 < 0.35) { gl_FragColor = base; return; }
+          vec3 acc = base.rgb; float wsum = 1.0;
+          for (int i = 1; i < 16; i++) {
+            float r = sqrt(float(i) / 15.0) * c0, a = float(i) * 2.39996;
+            vec2 uv = vUv + vec2(cos(a), sin(a)) * r * px;
+            float w = smoothstep(0.0, 1.0, coc(dist(uv)) / max(r, 0.5) + 0.25);   // a sharp pixel nearby doesn't bleed in
+            acc += texture2D(tDiffuse, uv).rgb * w; wsum += w;
+          }
+          gl_FragColor = vec4(acc / wsum, base.a);
+        }`,
+    });
+    const render = pass.render.bind(pass);
+    pass.render = (r, writeBuffer, readBuffer, dt, mask) => { pass.uniforms.tDepth.value = readBuffer.depthTexture; render(r, writeBuffer, readBuffer, dt, mask); };
+    return pass;
+  }
+  // The grade: a gentle S-curve, teal in the shadows and warmth in the highlights, a vignette and fine moving film grain.
+  function makeGradePass() {
+    return new THREE.ShaderPass({
+      uniforms: { tDiffuse: { value: null }, time: { value: 0 }, grain: { value: 0.03 }, vignette: { value: 0.42 } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D tDiffuse; uniform float time, grain, vignette; varying vec2 vUv;
+        void main() {
+          vec4 t = texture2D(tDiffuse, vUv); vec3 c = clamp(t.rgb, 0.0, 1.0);
+          c = mix(c, c * c * (3.0 - 2.0 * c), 0.22);                                       // contrast
+          float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          c += vec3(-0.018, 0.004, 0.03) * (1.0 - l) + vec3(0.035, 0.012, -0.028) * l;    // teal shadows, warm highlights
+          vec2 q = (vUv - 0.5) * vec2(1.0, 1.18);
+          c *= 1.0 - vignette * smoothstep(0.28, 0.86, length(q));                          // vignette
+          float n = fract(sin(dot(floor(gl_FragCoord.xy) + fract(time) * 97.0, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+          c += n * grain;                                                                    // film grain
+          gl_FragColor = vec4(c, t.a);
+        }`,
+    });
+  }
   function setupRenderer() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     renderer.setPixelRatio(maxPixelRatio());
@@ -314,18 +376,24 @@
 
     composer = new THREE.EffectComposer(renderer);
     composer.addPass(new THREE.RenderPass(scene, camera));
+    dofPass = makeDofPass(); composer.addPass(dofPass);                   // depth of field: the office sharp, the campus soft
     bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(800, 450), 0.9, 0.4, 0.85);   // strength, radius, threshold: glows bloom, rooms stay crisp
     composer.addPass(bloomPass);
+    gradePass = makeGradePass(); composer.addPass(gradePass);             // the film look: contrast, split tone, vignette, grain
 
-    // Lights: cool ambient, a warm key from the camera side so the inner wall faces are lit, a faint fill.
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x55607a, 0.56));
-    const key = new THREE.DirectionalLight(0xfff3e4, 0.48); key.position.set(60, 54, 60); scene.add(key);
-    const fill = new THREE.DirectionalLight(0xbcd0ff, 0.16); fill.position.set(-40, 30, -25); scene.add(fill);
+    // Lights (cinematic): a softer ambient, a warm key from the camera side so the inner wall faces are lit, a faint cool
+    // fill, and a cool rim from high behind that edges the tower against the night.
+    const hemi = new THREE.HemisphereLight(0xfff6ec, 0x3a4260, 0.36); scene.add(hemi);
+    const key = new THREE.DirectionalLight(0xffe4c4, 0.5); key.position.set(60, 54, 60); scene.add(key);
+    anim.sky = { hemi, key };
+    scene.fog = new THREE.FogExp2(0x13151f, 0.0006);                      // the weather's haze (always on, so no material recompiles)
+    const fill = new THREE.DirectionalLight(0xbcd0ff, 0.14); fill.position.set(-40, 30, -25); scene.add(fill);
+    const rim = new THREE.DirectionalLight(0x8fb6ff, 0.3); rim.position.set(-30, 90, -110); scene.add(rim);
     const brainLight = new THREE.PointLight(0x9fd8ff, 0.75, 70, 1.6); brainLight.position.set(0, CORE_Y + 3.5, 0); scene.add(brainLight); anim.brain.light = brainLight;
 
-    // The void: a gradient floor far below, dust dots on it and a few in the air.
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(760, 760), new THREE.MeshBasicMaterial({ map: groundTex }));
-    ground.rotation.x = -Math.PI / 2; ground.position.y = GROUND_Y; scene.add(ground);
+    // The park: grass lit by the sky (sunny green by day, dim at night), dust dots on it and a few in the air.
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(760, 760), new THREE.MeshLambertMaterial({ map: groundTex }));
+    ground.rotation.x = -Math.PI / 2; ground.position.y = GROUND_Y; scene.add(ground); anim.ground = ground;
     const dust = [], r = rng(99);
     for (let i = 0; i < (PHONE_AT_BOOT ? 220 : 520); i++) { const a = r() * Math.PI * 2, d = 12 + Math.sqrt(r()) * 250; dust.push(Math.cos(a) * d, GROUND_Y + 0.15 + (i % 5 === 0 ? r() * 40 : 0), Math.sin(a) * d); }
     const dg = new THREE.BufferGeometry(); dg.setAttribute('position', new THREE.Float32BufferAttribute(dust, 3));
@@ -348,8 +416,15 @@
     const pr = maxPixelRatio();
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); if (composer.setPixelRatio) composer.setPixelRatio(pr); }
     renderer.setSize(w, h); composer.setSize(w, h); css.setSize(w, h);
+    for (const rt of [composer.renderTarget1, composer.renderTarget2]) {           // the depth of field reads the scene's depth
+      if (rt.depthTexture) rt.depthTexture.dispose();
+      rt.depthTexture = new THREE.DepthTexture(rt.width, rt.height); rt.dispose();
+    }
+    dofPass.uniforms.px.value.set(1 / (w * pr), 1 / (h * pr));
     if (state.phone) bloomPass.setSize(Math.round(w * pr * 0.5), Math.round(h * pr * 0.5));   // half-resolution bloom on a phone
     bloomPass.enabled = !state.lowFx;
+    dofPass.enabled = !state.lowFx && !state.phone && state.cinema;           // phones keep the grade, skip the depth of field
+    gradePass.enabled = state.cinema;
     camera.aspect = w / h; camera.updateProjectionMatrix();
     // The overview frames the tower from the plaza: its full height with a little of the plaza below; a portrait screen
     // fits the height and crops the sides (pan to see the ends), a landscape one fits the width too.
@@ -362,7 +437,7 @@
     OVERVIEW.target.set(0, H * 0.43, DZ);
     state.fit = portrait ? Math.max(1, (S * 0.8) / tanH / ROOM_VIEW.dist) : 1;
     state.fitBrain = portrait ? Math.max(1, (PLATFORM_R + 6) / tanH / 62) : 1;
-    controls.maxDistance = Math.max(360, OVERVIEW.dist * 1.5);
+    if (!W.on) controls.maxDistance = Math.max(360, OVERVIEW.dist * 1.5);
     if (state.mode === 'overview' && !state.tween) placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
   }
 
@@ -463,6 +538,35 @@
       edge(size, 0.22, cx, cz + h - 0.11, team.key === 'creative' ? 0xe6dcff : trimC);
       edge(0.22, size, cx + h - 0.11, cz, trimC);
       if (team.key === 'creative') glow.box(size, 0.1, 0.16, cx, F + 0.08, cz + h - 0.1, 0xe6dcff);
+    }
+    // cinematic light inside: LED strips (a warm cove under the wall tops, an accent skirting, a line up the corner post),
+    // a high-end magnetic track loop hung from the ceiling with spots aimed at the desks, soft washes down the walls
+    const ledA = mix(accentC, 0xffffff, 0.45), ledW = 0xfff0dc, iw = cx - h + WALL_T + 0.05, iz = cz - h + WALL_T + 0.05;
+    if (team.key !== 'social') {                                               // the social room has its own neon
+      glow.box(0.06, 0.08, size - 0.8, iw, F + WALL_H - 0.28, cz + 0.2, ledW); glow.box(size - 0.8, 0.08, 0.06, cx + 0.2, F + WALL_H - 0.28, iz, ledW);
+      glow.box(0.06, 0.06, size - 0.8, iw, F + 0.16, cz + 0.2, ledA); glow.box(size - 0.8, 0.06, 0.06, cx + 0.2, F + 0.16, iz, ledA);
+    }
+    glow.box(0.07, WALL_H + 1.3, 0.07, cx - h + 0.6, F + (WALL_H + 1.3) / 2, cz - h + 0.6, ledA);
+    {
+      const ty = Y + FLOOR_H - 0.9 - 2.6, x0 = cx - h + 2.4, x1 = cx + h - 2.0, z0 = cz - h + 2.4, z1 = cz + h - 2.2;
+      track(props, glow, x0, x1, ty, z0, false); track(props, glow, x0, x1, ty, z1, false);
+      track(props, glow, z0, z1, ty, x0, true); track(props, glow, z0, z1, ty, x1, true);
+      for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) props.box(0.03, 2.1, 0.03, x, ty + 1.1, z, 0x16181d);   // the cables
+      const aim = [cx + 0.6, cz + (big ? -1.5 : 2.0)], per = big ? 3 : 2, heads = [];
+      for (let k = 0; k < per; k++) {
+        const u = (k + 1) / (per + 1);
+        heads.push([x0 + (x1 - x0) * u, z0], [x0 + (x1 - x0) * u, z1], [x0, z0 + (z1 - z0) * u], [x1, z0 + (z1 - z0) * u]);
+      }
+      for (const [x, z] of heads) {
+        const tx = x + (aim[0] - x) * 0.3, tz = z + (aim[1] - z) * 0.3;   // each lights its own patch (they stacked to white)
+        spotHead(props, glow, x, ty - 0.12, z, tx, tz, Y + WALK_Y);
+        SPOTS[SPOTS.length - 1].pool = 5.2;                                    // tighter pools on the desks
+      }
+      for (let k = 0; k < (big ? 5 : 4); k++) {
+        const u = (k + 0.5) / (big ? 5 : 4);
+        WASH.push({ x: cx - h + 1.2 + (size - 2.4) * u, y: F + WALL_H - 3.3, z: iz + 0.02, ry: 0 });
+        WASH.push({ x: iw + 0.02, y: F + WALL_H - 3.3, z: cz - h + 1.2 + (size - 2.4) * u, ry: Math.PI / 2 });
+      }
     }
     const carpet = big ? [0, -4.5, 15, 12] : [0, 2.2, 12, 9];
     shell.box(carpet[2], 0.05, carpet[3], cx + carpet[0], F + 0.025, cz + carpet[1], carpetC);
@@ -723,27 +827,138 @@
   }
   const tree = (M, x, y, z, k) => { M.cyl(0.6 * k, 1.0 * k, x, y + 0.5 * k, z, 0xd3d7ce); M.cyl(0.14 * k, 2.6 * k, x, y + 2.2 * k, z, 0x6b4a2e); M.ball(1.6 * k, x, y + 4.0 * k, z, 0x3f9e64); M.ball(1.2 * k, x + 0.8 * k, y + 4.7 * k, z + 0.3 * k, 0x52a775); M.ball(1.1 * k, x - 0.7 * k, y + 4.8 * k, z - 0.4 * k, 0x5db87c); };
   const sofa = (M, x, y, z, w, c, rot) => { M.box(w, 0.7, 1.7, x, y + 0.45, z, c, { ry: rot || 0 }); M.box(w, 1.0, 0.45, x - Math.sin(rot || 0) * 0.65, y + 1.15, z - Math.cos(rot || 0) * 0.65, c, { ry: rot || 0 }); };
+  // A modern ceiling (the underside of a floor plate, y): continuous LED strips (a cove along the back and the glass front,
+  // linear runs across the floor) and two track-light rails with angled spot heads, all kept clear of the stair opening
+  // and the lift shafts. Merged meshes only, no real lights: the bright lenses and strips glow through the bloom.
+  // A high-end track spot: a slim matte-black body on a short stem, a brass ring at the front and a recessed glowing lens,
+  // hung at P and aimed at the floor point (tx, tz). fy: that floor's walking height. It joins SPOTS (beam and pool).
+  const _sq = new THREE.Quaternion(), _se = new THREE.Euler(), _sd = new THREE.Vector3(), _sDown = new THREE.Vector3(0, -1, 0);
+  function spotHead(M, GL, px, py, pz, tx, tz, fy) {
+    const floorY = fy - WALK_Y + SLAB_H;
+    _sd.set(tx - px, floorY - py, tz - pz).normalize();
+    _se.setFromQuaternion(_sq.setFromUnitVectors(_sDown, _sd));
+    const o = { rx: _se.x, ry: _se.y, rz: _se.z }, at = (k) => [px + _sd.x * k, py + _sd.y * k, pz + _sd.z * k];
+    M.box(0.07, 0.22, 0.07, px, py + 0.11, pz, 0x111216);                     // the stem into the track
+    let c = at(0.38); M.cyl(0.17, 0.62, c[0], c[1], c[2], 0x121317, o);       // matte black body
+    c = at(0.66); M.cyl(0.19, 0.07, c[0], c[1], c[2], 0xc8a25a, o);          // brass ring
+    c = at(0.7); GL.cyl(0.11, 0.03, c[0], c[1], c[2], 0xfff3dc, o);          // the recessed lens
+    SPOTS.push({ x: c[0], y: c[1], z: c[2], fy, tx, tz });
+  }
+  function track(M, GL, x0, x1, y, z, alongZ) {                              // a slim magnetic track with an integrated LED line
+    const L = Math.abs(x1 - x0), cx = (x0 + x1) / 2;
+    if (alongZ) { M.box(0.11, 0.1, L, z, y, cx, 0x16181d); GL.box(0.03, 0.02, L - 0.2, z, y - 0.06, cx, 0xfff3e0); }
+    else { M.box(L, 0.1, 0.11, cx, y, z, 0x16181d); GL.box(L - 0.2, 0.02, 0.03, cx, y - 0.06, z, 0xfff3e0); }
+  }
+  const inRoom = (f, x, z, pad) => state.roomList.some((r) => r.floor === f && Math.abs(x - r.center.x) < r.half + pad && Math.abs(z - r.center.z) < r.half + pad);
+  function ceilingLights(M, GL, y, fy) {                                     // fy: the floor below's walking height
+    const H = STAIR.hole + 0.3, L0 = LIFTS[0], L1 = LIFTS[LIFTS.length - 1];
+    const runs = (z) => {                                                      // the x spans at depth z that miss the openings
+      const cut = [];
+      if (Math.abs(z - STAIR.z) < H) cut.push([STAIR.x - H, STAIR.x + H]);
+      if (Math.abs(z - L0.z) < L0.r + 0.4) cut.push([L0.x - L0.r - 0.4, L1.x + L1.r + 0.4]);
+      cut.sort((a, b) => a[0] - b[0]);
+      const out = []; let x = -WX + 1.5;
+      for (const [a, b] of cut) { if (a > x) out.push([x, a]); x = Math.max(x, b); }
+      if (x < WX - 1.5) out.push([x, WX - 1.5]);
+      return out;
+    };
+    for (const [z, c, d] of [[-DZ + 0.7, 0xeef6ff, 0.16], [DZ - 0.9, 0xeef6ff, 0.16], [-11.5, 0xf4f8ff, 0.2], [-1, 0xf4f8ff, 0.2], [9, 0xf4f8ff, 0.2]]) {
+      for (const [a, b] of runs(z)) GL.box(b - a, 0.06, d, (a + b) / 2, y - 0.05, z, c);                 // LED strips
+    }
+    for (const z of [-6, 4]) {                                                 // track rails with spot heads
+      for (const [a, b] of runs(z)) {
+        if (b - a < 3) continue;
+        track(M, GL, a, b, y - 0.4, z, false);
+        M.box(0.04, 0.34, 0.04, a + 0.4, y - 0.2, z, 0x16181d); M.box(0.04, 0.34, 0.04, b - 0.4, y - 0.2, z, 0x16181d);   // the hangers
+        const f = Math.round((fy - WALK_Y) / FLOOR_H);
+        for (let x = a + 2.2, k = 0; x < b - 1.6; x += 6.4, k++) {
+          const tz = z + (k % 2 ? 4.2 : -4.2);                                 // heads alternate, aimed fore and aft
+          if (inRoom(f, x, tz, 0.5)) continue;                                // a team room has its own track
+          spotHead(M, GL, x, y - 0.52, z, x, tz, fy);
+        }
+      }
+    }
+  }
+  const SPOTS = [];                                                          // every track spot head: lens, floor height, aim
+  const WASH = [];                                                           // soft light scallops on the rooms' inner walls
+  // Cinematic light from the ceilings: a soft visible beam from every spot head (phones skip them), a warm pool where
+  // it lands, and soft scallops of light on each floor's back wall. Additive, no depth writes, two instanced meshes and
+  // one merged one: hundreds of lights for the cost of a few draw calls.
+  function buildCinemaLights() {
+    const warm = new THREE.Color(0xffd29a), up = new THREE.Vector3(0, -1, 0), m = new THREE.Matrix4(), q = new THREE.Quaternion(), d = new THREE.Vector3();
+    const POOL_Y = SLAB_H + 0.06;                                              // over the floor's base: on the rooms' carpets and the corridor
+    const pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ map: glowTex, color: warm, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, depthWrite: false }), SPOTS.length);
+    const base = (S) => S.fy - WALK_Y + POOL_Y;
+    const full = new THREE.Color(1, 1, 1), soft = new THREE.Color(0.75, 0.75, 0.75);   // the rooms' pale carpets: softer pools
+    SPOTS.forEach((S, i) => { m.compose(d.set(S.tx, base(S), S.tz), q.identity(), new THREE.Vector3(S.pool || 10.5, 1, (S.pool || 10.5) * 0.78)); pools.setMatrixAt(i, m); pools.setColorAt(i, S.pool ? soft : full); });
+    pools.renderOrder = 2; scene.add(pools);
+    if (!PHONE_AT_BOOT) {
+      const cone = new THREE.ConeGeometry(1, 1, 20, 1, true).translate(0, -0.5, 0);   // the tip at the lens, the base on the floor
+      const beamMat = new THREE.ShaderMaterial({
+        uniforms: { color: { value: warm }, strength: { value: 0.13 } }, transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+        vertexShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+          void main() {
+            vUv = uv;
+            mat4 mm = modelMatrix;
+            #ifdef USE_INSTANCING
+              mm = modelMatrix * instanceMatrix;
+            #endif
+            vec4 wp = mm * vec4(position, 1.0);
+            vN = normalize(mat3(mm) * normal); vV = normalize(cameraPosition - wp.xyz);
+            gl_Position = projectionMatrix * viewMatrix * wp;
+          }`,
+        fragmentShader: `uniform vec3 color; uniform float strength; varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+          void main() {
+            float along = mix(0.18, 1.0, pow(vUv.y, 1.4));        // brightest at the lens, fading toward the floor
+            float edge = pow(abs(dot(vN, vV)), 1.6);               // soft sides
+            gl_FragColor = vec4(color * strength * along * edge, 1.0);
+          }`,
+      });
+      const beams = new THREE.InstancedMesh(cone, beamMat, SPOTS.length);
+      SPOTS.forEach((S, i) => {
+        d.set(S.tx - S.x, base(S) - S.y, S.tz - S.z); const h = d.length();
+        q.setFromUnitVectors(up, d.clone().normalize());
+        m.compose(new THREE.Vector3(S.x, S.y, S.z), q, new THREE.Vector3(3.2, h, 3.2)); beams.setMatrixAt(i, m);
+      });
+      beams.renderOrder = 4; scene.add(beams);
+    }
+    // the back walls: scallops of warm light, as if from small downlights over the wall (corridor and core; the rooms'
+    // own walls stand in front of the rest)
+    const scTex = canvasTex(64, 128, (g, w, h) => {
+      const r = g.createRadialGradient(w / 2, 6, 2, w / 2, 30, h * 0.85); r.addColorStop(0, 'rgba(255,255,255,0.95)'); r.addColorStop(0.45, 'rgba(255,255,255,0.35)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = r; g.fillRect(0, 0, w, h);
+    });
+    const xs = []; for (let x = -54; x <= 54; x += 9) xs.push(x);
+    const sc = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: scTex, color: warm, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }), xs.length * HALL + WASH.length);
+    let n = 0;
+    for (let f = 0; f < HALL; f++) for (const x of xs) { m.compose(d.set(x, f * FLOOR_H + WALK_Y + 9.4, -DZ + 0.12), q.identity(), new THREE.Vector3(4.2, 8.4, 1)); sc.setMatrixAt(n++, m); }
+    const ry = new THREE.Quaternion();
+    for (const w of WASH) { ry.setFromAxisAngle(_sDown, -w.ry); m.compose(d.set(w.x, w.y, w.z), ry, new THREE.Vector3(3.2, 6.4, 1)); sc.setMatrixAt(n++, m); }
+    sc.count = n; sc.renderOrder = 2; scene.add(sc);
+  }
   function buildPaths() {
     for (let f = 0; f < FLOORS; f++) {
       const g = state.floors[f], Y = f * FLOOR_H, top = Y + WALK_Y, th = 0.9, cy = top - th / 2, roof = f === ROOF, inner = FLOOR_H - th;
       const M = new Merger(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 18, specular: 0x23262e }));
       const GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
-      const floorC = f === 0 ? 0xe9e2d6 : roof ? 0x8a8f9c : 0xdcc7a4;               // light oak floors, a pale stone lobby
+      const floorC = f === 0 ? 0x6f6a63 : roof ? 0x8a8f9c : 0x7a6550;               // dark oak floors, a dark stone lobby: the light pools show
       // the floor plate, open over the spiral stairs coming up from the floor below
       if (!f) M.box(2 * WX, th, 2 * DZ, 0, cy, 0, floorC);
       else {
         const H = STAIR.hole, x0 = STAIR.x - H, x1 = STAIR.x + H, z0 = STAIR.z - H, z1 = STAIR.z + H;
         M.box(x0 + WX, th, 2 * DZ, (-WX + x0) / 2, cy, 0, floorC); M.box(WX - x1, th, 2 * DZ, (x1 + WX) / 2, cy, 0, floorC);
         M.box(2 * H, th, z0 + DZ, STAIR.x, cy, (-DZ + z0) / 2, floorC); M.box(2 * H, th, DZ - z1, STAIR.x, cy, (z1 + DZ) / 2, floorC);
-        // ceiling lights for the floor below: rows of warm panels under this plate
-        for (let x = -54; x <= 54; x += 12) for (const z of [-9, 1, 10]) if (Math.abs(x - STAIR.x) > 5 || Math.abs(z - STAIR.z) > 5) GL.box(5, 0.08, 0.8, x, top - th - 0.06, z, 0xfff0d6);
+        ceilingLights(M, GL, top - th, top - FLOOR_H);        // the floor below's ceiling: LED strips and track lights
       }
       // the slab edge: the lit floor line of a glass tower
-      GL.box(2 * WX + 0.4, 0.2, 0.14, 0, top - 0.3, DZ + 0.42, f ? [0x8ab4f8, 0xf28b82, 0xfdd663, 0x81c995][f % 4] : 0xffe2b4);   // each floor's line glows in its own colour
+      GL.box(2 * WX + 0.4, 0.07, 0.14, 0, top - 0.3, DZ + 0.42, f ? [0x3e5a86, 0x7a4642, 0x7e6a32, 0x40644a][f % 4] : 0x806e52);   // each floor's thin line in its own colour (dim: no glow at the floor)
       M.box(2 * WX + 0.4, th + 0.1, 0.3, 0, cy, DZ + 0.2, 0x2a2f3b);
       if (!roof) {
         M.box(2 * WX, inner, 0.5, 0, top + inner / 2, -DZ - 0.25, 0xeeeae3);                 // the back wall: warm white
         GL.box(2 * WX, 0.22, 0.06, 0, top + inner - 0.6, -DZ + 0.02, [0x4285f4, 0xea4335, 0xfbbc05, 0x34a853][f % 4]);   // a stripe in one of the brand colours
+        GL.box(2 * WX, 0.07, 0.08, 0, top + inner - 0.22, -DZ + 0.06, 0xeef6ff);            // an LED cove where the wall meets the ceiling
+        GL.box(2 * WX, 0.05, 0.06, 0, top + 0.1, -DZ + 0.05, 0xffe2b0);                     // and a warm LED skirting along the floor
         const gf = new THREE.Mesh(new THREE.BoxGeometry(2 * WX, inner, 0.08), glassMat); gf.position.set(0, top + inner / 2, DZ + 0.3); gf.renderOrder = 3; g.add(gf);
         for (let x = -WX; x <= WX + 0.1; x += 10) M.box(0.28, inner, 0.32, x, top + inner / 2, DZ + 0.3, 0x1c2130);   // mullions
         for (const sx of [-1, 1]) { glassBox(g, 0.08, inner, 2 * DZ, sx * WX, top + inner / 2, 0, false); M.box(0.32, inner, 0.32, sx * WX, top + inner / 2, -DZ, 0x1c2130); }
@@ -851,7 +1066,9 @@
   const HALL_ROWS = [-6.2, -2.2, 1.8, 5.8], HALL_COLS = [18, 22.5, 27, 31.5, 36, 40.5, 45, 49.5, 54];
   const HALL_SCREEN = { x: 36, w: 24, h: 10.5 };
   // the TVs: x, height, width, (with several channels: which channel, which of its videos)
-  const HALL_TVS = [[15, 6.2, 4.4, 0, 0], [20.6, 6.2, 4.4, 0, 1], [51.6, 6.2, 4.4, 1, 0], [57, 6.2, 4.4, 1, 1], [-41, 4.6, 3.6, 0, 2], [-31, 4.6, 3.6, 1, 2]];
+  const HALL_TVS = [[15, 6.2, 4.4, 0, 0], [20.6, 6.2, 4.4, 0, 1], [51.6, 6.2, 4.4, 1, 0], [57, 6.2, 4.4, 1, 1],
+    [-51, 5.4, 3.6, 0, 3], [-41, 4.6, 3.6, 0, 2], [-31, 4.6, 3.6, 1, 2], [-21.5, 5.4, 3.6, 1, 3],
+    [-16.2, 6.4, 4.0, 0, 4], [-11.6, 6.4, 4.0, 1, 4]];
   function hallProps(M, GL, g, top) {
     const S0 = HALL_SCREEN, back = -DZ + 0.02;
     M.box(44, 0.06, 30, 36, top + 0.03, -1, 0x3b3550);                            // the auditorium carpet
@@ -886,7 +1103,7 @@
     for (let x = -50; x <= 54; x += 13) { if (Math.abs(x - STAIR.x) < 6 || LIFTS.some((l) => Math.abs(x - l.x) < 3.5)) continue; GL.ball(0.5, x, top + 11.2, -2, 0xfff1d0); M.cyl(0.03, 2.6, x, top + 12.6, -2, 0x2a2d35); }
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(20, 2.4), new THREE.MeshBasicMaterial({ map: signTex('ALL-HANDS HALL', '#fbbc05'), transparent: true, depthWrite: false }));
     sign.position.set(-36, top + 9.2, back + 0.2); g.add(sign);
-    state.hall = { screen: scr, tvs, beam, top, slide: 0, slideAt: 0, data: null, imgs: {}, videos: [], drawn: 0 };
+    state.hall = { screen: scr, tvs, beam, top, slide: 0, slideAt: 0, data: null, imgs: {}, videos: {}, drawn: 0 };
   }
 
   // ---------- the hall's screens: drawn into canvases a few times a second ----------
@@ -984,7 +1201,7 @@
   }
   function tvPick(D, i) {                                                     // which channel and video a TV shows
     const chs = hallChannels(D), [, , , side, slot] = HALL_TVS[i];
-    if (chs.length < 2) return { c: chs[0] || {}, k: 0, v: (D.videos || [])[i] };
+    if (chs.length < 2) { const vs = D.videos || []; return { c: chs[0] || {}, k: 0, v: vs[i % Math.max(1, vs.length)] }; }   // more TVs than videos: they repeat
     const k = side % chs.length, c = chs[k];
     const vids = c.videos || [];
     return { c, k, v: vids[slot] || vids[slot % Math.max(1, vids.length)] };   // fewer videos than TVs: they repeat
@@ -1006,8 +1223,8 @@
   }
   function hallVideo(i, v) {                                                   // the TVs play the latest videos, muted, only while the hall is in use
     const H = state.hall; if (state.phone || !v.video) return null;
-    let el = H.videos[i];
-    if (!el || el.dataset.src !== v.video) { if (el) el.pause(); el = document.createElement('video'); el.muted = true; el.loop = true; el.playsInline = true; el.preload = 'none'; el.dataset.src = v.video; el.src = v.video + (v.video.includes('?') ? '&' : '?') + 'phone=1'; H.videos[i] = el; }
+    let el = H.videos[v.video];                                                // one decoder per clip, shared by the TVs that show it
+    if (!el) { el = document.createElement('video'); el.muted = true; el.loop = true; el.playsInline = true; el.preload = 'none'; el.dataset.src = v.video; el.src = v.video + (v.video.includes('?') ? '&' : '?') + 'phone=1'; H.videos[v.video] = el; }
     const want = MEET.on || state.floorView === HALL;
     if (want && el.paused) el.play().catch(() => {}); else if (!want && !el.paused) el.pause();
     return el;
@@ -1162,19 +1379,11 @@
     }
   }
 
-  // ------------------------------------------------------------------ the plaza and the city
-  const windowTex = canvasTex(256, 512, (c, w, h) => {
-    c.fillStyle = '#121a2e'; c.fillRect(0, 0, w, h);
-    const r = rng(7);
-    for (let y = 8; y < h - 8; y += 20) for (let x = 8; x < w - 8; x += 18) { const v = r(); c.fillStyle = v < 0.42 ? (v < 0.12 ? '#ffe2a8' : '#fff6e0') : v < 0.6 ? '#2a3a5c' : '#1a2440'; c.fillRect(x, y, 10, 12); }
-  });
-  windowTex.wrapS = windowTex.wrapT = THREE.RepeatWrapping;
+  // ------------------------------------------------------------------ the plaza and the ring campus
   function buildCity() {
     const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), GL = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true }));
     // plaza paving, the road, a sidewalk edge
-    M.box(150, 0.3, 66, 0, 0.0, DZ + 33, 0x4d5363); M.box(150, 0.3, 0.6, 0, 0.18, DZ + 66, 0x8a90a0);
-    M.box(420, 0.2, 22, 0, -0.05, DZ + 78, 0x15181f);
-    for (let x = -200; x <= 200; x += 12) GL.box(5, 0.04, 0.4, x, 0.07, DZ + 78, 0xe8dfc4);
+    M.box(150, 0.3, 66, 0, 0.0, DZ + 33, 0xcfccc2); M.box(150, 0.3, 0.6, 0, 0.18, DZ + 66, 0x8a90a0);
     // the fountain: a stone rim round a pool of water, the Brain's platform the island in the middle
     M.cyl(22.5, 1.3, BRAIN.x, 0.65, BRAIN.z, 0x9aa1ae); M.cyl(21.6, 1.32, BRAIN.x, 0.66, BRAIN.z, 0x3a4252);
     const water = new THREE.Mesh(new THREE.CircleGeometry(21.5, 64), new THREE.MeshPhongMaterial({ color: 0x1d5fb0, emissive: 0x0b2a5a, shininess: 90, specular: 0x9fd8ff, transparent: true, opacity: 0.88 }));
@@ -1193,16 +1402,74 @@
     };
     car(-36, DZ + 42, 1.35, 0xf2c230); car(36, DZ + 44, -1.75, 0xd8323a);
     scene.add(M.mesh()); scene.add(GL.mesh());
-    // the skyline: dark towers with lit windows behind and beside the office
-    const r = rng(21), mats = [0x9aa4c0, 0x7d88a6, 0xb0b8cc].map((c) => new THREE.MeshBasicMaterial({ map: windowTex, color: c }));
-    const n = PHONE_AT_BOOT ? 18 : 30;
-    for (let k = 0; k < n; k++) {
-      const side = k % 3, w = 18 + r() * 26, d = 16 + r() * 20, h = 50 + r() * 130;
-      const x = side === 0 ? -230 + r() * 460 : (side === 1 ? -1 : 1) * (95 + r() * 120), z = side === 0 ? -50 - r() * 120 : -40 + r() * 70;
-      if (Math.abs(x) < WX + 12 && z > -DZ - 20) continue;
-      const geo = new THREE.BoxGeometry(w, h, d), uv = geo.attributes.uv;
-      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 24, uv.getY(i) * h / 48);
-      const b = new THREE.Mesh(geo, mats[k % 3]); b.position.set(x, h / 2, z); scene.add(b);
+    buildCampus();
+  }
+
+  // The ring campus round the tower: a white four-storey ring of curved glass (floor canopies, a solar roof), an orchard
+  // and a pond in the courtyard, parkland, trees and low hills outside. By day the glass reflects the sky; at night its
+  // windows glow warm (updateSky eases anim.campus.night).
+  const facadeTex = canvasTex(512, 256, (g, w, h) => {                       // one 4-floor bay of glass: mullions, floor bands
+    const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#d9e8f2'); gr.addColorStop(1, '#9fbfd6');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,0.18)'; for (let x = 0; x < w; x += 64) g.fillRect(x + 8, 0, 22, h);   // sky reflections
+    g.fillStyle = '#f4f6f8'; for (let k = 0; k <= 4; k++) g.fillRect(0, k * h / 4 - (k === 4 ? 10 : 0), w, 10);
+    g.fillStyle = '#e3e8ec'; for (let x = 0; x < w; x += 32) g.fillRect(x, 0, 3, h);
+  });
+  facadeTex.wrapS = THREE.RepeatWrapping;
+  const facadeGlow = canvasTex(512, 256, (g, w, h) => {                      // the same bay at night: lit rooms, dark frames
+    g.fillStyle = '#000'; g.fillRect(0, 0, w, h); const r = rng(31);
+    for (let k = 0; k < 4; k++) for (let x = 0; x < w; x += 32) { const v = r(); if (v < 0.25) continue; g.fillStyle = v < 0.45 ? '#ffd9a0' : v < 0.85 ? '#fff1d6' : '#cfe6ff'; g.fillRect(x + 3, k * h / 4 + 10, 29, h / 4 - 12); }
+  });
+  facadeGlow.wrapS = THREE.RepeatWrapping;
+  function buildCampus() {
+    const seg = PHONE_AT_BOOT ? 96 : 180, rep = Math.round(2 * Math.PI * RING.r1 / 46);
+    for (const tex of [facadeTex, facadeGlow]) tex.repeat.set(rep, 1);
+    const glass = new THREE.MeshLambertMaterial({ map: facadeTex, emissive: 0xffffff, emissiveMap: facadeGlow, emissiveIntensity: 0 });
+    for (const rad of [RING.r1, RING.r0]) {                                    // the outer and the inner glass walls
+      const wall = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, RING.h, seg, 1, true), glass);
+      wall.position.y = RING.h / 2; scene.add(wall);
+    }
+    const white = new THREE.MeshLambertMaterial({ color: 0xf2f4f5, side: THREE.DoubleSide });
+    for (let k = 1; k <= RING.floors; k++) {                                   // a thin white canopy at every floor, wider at the roof
+      const over = k === RING.floors ? 4.5 : 2.6;
+      const c = new THREE.Mesh(new THREE.RingGeometry(RING.r0 - over, RING.r1 + over, seg, 1), white);
+      c.rotation.x = -Math.PI / 2; c.position.y = k * RING.h / RING.floors; scene.add(c);
+      const edge = new THREE.Mesh(new THREE.CylinderGeometry(RING.r1 + over, RING.r1 + over, 0.45, seg, 1, true), white);
+      edge.position.y = c.position.y - 0.22; scene.add(edge);
+    }
+    const solar = new THREE.Mesh(new THREE.RingGeometry(RING.r0 + 2, RING.r1 - 2, seg, 1), new THREE.MeshLambertMaterial({ color: 0x5f6d7c }));
+    solar.rotation.x = -Math.PI / 2; solar.position.y = RING.h + 0.06; scene.add(solar);
+    anim.campus = { glass, night: 1 };
+
+    const M = new Merger(new THREE.MeshLambertMaterial({ vertexColors: true })), r = rng(77);
+    const fruit = (x, z, k) => {                                               // an orchard tree: short trunk, one round crown
+      M.cyl(0.22 * k, 2.4 * k, x, 1.2 * k, z, 0x6b4a2e);
+      M.ball(1.9 * k, x, 3.4 * k, z, [0x4f9a3e, 0x5aa646, 0x3f8a3a, 0x67b04c][Math.floor(r() * 4)], { sy: 1.6 * k });
+    };
+    const POND = { x: -96, z: -62, r: 17 };
+    const free = (x, z) => !(z > -DZ - 6 && Math.abs(x) < WX + 26 && z < DZ + 82) && Math.hypot(x - POND.x, z - POND.z) > POND.r + 4;
+    // the orchard: rows round the courtyard, between the inner path and the ring
+    for (let rad = 96; rad <= RING.r0 - 12; rad += 7) {
+      const n = Math.floor(2 * Math.PI * rad / (PHONE_AT_BOOT ? 13 : 8.5));
+      for (let i = 0; i < n; i++) { const a = (i + (rad % 2) * 0.5) / n * Math.PI * 2, x = Math.cos(a) * rad, z = Math.sin(a) * rad; if (free(x, z)) fruit(x, z, 0.9 + r() * 0.35); }
+    }
+    // outside: loose groves along the path, then open lawn
+    for (let i = 0; i < (PHONE_AT_BOOT ? 70 : 160); i++) {
+      const a = r() * Math.PI * 2, rad = RING.r1 + 22 + Math.pow(r(), 1.6) * 150;
+      fruit(Math.cos(a) * rad, Math.sin(a) * rad, 1.2 + r() * 0.9);
+    }
+    scene.add(M.mesh());
+    // the pond in the courtyard
+    const water = new THREE.Mesh(new THREE.CircleGeometry(POND.r, 48), new THREE.MeshPhongMaterial({ color: 0x3f86b8, emissive: 0x0b2a4a, shininess: 90, specular: 0xcfe9ff }));
+    water.rotation.x = -Math.PI / 2; water.position.set(POND.x, 0.06, POND.z); scene.add(water);
+    const bank = new THREE.Mesh(new THREE.RingGeometry(POND.r, POND.r + 1.6, 48), new THREE.MeshLambertMaterial({ color: 0xc9c2ae }));
+    bank.rotation.x = -Math.PI / 2; bank.position.set(POND.x, 0.05, POND.z); scene.add(bank);
+    // low green hills on the horizon (the haze fades them)
+    const hill = new THREE.MeshLambertMaterial({ color: 0x6f9a63 });
+    for (let k = 0; k < 9; k++) {
+      const a = -Math.PI * 0.95 + k * Math.PI * 0.24 + (r() - 0.5) * 0.15, rad = 330 + r() * 40;
+      const m = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), hill); m.scale.set(70 + r() * 60, 18 + r() * 22, 50 + r() * 30);
+      m.position.set(Math.cos(a) * rad, -4, Math.sin(a) * rad); scene.add(m);
     }
   }
 
@@ -2268,6 +2535,220 @@
     };
   }
 
+  // ------------------------------------------------------------------ walk mode: the owner walks in
+  // A third-person walk through the office: W A S D or the arrows (Shift runs), drag to look around, E to talk to the
+  // agent in front of you, a panel at the lifts (pick a floor) and at the stairs (up / down), Esc to leave. Where you
+  // can walk comes from office life's own graph: anywhere within reach of a lane on your floor (the corridor, the
+  // rooms' lanes, the hall, the commons), so the walls and the glass keep you in without a collision model. A lift or
+  // the stairs follow the same routes the agents take, and the car carries you like it carries them.
+  const WALK = { speed: 6.5, run: 12, eye: 3.4, dist: 15, reach: 4.2 };
+  const OWNER_LOOK = { skin: 0xf1c9a5, hair: 0x2a2a2e, style: 'short', hat: 0x2a2a2e, shirt: 0xf4f1ea, phones: null, glasses: false, trousers: 0x1d2433 };
+  const HELLO = ['Hi boss! 👋', 'Oh hi! What do you need? 😊', 'Hey! Good to see you 🙌', 'Boss! Come in 👋', 'Hi! How can I help? ✨', '嗨老板！👋'];
+  const W = {
+    on: false, floor: 0, segs: null, ch: null, ring: null, me: null, ui: null, keys: {}, joy: null, path: null, waitCar: -1, near: null, spot: '', saved: null,
+    seat: null, pose: 1, moving: false, phase: 0, speedNow: 0, hurry: false, steps: null, si: 0, st: 0, anim: null, hasPhone: false, hasMug: false, talk: null,
+    speaking: false, wL: 0, wR: 0, oL: 0, oLz: 0, oR: 0, oRz: 0, mug: null, phone: null, pos: new THREE.Vector3(), base: new THREE.Vector3(), off: new THREE.Vector3(), yaw: Math.PI, lift: -1,
+  };
+  function walkSegs() {                                                        // per floor: every lane at floor level and its reach
+    const N = LIFE.nodes, segs = [];
+    for (let f = 0; f < FLOORS; f++) segs.push([]);
+    for (const A of N) for (const j of A.adj) {
+      const B = N[j];
+      if (j < A.id || A.lift != null || B.lift != null || A.stair || B.stair || Math.abs(A.p.y - B.p.y) > 0.6) continue;
+      const corridor = Math.abs(A.p.z - CZ) < 0.01 && Math.abs(B.p.z - CZ) < 0.01;
+      segs[floorOfY(A.p.y)].push({ a: A.p, b: B.p, r: corridor ? 2.1 : 1.7 });
+    }
+    return segs;
+  }
+  function walkProbe(f, x, z) {                                                // how far past the nearest lane's reach (<= 0: walkable) and its height
+    let best = Infinity, y = f * FLOOR_H + WALK_Y;
+    for (const g of W.segs[f]) {
+      const ax = g.a.x, az = g.a.z, dx = g.b.x - ax, dz = g.b.z - az, l2 = dx * dx + dz * dz;
+      const u = l2 > 1e-9 ? clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1) : 0;
+      const d = Math.hypot(x - ax - dx * u, z - az - dz * u) - g.r;
+      if (d < best) { best = d; y = g.a.y + (g.b.y - g.a.y) * u; }
+    }
+    return { d: best, y };
+  }
+  function walkNode(f, x, z, ok) {                                             // the nearest graph node on floor f (ok: a filter)
+    let best = null, bd = Infinity;
+    for (const n of LIFE.nodes) {
+      if (n.lift != null || n.stair || floorOfY(n.p.y) !== f || Math.abs(n.p.y - (f * FLOOR_H + WALK_Y)) > 1.2 || (ok && !ok(n))) continue;
+      const d = Math.hypot(n.p.x - x, n.p.z - z); if (d < bd) { bd = d; best = n; }
+    }
+    return best;
+  }
+  function walkUI() {
+    if (W.ui) return W.ui;
+    const el = document.createElement('div'); el.className = 'hq-walk'; el.hidden = true;
+    el.innerHTML = '<div class="hq-walk-hint"><b>Walking</b><span class="ins"><span class="k">W A S D</span> walk <span class="k">Shift</span> run <span class="k">drag</span> look <span class="k">E</span> talk <span class="k">Esc</span> leave</span>'
+      + '<button type="button" data-walk="leave">Leave</button></div><button type="button" class="hq-walk-prompt" data-walk="talk" hidden></button>'
+      + '<div class="hq-walk-panel" hidden></div><div class="hq-walk-joy" hidden><i></i></div>';
+    host.appendChild(el);
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-walk]'); if (!b) return;
+      const v = b.dataset.walk;
+      if (v === 'leave') walkEnd(true); else if (v === 'talk') walkTalk(); else if (v === 'up' || v === 'down') walkStairs(v === 'up' ? 1 : -1); else if (v.startsWith('f')) walkLift(+v.slice(1));
+    });
+    const joy = el.querySelector('.hq-walk-joy'), knob = joy.firstElementChild;
+    const move = (e) => {
+      const r = joy.getBoundingClientRect(), R = r.width / 2; let x = e.clientX - r.left - R, y = e.clientY - r.top - R;
+      const l = Math.hypot(x, y); if (l > R * 0.8) { x *= R * 0.8 / l; y *= R * 0.8 / l; }
+      knob.style.transform = `translate(${x}px, ${y}px)`; W.joy = { x: x / (R * 0.8), y: y / (R * 0.8) };
+    };
+    const stop = () => { W.joy = null; knob.style.transform = ''; };
+    joy.addEventListener('pointerdown', (e) => { joy.setPointerCapture(e.pointerId); move(e); e.stopPropagation(); });
+    joy.addEventListener('pointermove', (e) => { if (W.joy) move(e); });
+    joy.addEventListener('pointerup', stop); joy.addEventListener('pointercancel', stop);
+    W.ui = { el, hint: el.firstElementChild, prompt: el.querySelector('.hq-walk-prompt'), panel: el.querySelector('.hq-walk-panel'), joy };
+    return W.ui;
+  }
+  const typing = (e) => { const t = e.target; return t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)); };
+  function walkKey(e) {
+    if (!W.on || typing(e)) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key, down = e.type === 'keydown';
+    if (/^(w|a|s|d|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Shift)$/.test(k)) { W.keys[k] = down; if (k !== 'Shift') e.preventDefault(); return; }
+    if (!down || e.repeat) return;
+    if (k === 'e') walkTalk();
+    else if (k === 'Escape') walkEnd(true);
+    else if (W.spot === 'lift' && /^[0-9]$/.test(k)) walkLift(+k);
+    else if (W.spot === 'stairs' && (k === 'PageUp' || k === 'PageDown')) { walkStairs(k === 'PageUp' ? 1 : -1); e.preventDefault(); }
+  }
+  function walkStart() {
+    if (!state.built || !LIFE.ready) return false;
+    if (W.on) return true;
+    if (!W.segs) W.segs = walkSegs();
+    if (!W.ch) {
+      W.ch = makeCharacter(OWNER_LOOK, {}); W.ch.group.scale.setScalar(CHAR_SCALE); scene.add(W.ch.group); W.seat = { ch: W.ch };
+      W.ring = flatGlow(1.5, 0xffc861, 0.55); scene.add(W.ring);
+      const tag = document.createElement('div'); tag.className = 'hq-walk-me'; tag.textContent = 'You';
+      W.me = new THREE.CSS2DObject(tag); W.me.position.set(0, 4.6, 0); W.ch.group.add(W.me);
+      window.addEventListener('keydown', walkKey); window.addEventListener('keyup', walkKey);
+      window.addEventListener('blur', () => { W.keys = {}; });
+    }
+    // in through the lobby: just inside the glass front, facing the lifts
+    W.floor = 0; W.base.set(2, WALK_Y, CZ + 1.2); W.base.y = walkProbe(0, W.base.x, W.base.z).y; W.pos.copy(W.base); W.yaw = Math.PI;
+    W.path = null; W.steps = null; W.waitCar = -1; W.keys = {}; W.on = true; W.ch.group.visible = W.ring.visible = W.me.visible = true;
+    W.saved = { minD: controls.minDistance, maxD: controls.maxDistance, minA: controls.minAzimuthAngle, maxA: controls.maxAzimuthAngle, maxP: controls.maxPolarAngle, pan: controls.enablePan };
+    controls.minDistance = 4; controls.maxDistance = 30; controls.minAzimuthAngle = -Infinity; controls.maxAzimuthAngle = Infinity; controls.maxPolarAngle = 1.45; controls.enablePan = false;
+    state.mode = 'walk'; select(null);
+    const ui = walkUI(); ui.el.hidden = false; ui.joy.hidden = !(state.phone || matchMedia('(pointer: coarse)').matches);
+    tweenTo({ yaw: Math.PI / 2, pitch: 17 * DEG, dist: WALK.dist, target: new THREE.Vector3(W.base.x, W.base.y + WALK.eye, W.base.z) }, 1300);
+    const fn = api.onWalk; if (typeof fn === 'function') fn(true);
+    return true;
+  }
+  function walkEnd(fly) {
+    if (!W.on) return false;
+    W.on = false; W.keys = {}; W.joy = null; W.path = null; W.steps = null; W.near = null;
+    for (const Lf of state.lifts) if (Lf.rider === W) Lf.rider = null;
+    W.ch.group.visible = W.ring.visible = W.me.visible = false; if (W.ui) W.ui.el.hidden = true;
+    const sv = W.saved; controls.minDistance = sv.minD; controls.maxDistance = sv.maxD; controls.minAzimuthAngle = sv.minA; controls.maxAzimuthAngle = sv.maxA; controls.maxPolarAngle = sv.maxP; controls.enablePan = sv.pan;
+    state.mode = 'free';
+    if (fly) overview();
+    const fn = api.onWalk; if (typeof fn === 'function') fn(false);
+    return true;
+  }
+  function walkTalk() {
+    const L = W.near; if (!W.on || !L) return;
+    say(L, HELLO[Math.floor(Math.random() * HELLO.length)], 4);
+    const fn = api.onTalk || api.onAgentClick;
+    if (typeof fn === 'function') fn(L.name); else select(L.name);
+  }
+  function walkRoute(to, lift) {                                               // follow office life's route from where you stand
+    const from = walkNode(W.floor, W.base.x, W.base.z);
+    if (!from || to == null) return false;
+    W.lift = lift; const ids = route(from.id, to, W);
+    if (!ids || ids.length < 2) return false;
+    W.path = { pts: [W.base.clone()].concat(ids.map((id) => LIFE.nodes[id].p)), ids: [-1].concat(ids), k: 0, d: 0 };
+    W.steps = [{ t: 'walk' }]; W.si = 0; W.keys = {};
+    return true;
+  }
+  function walkLift(f) {
+    if (!W.on || W.path || f === W.floor || f < 0 || f > LIFT_TOP) return;
+    let i = 0; LIFTS.forEach((Lf, k) => { if (Math.abs(Lf.x - W.base.x) < Math.abs(LIFTS[i].x - W.base.x)) i = k; });
+    if (state.lifts[i].rider && state.lifts[i].rider !== W) i = [0, 1, 2].find((k) => !state.lifts[k].rider) ?? i;   // that car is busy: take a free one
+    const Lf = LIFTS[i], door = walkNode(f, Lf.x, Lf.z + Lf.r + 0.6);
+    if (door && walkRoute(door.id, i)) W.waitCar = i;                       // the car comes to you first
+  }
+  function walkStairs(dir) {
+    const f = W.floor + dir;
+    if (!W.on || W.path || f < 0 || f > ROOF) return;
+    const foot = walkNode(f, STAIR.x, STAIR.z + 1.9);
+    if (foot) walkRoute(foot.id, -1);
+  }
+  function walkFollow(dt) {                                                    // along the route; in a lift the car carries you
+    const P = W.path, N = LIFE.nodes;
+    if (W.waitCar >= 0) {
+      const Lf = state.lifts[W.waitCar], gap = W.floor * FLOOR_H + WALK_Y - Lf.y;
+      if (Lf.rider && Lf.rider !== W) return;                                   // someone else is riding it: wait
+      if (Math.abs(gap) > 0.05) { Lf.y += Math.sign(gap) * Math.min(Math.abs(gap), dt * 24); return; }
+      W.waitCar = -1;
+    }
+    let left = dt * WALK.speed, a = P.pts[P.k], b = P.pts[P.k + 1], len = a.distanceTo(b);
+    const A = N[P.ids[P.k]], B = N[P.ids[P.k + 1]], ride = !!(A && B && A.lift != null && A.lift === B.lift);
+    if (ride) { left = dt * 5.5; state.lifts[A.lift].rider = W; }
+    W.moving = !ride; W.speedNow = WALK.speed;
+    while (left > 0) {
+      if (P.d + left < len) { P.d += left; left = 0; break; }
+      left -= len - P.d; P.d = 0; P.k++;
+      if (P.k >= P.pts.length - 1) {
+        W.base.copy(P.pts[P.k]); W.path = null; W.steps = null; W.moving = false; W.floor = floorOfY(W.base.y);
+        for (const Lf of state.lifts) if (Lf.rider === W) Lf.rider = null;
+        return;
+      }
+      a = P.pts[P.k]; b = P.pts[P.k + 1]; len = a.distanceTo(b);
+    }
+    const u = len > 1e-6 ? P.d / len : 1, dx = b.x - a.x, dz = b.z - a.z;
+    W.base.set(a.x + dx * u, a.y + (b.y - a.y) * u, a.z + dz * u);
+    if (!ride && Math.hypot(dx, dz) > 0.05) turnTo(W, Math.atan2(dx, dz), dt, 7);
+  }
+  const _wf = new THREE.Vector3(), _wh = new THREE.Vector3();
+  function walkUpdate(dt, t) {
+    if (W.path) walkFollow(dt);
+    else if (!state.tween) {                                                   // free walking, relative to where the camera looks
+      const K = W.keys, j = W.joy;
+      let fx = (K.w || K.ArrowUp ? 1 : 0) - (K.s || K.ArrowDown ? 1 : 0), rx = (K.d || K.ArrowRight ? 1 : 0) - (K.a || K.ArrowLeft ? 1 : 0);
+      if (j) { fx -= j.y; rx += j.x; }
+      const m = Math.hypot(fx, rx);
+      W.moving = m > 0.08;
+      if (W.moving) {
+        _wf.subVectors(controls.target, camera.position).setY(0).normalize();
+        const sp = (K.Shift || (j && Math.hypot(j.x, j.y) > 0.95) ? WALK.run : WALK.speed) * Math.min(1, m) / Math.max(1, m), f = W.floor;
+        const mx = (_wf.x * fx - _wf.z * rx) * sp * dt, mz = (_wf.z * fx + _wf.x * rx) * sp * dt;
+        const go = (x, z) => { const q = walkProbe(f, x, z); if (q.d > 0) return false; W.base.set(x, q.y, z); return true; };
+        go(W.base.x + mx, W.base.z + mz) || go(W.base.x + mx, W.base.z) || go(W.base.x, W.base.z + mz);
+        turnTo(W, Math.atan2(mx, mz), dt, 10); W.speedNow = sp; W.hurry = sp > WALK.speed;
+      }
+    }
+    W.pos.copy(W.base); poseActor(W, dt, t);
+    W.ring.position.set(W.base.x, W.base.y + 0.08, W.base.z); W.ring.material.opacity = 0.42 + Math.sin(t * 3) * 0.12;
+    // the camera follows: it moves with you and keeps looking at your head
+    _wh.set(W.pos.x, W.pos.y + WALK.eye, W.pos.z);
+    if (!state.tween) { camera.position.add(_wf.subVectors(_wh, controls.target)); controls.target.copy(_wh); }
+    // who is in front of you, and the lifts and the stairs
+    let near = null, nd = WALK.reach;
+    for (const L of LIFE.actors) {
+      const q = L.seat.ch.group.position; if (Math.abs(q.y - W.base.y) > 2.5 || !L.seat.ch.group.visible) continue;
+      const d = Math.hypot(q.x - W.base.x, q.z - W.base.z); if (d < nd) { nd = d; near = L; }
+    }
+    const lift = !W.path && W.floor <= LIFT_TOP && Math.abs(W.base.z - LIFT_HALL_Z) < 2.8 && W.base.x > LIFTS[0].x - 3 && W.base.x < LIFTS[LIFTS.length - 1].x + 3;
+    const stairs = !W.path && !lift && Math.hypot(W.base.x - STAIR.x, W.base.z - (STAIR.z + 2.6)) < 3.6;
+    const spot = W.path ? (W.waitCar >= 0 ? 'wait' : 'ride') : lift ? 'lift' : stairs ? 'stairs' : '';
+    const ui = W.ui;
+    if (near !== W.near) {
+      W.near = near;
+      const a = near && state.agents.find((x) => x.name === near.name);
+      ui.prompt.hidden = !near; if (near) ui.prompt.innerHTML = `<span class="k">E</span> Talk to <b>${escHTML((a && a.label) || near.name)}</b>`;
+    }
+    if (spot !== W.spot || (spot === 'lift' && ui.panel.dataset.f !== String(W.floor))) {
+      W.spot = spot; ui.panel.dataset.f = String(W.floor); ui.panel.hidden = !spot;
+      const fl = (f) => FLOOR_SHORT[f];
+      if (spot === 'lift') ui.panel.innerHTML = `<div class="t">Lift · ${FLOOR_NAMES[W.floor]}</div><div class="fl">${Array.from({ length: LIFT_TOP + 1 }, (_, f) => LIFT_TOP - f).map((f) => `<button type="button" data-walk="f${f}" ${f === W.floor ? 'disabled' : ''}>${fl(f)}<span class="k">${f}</span></button>`).join('')}</div>`;
+      else if (spot === 'stairs') ui.panel.innerHTML = `<div class="t">Stairs · ${FLOOR_NAMES[W.floor]}</div><div class="fl">${W.floor < ROOF ? `<button type="button" data-walk="up">▲ ${fl(W.floor + 1)}<span class="k">PgUp</span></button>` : ''}${W.floor > 0 ? `<button type="button" data-walk="down">▼ ${fl(W.floor - 1)}<span class="k">PgDn</span></button>` : ''}</div>`;
+      else if (spot) ui.panel.innerHTML = `<div class="t">${spot === 'wait' ? 'The lift is coming…' : 'On the way…'}</div>`;
+    }
+  }
+
   // ------------------------------------------------------------------ picking
   function setupPicking() {
     const el = renderer.domElement, ray = new THREE.Raycaster(); let down = null, lastTap = null;
@@ -2280,6 +2761,7 @@
       const shown = (o) => { for (let x = o; x; x = x.parent) if (!x.visible) return false; return true; };
       const hit = ray.intersectObjects(pickables, false).find((h) => shown(h.object)); if (!hit) return;
       const u = hit.object.userData, api = window.HQ_OFFICE;
+      if (W.on) { if (u.agent && LIFE.by[u.agent]) { W.near = LIFE.by[u.agent]; walkTalk(); } return; }
       if (e.pointerType === 'touch' && (u.room || u.brain)) {            // touch: a room or the Brain needs a double-tap (one-finger drags orbit)
         const id = u.room || 'brain', now = performance.now();
         if (!lastTap || lastTap.id !== id || now - lastTap.t > 450) { lastTap = { id, t: now }; return; }
@@ -2312,6 +2794,7 @@
     const now = performance.now(), t = clock.getElapsedTime(), dt = Math.min(0.1, t - lastT); lastT = t;
     if (state.phone && !state.lowFx && !FX) watchFrameRate(now);
     if (host.clientWidth !== state.size.w || host.clientHeight !== state.size.h) resize();
+    if (W.on) walkUpdate(dt, t);                                              // walk mode: you, the camera behind you
     updateCamera(now); controls.update();
     const run = runningMap();
     // the Brain
@@ -2370,6 +2853,10 @@
       if (sel && sel.life) { const q = sel.ch.group.position; state.selectRing.position.set(q.x, (sel.life.mode === 'seated' ? sel.room.y + SLAB_H : sel.life.base.y) + 0.07, q.z); }
       if (!sel || !sel.ch.group.visible) state.selectRing.material.opacity = 0;   // on a hidden floor
     }
+    if (dofPass.enabled) {                                                    // focus: the tower's depth from the camera at the look-at point
+      _fp.copy(controls.target); if (!W.on) _fp.z = clamp(_fp.z, -6, 6); _fp.applyMatrix4(camera.matrixWorldInverse); dofPass.uniforms.focus.value = Math.max(1, -_fp.z); dofPass.uniforms.near.value = camera.near; dofPass.uniforms.far.value = camera.far; }
+    gradePass.uniforms.time.value = t;
+    updateSky(dt, t);                                                          // PJ's weather: sky, haze, rain, lightning
     if (bloomPass.enabled) composer.render(); else renderer.render(scene, camera);
     css.render(scene, camera);
   }
@@ -2384,6 +2871,80 @@
     if (p.sum / p.n > 1000 / 28) { state.lowFx = true; resize(); }
     p.n = 0; p.sum = 0;
   }
+
+  // ------------------------------------------------------------------ the weather: Petaling Jaya, live
+  // GET /api/weather every 10 minutes: the sky colour and the haze, day or night light, rain falling over the plaza and
+  // around the tower (never inside it), lightning in a storm. Each look eases in over a few seconds.
+  const SKY_LOOKS = {                                                          // bg, haze, ambient, key light, rain 0-1
+    night: { clear: [0x13151f, 0.0006, 0.36, 0.5, 0], cloudy: [0x1a1d26, 0.0012, 0.34, 0.42, 0], fog: [0x23262d, 0.0028, 0.34, 0.36, 0],
+      drizzle: [0x171b23, 0.0016, 0.33, 0.4, 0.35], rain: [0x12161d, 0.002, 0.32, 0.36, 0.8], storm: [0x0d1017, 0.0022, 0.3, 0.32, 1] },
+    day: { clear: [0x6f9fcf, 0.0009, 0.8, 1.0, 0], cloudy: [0x8a95a3, 0.0014, 0.66, 0.62, 0], fog: [0xa3a8ae, 0.003, 0.62, 0.5, 0],
+      drizzle: [0x75808d, 0.0017, 0.58, 0.55, 0.35], rain: [0x5c6672, 0.0021, 0.52, 0.45, 0.8], storm: [0x3f4752, 0.0023, 0.44, 0.36, 1] },
+  };
+  const SKY = { live: null, force: null, kind: 'clear', day: false, cur: null, bg: new THREE.Color(), want: new THREE.Color(), rain: null, flash: [], nextFlash: 0 };
+  function skyLook() { const w = SKY.force || SKY.live || { kind: 'clear', day: false }; SKY.kind = w.kind in SKY_LOOKS.night ? w.kind : 'cloudy'; SKY.day = !!w.day; return SKY_LOOKS[SKY.day ? 'day' : 'night'][SKY.kind]; }
+  function buildRain() {                                                       // streaks falling in a shader: one draw call, no per-frame work
+    const n = PHONE_AT_BOOT ? 2200 : 6500, pos = [], tip = [], r = rng(4242);
+    for (let i = 0; i < n; i++) {
+      let x, z;
+      do { x = (r() - 0.5) * 320; z = -70 + r() * 260; } while (Math.abs(x) < WX + 1.5 && Math.abs(z) < DZ + 1.5);   // not inside the tower
+      const y = r() * 150;
+      pos.push(x, y, z, x, y, z); tip.push(0, 1);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('tip', new THREE.Float32BufferAttribute(tip, 1));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { time: { value: 0 }, speed: { value: 70 }, len: { value: 2.6 }, opacity: { value: 0 }, color: { value: new THREE.Color(0xb8c8dc) } },
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: `attribute float tip; uniform float time, speed, len; varying float vT;
+        void main() {
+          vec3 p = position;
+          p.y = mod(position.y - time * speed, 150.0) + tip * len;               // fall, then start again at the top
+          p.x += tip * len * 0.18;                                               // a little wind
+          vT = tip;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+        }`,
+      fragmentShader: `uniform float opacity; uniform vec3 color; varying float vT;
+        void main() { gl_FragColor = vec4(color * opacity * (0.35 + 0.65 * vT), 1.0); }`,
+    });
+    const lines = new THREE.LineSegments(g, mat); lines.frustumCulled = false; lines.renderOrder = 5; lines.visible = false; scene.add(lines);
+    SKY.rain = { lines, mat, n };
+  }
+  function loadWeather() {
+    getJSON('/api/weather').then((w) => {
+      if (!w || !w.kind) return;
+      SKY.live = w; skyLook();
+      const fn = api.onWeather; if (typeof fn === 'function') { try { fn(Object.assign({}, w, { shown: SKY.force ? SKY.force.kind : w.kind })); } catch (e) { /* the HUD's problem */ } }
+    }).catch(() => {});
+  }
+  function updateSky(dt, t) {
+    const L = skyLook(), k = SKY.cur ? Math.min(1, dt * 0.6) : 1;              // ease over a few seconds (at once on the first frame)
+    if (!SKY.cur) SKY.cur = L.slice();
+    for (let i = 1; i < 5; i++) SKY.cur[i] += (L[i] - SKY.cur[i]) * k;
+    SKY.want.setHex(L[0]); SKY.bg.lerp(SKY.want, k);
+    // lightning in a storm: a double flash every 6-18 s
+    let flash = 0;
+    if (SKY.kind === 'storm') {
+      if (t > SKY.nextFlash) { SKY.flash = [t, t + 0.16]; SKY.nextFlash = t + 6 + Math.random() * 12; }
+      for (const f0 of SKY.flash) { const u = t - f0; if (u > 0 && u < 0.12) flash = Math.max(flash, 1 - u / 0.12); }
+    }
+    scene.background.copy(SKY.bg).lerp(_skyFlash, flash * 0.55);
+    scene.fog.color.copy(scene.background); scene.fog.density = SKY.cur[1];
+    anim.sky.hemi.intensity = SKY.cur[2] + flash * 1.4; anim.sky.key.intensity = SKY.cur[3];
+    if (anim.campus) {                                                         // the ring's windows light up after dark
+      const C = anim.campus; C.night += ((SKY.day ? 0 : 1) - C.night) * k;
+      C.glass.emissiveIntensity = 0.85 * C.night; C.glass.color.setScalar(1 - 0.55 * C.night);
+      anim.ground.material.color.setScalar(1 - 0.45 * C.night);
+      if (bloomPass) { bloomPass.strength = 0.3 + 0.6 * C.night; bloomPass.threshold = 0.95 - 0.1 * C.night; }   // daylight: soft glow, rooms not washed out
+    }
+    if (SKY.rain) {
+      const a = SKY.cur[4], R = SKY.rain;
+      R.lines.visible = a > 0.02; R.mat.uniforms.opacity.value = 0.42 * Math.min(1, a * 1.4);
+      R.lines.geometry.setDrawRange(0, 2 * Math.round(R.n * Math.min(1, 0.25 + a)));
+      R.mat.uniforms.time.value = t; R.mat.uniforms.speed.value = 55 + 30 * a;
+    }
+  }
+  const _skyFlash = new THREE.Color(0x9aa6c8);
 
   // ------------------------------------------------------------------ data and boot
   function ensureExamples(done) {
@@ -2411,10 +2972,14 @@
     teams.forEach((team) => { const pl = place[team.key]; if (pl) buildRoom(team, pl[1], agents.filter((a) => a.teamKey === team.key || a.team === team.name), pl[0]); });
     for (const name in state.seats) state.people.add(state.seats[name].ch.group);   // characters keep their own floor rule (they take the stairs)
     buildCommons();
-    buildPaths();
+    buildPaths(); buildCinemaLights();
     buildCity();
     try { buildLife(); } catch (e) { console.warn('office3d: office life is off', e); LIFE.ready = false; }
     loadHall(); setInterval(loadHall, 60000);
+    buildRain();
+    const wq = (/[?&]weather=(clear|cloudy|fog|drizzle|rain|storm)(?:-(day|night))?/.exec(location.search) || []);
+    if (wq[1]) SKY.force = { kind: wq[1], day: wq[2] === 'day' };
+    loadWeather(); setInterval(loadWeather, 600000);
     state.built = true;
     placeCamera(OVERVIEW.yaw, OVERVIEW.pitch, OVERVIEW.dist, OVERVIEW.target);
     state.userActiveUntil = performance.now() + 5000;
@@ -2425,14 +2990,22 @@
   // The public API exists from load; calls made before the scene is built are safe no-ops.
   const api = window.HQ_OFFICE = Object.assign(window.HQ_OFFICE || {}, {
     ready: false,
-    flyTo: (k, o) => state.built && flyTo(k, o), overview: (o) => state.built && overview(o),
-    showFloor: (n, o) => (state.built ? viewFloor(n, o) : null), floorView: () => state.floorView, floors: () => FLOOR_NAMES.map((name, f) => ({ floor: f, name, rooms: state.roomList.filter((r) => r.floor === f).map((r) => r.key), shown: floorShown(f) })), select: (n) => state.built && select(n), focusAgent: (n, o) => state.built && focusAgent(n, o), focusBrain: (o) => state.built && focusBrain(o),
+    flyTo: (k, o) => state.built && (walkEnd(), flyTo(k, o)), overview: (o) => state.built && (walkEnd(), overview(o)),
+    showFloor: (n, o) => (state.built ? (walkEnd(), viewFloor(n, o)) : null), floorView: () => state.floorView, floors: () => FLOOR_NAMES.map((name, f) => ({ floor: f, name, rooms: state.roomList.filter((r) => r.floor === f).map((r) => r.key), shown: floorShown(f) })), select: (n) => state.built && select(n), focusAgent: (n, o) => state.built && (walkEnd(), focusAgent(n, o)), focusBrain: (o) => state.built && (walkEnd(), focusBrain(o)),
+    weather: (kind, day) => {                                                // preview a look; weather(null): the live PJ weather again
+      if (kind !== undefined) { SKY.force = kind ? { kind, day: !!day } : null; if (SKY.live && typeof api.onWeather === 'function') api.onWeather(Object.assign({}, SKY.live, { shown: SKY.force ? SKY.force.kind : SKY.live.kind })); }
+      return { live: SKY.live, shown: { kind: SKY.kind, day: SKY.day }, forced: !!SKY.force };
+    },
+    walk: (on) => { if (on === undefined) return W.on; return on ? walkStart() : walkEnd(true); },   // walk mode: you walk in as a character
+    walkState: (o) => (o && o.at && W.on && !W.path && (W.floor = o.at[2] || 0, W.base.set(o.at[0], walkProbe(W.floor, o.at[0], o.at[1]).y, o.at[1])), { on: W.on, floor: W.floor, x: +W.base.x.toFixed(2), y: +W.base.y.toFixed(2), z: +W.base.z.toFixed(2), spot: W.spot, near: W.near ? W.near.name : null, travelling: !!W.path }),   // o.at: [x, z, floor] puts you there (tests)
     project, setLabel, spawnSubagents: (k, items) => state.built && spawnSubagents(k, items), clearSubagents: (k) => state.built && clearSubagents(k),
     zoom: (d) => state.built && zoom(d), setZoomPercent: (p) => state.built && setZoomPercent(p), getZoomPercent: () => (state.built ? getZoomPercent() : 100),
     fullscreen, resize, minimapState: () => (state.built ? minimapState() : { rooms: [], brain: { x: 0.5, y: 0.5 }, camera: { x: 0.5, y: 0.5 }, target: { x: 0.5, y: 0.5 }, zoom: 100 }),
     bloom: (strength, threshold, radius) => { if (!bloomPass) return; if (strength != null) bloomPass.strength = +strength; if (threshold != null) bloomPass.threshold = +threshold; if (radius != null) bloomPass.radius = +radius; return { strength: bloomPass.strength, threshold: bloomPass.threshold, radius: bloomPass.radius }; },
     labelRules: (rules) => Object.assign(state.labelRules, rules || {}),
-    pause: (on) => { state.paused = !!on; }, fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
+    pause: (on) => { state.paused = !!on; },
+    cinema: (on) => { if (on != null) { state.cinema = !!on; if (renderer) resize(); } return { cinema: state.cinema, dof: !!(dofPass && dofPass.enabled) }; },   // the film look on / off
+    fx: () => ({ phone: state.phone, lowFx: state.lowFx, pixelRatio: renderer ? renderer.getPixelRatio() : 0, bloom: !!(bloomPass && bloomPass.enabled) }),
     teams: () => state.teams, agents: () => state.agents, rooms: () => state.roomList.map((r) => ({ key: r.key, center: r.center.clone(), size: r.size, floor: r.floor })),
     meeting: (what, minutes) => (what === 'start' ? startMeeting(minutes, 'meeting now') : what === 'end' ? endMeeting() : { on: MEET.on, until: MEET.endMs, label: MEET.label, schedule: MEET.schedule, inHall: LIFE.actors.filter((L) => L.inMeeting).length }),
     life: (on) => lifeSwitch(on), lifeOf: (n) => lifeOf(n), lifeState: () => lifeState(), lifeDebug: (o) => lifeDebug(o), lifeTalkers: () => LIFE.talkers,
@@ -2442,6 +3015,9 @@
   if (!('onAgentClick' in api)) api.onAgentClick = null;
   if (!('onBrainClick' in api)) api.onBrainClick = null;
   if (!('onLife' in api)) api.onLife = null;
+  if (!('onWalk' in api)) api.onWalk = null;
+  if (!('onWeather' in api)) api.onWeather = null;                            // the live PJ weather arrived                                  // walk mode on / off
+  if (!('onTalk' in api)) api.onTalk = null;                                  // walking: you talk to an agent
 
   // The graphics can fail to start, most often right after coming back from another page (Thumbnail Studio, Design
   // Studio) while the GPU is still releasing that page, or on a computer whose driver blocked WebGL. Try again a few

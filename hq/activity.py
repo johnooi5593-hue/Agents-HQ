@@ -97,6 +97,20 @@ def session_state(path, names, now):
     return pending, (prompt or title).strip()
 
 
+def gone(session, agent_id, now=None):
+    """True when a hook-feed start belongs to a sub-agent whose own log (or, without one, its session's log) has not moved
+    for SUBAGENT_SECONDS: the run died without sending a stop (a one-shot app run that ended, a crash). Unknown: False."""
+    if not session:
+        return False
+    now = now or time.time()
+    base = os.path.join(claude_dir(), "projects")
+    logs = glob.glob(os.path.join(base, "*", session, "subagents", f"agent-{agent_id}.jsonl")) or glob.glob(os.path.join(base, "*", session + ".jsonl"))
+    try:
+        return bool(logs) and now - max(os.path.getmtime(p) for p in logs) > SUBAGENT_SECONDS
+    except OSError:
+        return False
+
+
 def scan(now=None, agent_names=()):
     now = now or time.time()
     names = set(agent_names)

@@ -7,6 +7,7 @@
 //        node hq/tasks.js move <id> todo|doing|review|done|cancelled (done stamps done_at, anything else clears it)
 //        node hq/tasks.js channel <id> <key>|main|@office|auto     (file the task under a channel; auto: from its note/folder)
 //        node hq/tasks.js progress <id> <0..100> ["<subtitle>"]     (what the task is doing right now)
+//        node hq/tasks.js title <id> "<new title>"                  (rename, e.g. a reel task once its moment is picked)
 //        node hq/tasks.js note <id> "<text>"                        (note "out:<name>" ties the task to out/<name>: Approve in the app moves it)
 //        node hq/tasks.js remove <id>                               (moves it to the Deleted tab in the app; Restore brings it back)
 // Task = { id, title, team, agent, status, kind, note, subtitle, progress, date, time, created, updated, done_at, channel }
@@ -64,7 +65,7 @@ function setStatus(t, st) {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
-const held = ["add", "move", "progress", "note", "channel", "remove"].includes(cmd) && lock();   // reading needs no lock
+const held = ["add", "move", "progress", "title", "note", "channel", "remove"].includes(cmd) && lock();   // reading needs no lock
 process.on("exit", () => unlock(held));
 const db = load();
 const o = opts(rest);
@@ -86,6 +87,10 @@ if (cmd === "add") {
   const t = find(o._[0]); const p = cleanProgress(o._[1]);
   if (!t || p === null) { console.error("progress <id> <0..100> [\"<subtitle>\"]"); process.exit(1); }
   t.progress = p; if (o._.length > 2) t.subtitle = o._.slice(2).join(" "); t.updated = now(); save(db); out({ progress: t });
+} else if (cmd === "title") {
+  const t = find(o._[0]); const ti = o._.slice(1).join(" ").trim();
+  if (!t || !ti) { console.error("title <id> \"<new title>\""); process.exit(1); }
+  t.title = ti.slice(0, 200); t.updated = now(); save(db); out({ titled: t });
 } else if (cmd === "note") {
   const t = find(o._[0]); if (!t) { console.error("no such task"); process.exit(1); }
   t.note = o._.slice(1).join(" "); t.updated = now(); save(db); out({ noted: t });

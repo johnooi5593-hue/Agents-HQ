@@ -8,6 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import covers_back
 
 
+def names(done, folder):
+    return sorted(Path(p).name for p in done if Path(p).parent == folder)
+
+
 class CoversBackTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -35,15 +39,38 @@ class CoversBackTests(unittest.TestCase):
         d = self.approved("pong-gospel-1108-you-are-not-alone-v2")
         done = covers_back.copy_back(str(self.root), d.name, "pong-gospel", self.ch)
         week = self.drive / "1107 08"
-        self.assertEqual(sorted(Path(p).name for p in done), ["1108_不是没有人陪伴你_3x4.png", "1108_不是没有人陪伴你_9x16.png"])
+        self.assertEqual(names(done, week), ["1108_不是没有人陪伴你_3x4.png", "1108_不是没有人陪伴你_9x16.png"])
         self.assertEqual((week / "1108_不是没有人陪伴你_9x16.png").read_bytes(), b"cover-codex.png")
         self.assertEqual((week / "1108_不是没有人陪伴你_3x4.png").read_bytes(), b"cover-codex-ig.png")
-        self.assertEqual(len(json.loads((d / "covers-back.json").read_text(encoding="utf-8"))["copied"]), 2)
+        self.assertEqual(len(json.loads((d / "covers-back.json").read_text(encoding="utf-8"))["copied"]), 4)   # week + date folder
         # a newer cover replaces the same name, nothing else appears
         (d / "cover-codex.png").write_bytes(b"new")
         covers_back.copy_back(str(self.root), d.name, "pong-gospel", self.ch)
         self.assertEqual((week / "1108_不是没有人陪伴你_9x16.png").read_bytes(), b"new")
         self.assertEqual(len(list(week.iterdir())), 2)
+
+    def test_the_complete_set_goes_back(self):
+        d = self.approved("pong-gospel-1108-you-are-not-alone-v2")
+        (d / "edit.mp4").write_bytes(b"video")
+        (d / "package.json").write_text('{"caption": 1}', encoding="utf-8")
+        (d / "post.md").write_text("# 不是没有人陪伴你，而是没有一个人懂你 · Pong+Gospel 11/08\n## Plan\n- Post to: all\n## Captions\n"
+                                   "### Option 1\nTitle: A\n第一\n#一\n### Option 2\nTitle: B\n第二\n#二\n## TikTok\n抖音 #t\n## Pinned comment\n留言\n", encoding="utf-8")
+        done = covers_back.copy_back(str(self.root), d.name, "pong-gospel", self.ch)
+        week = self.drive / "1107 08"
+        self.assertEqual(names(done, week), ["1108_不是没有人陪伴你.mp4", "1108_不是没有人陪伴你_3x4.png", "1108_不是没有人陪伴你_9x16.png", "1108_不是没有人陪伴你_captions.txt"])
+        self.assertEqual((week / "1108_不是没有人陪伴你.mp4").read_bytes(), b"video")
+        text = (week / "1108_不是没有人陪伴你_captions.txt").read_text(encoding="utf-8")
+        self.assertTrue(text.index("Title: B") < text.index("抖音") < text.index("留言") < text.index("Title: A"))   # the chosen caption first
+        self.assertIn("#二", text); self.assertIn("== Caption (Option 2) ==", text); self.assertNotIn("Post to", text)
+        # and the same set in the finished date folder beside the raw folders (PONG/1108/), made when missing
+        self.assertEqual(names(done, self.root / "1108"), names(done, week))
+        self.assertEqual((self.root / "1108" / "1108_不是没有人陪伴你.mp4").read_bytes(), b"video")
+
+    def test_a_video_without_covers_still_goes_back(self):
+        d = self.approved("pong-gospel-1114-dont-be-strong-alone", covers=())
+        (d / "edit.mp4").write_bytes(b"video")
+        done = covers_back.copy_back(str(self.root), d.name, "pong-gospel", self.ch)
+        self.assertEqual(names(done, self.drive / "1114"), ["1114_不是没有人陪伴你.mp4"])            # no caption text yet: no captions file
 
     def test_nothing_without_opt_in_covers_or_a_week(self):
         d = self.approved("pong-gospel-1114-dont-be-strong-alone")
