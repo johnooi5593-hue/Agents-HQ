@@ -25,6 +25,14 @@ SIZES = {"main": {"size": [1080, 1920], "cover": COVER, "job": "thumbJob", "labe
          "ig": {"size": [1080, 1440], "cover": "cover-codex-ig.png", "job": "thumbJobIg", "label": "3:4 · Instagram"}}
 SHOWN = 3                                                       # thumbnails on the pick screen (the Codex engine always makes 4)
 SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,120}$")
+CLIP_EXT = (".mp4", ".mov", ".m4v", ".mkv", ".webm")
+
+
+def has_video(d):
+    try:
+        return any(f.lower().endswith(CLIP_EXT) for f in os.listdir(d))
+    except OSError:
+        return False
 
 
 class Packages:
@@ -34,14 +42,24 @@ class Packages:
         self.job_progress = job_progress or (lambda prefix: None)   # a running lead job's estimated %, None when none runs
         self.job_running = lambda prefix: self.job_progress(prefix) is not None
 
+    def _area(self, name):
+        """out/ while the video waits there, approved/ once it moved: an out/ copy without a video next to an approved
+        folder is a leftover, and writing new captions or covers into it hid the approved video (PJ 1101 #3, 2026-11-03)."""
+        if os.path.isdir(os.path.join(self.root, "approved", name)) and not has_video(os.path.join(self.root, "out", name)):
+            return "approved"
+        return "out"
+
+    def _path(self, name):
+        return os.path.join(self.root, self._area(name), name)
+
     def _dir(self, name):
-        d = os.path.join(self.root, "out", name) if isinstance(name, str) and SAFE.match(name) and not name.startswith(("thumbnail-final-", "sermon-studio-")) else None
+        d = self._path(name) if isinstance(name, str) and SAFE.match(name) and not name.startswith(("thumbnail-final-", "sermon-studio-")) else None
         if not d or not os.path.isdir(d):
             raise DesignError("This video is no longer waiting in out/.", 404)
         return d
 
     def read(self, name):
-        d = os.path.join(self.root, "out", name)
+        d = self._path(name)
         try:
             with open(os.path.join(d, "package.json"), encoding="utf-8") as f:
                 pkg = json.load(f)
@@ -86,10 +104,10 @@ class Packages:
         with self.thumbs.lock:
             pkg = self.read(name)
             stages = PRESETS[pkg["preset"]]
-            scripted = os.path.isfile(os.path.join(self.root, "out", name, "script.md"))   # made from a script the owner approved
+            d = self._path(name)
+            scripted = os.path.isfile(os.path.join(d, "script.md"))   # made from a script the owner approved
             if scripted:
                 stages = ["script"] + stages
-            d = os.path.join(self.root, "out", name)
             captions = []
             if os.path.isfile(os.path.join(d, "post.md")):
                 captions = [{"title": o.get("title") or "", "caption": o.get("caption") or ""} for o in publish.drafts(d)["options"] if (o.get("caption") or "").strip()]
@@ -205,9 +223,10 @@ class Packages:
                     raise DesignError("Keep your comment under 800 characters.", 400)
                 note = " ".join(note.split())
                 again = os.path.isfile(os.path.join(self._dir(name), "post.md"))
-                self.start_job(f"Posting pass for out/{name}: write out/{name}/post.md following the relay skill, with exactly 3 options under ## Captions, "
+                where = f"{self._area(name)}/{name}"           # approved/<name> once the video was approved
+                self.start_job(f"Posting pass for out/{name}: write {where}/post.md following the relay skill, with exactly 3 options under ## Captions, "
                                f"each \"### Option N\" with a \"Title:\" line, the caption and its hashtags. The owner picks one in the app; nothing is posted."
-                               + (" These replace the current options: first copy the current post.md into work/social/" + name + "-captions/ (one dated file, a README line) so nothing is lost." if again else "")
+                               + (f" These replace the current options in {where}: first copy the current post.md into work/social/" + name + "-captions/ (one dated file, a README line) so nothing is lost." if again else "")
                                + (f" The owner's comment on the captions (follow it): {note}" if note else ""))
                 pkg.pop("caption", None)                         # new sets: the owner picks and confirms again
                 pkg.pop("captionOkAt", None)

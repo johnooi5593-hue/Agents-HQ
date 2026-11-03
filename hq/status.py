@@ -19,6 +19,13 @@ def files(path, exts=None):
 SCRIPTS_ONLY = {"scripts.json", "scripts.md", "scripts.json.tmp"}
 
 
+def shadowed(base, name, have):
+    """True for out/<name> without a video while approved/<name> exists: what an approval left behind, or what a later
+    write (new captions, a cover pick) recreated there. It must not hide the approved video (PJ 1101 #3, 2026-11-03)."""
+    approved = os.path.join(os.path.dirname(base), "approved", name)
+    return os.path.basename(base) == "out" and os.path.isdir(approved) and not any(os.path.splitext(f)[1].lower() in CLIP_EXT for f in have)
+
+
 def work_folders(base):
     """Every folder under out/ (or approved/) with what it contains."""
     result = {}
@@ -34,6 +41,8 @@ def work_folders(base):
             continue
         if have and all(f in SCRIPTS_ONLY or f.startswith("full-plan.") for f in have):
             continue                                        # a talk's scripts waiting for the owner's picks: the Scripts card shows them, not a video row
+        if shadowed(base, name, have):
+            continue                                        # a leftover out/ copy of an approved video: the approved folder is the real one
         result[name] = {
             "edit": "edit.mp4" in have,
             "cover": "cover.jpg" in have,
