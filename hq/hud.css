@@ -22,7 +22,8 @@
   --violet: #7b6cf6;
   --font: Inter, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  --bar-h: 46px;
+  --safe-t: env(safe-area-inset-top, 0px);   /* iPad / iPhone home-screen app: room for the status bar (0 elsewhere) */
+  --bar-h: calc(46px + var(--safe-t));
   --panel-w: 430px;
   --board-w: 520px;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
@@ -59,7 +60,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 #topbar {
   position: absolute; top: 0; left: 0; right: 0; height: var(--bar-h); z-index: 40;
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px;
-  padding: 0 12px 0 10px;
+  padding: var(--safe-t) 12px 0 10px;
   background: rgba(22, 25, 34, 0.88); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid #2a2f3a; pointer-events: auto;
 }
@@ -126,7 +127,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .bell-badge { position: absolute; top: 1px; right: 1px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--red); color: #fff; font-size: 9px; font-weight: 700; line-height: 14px; text-align: center; box-shadow: 0 0 0 2px #161922; }
 
 /* notification list (the bell) */
-#notif-list { position: absolute; top: 52px; right: 12px; width: 320px; max-height: 60vh; overflow: auto; z-index: 45; padding: 6px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); backdrop-filter: blur(14px); pointer-events: auto; }
+#notif-list { position: absolute; top: calc(var(--bar-h) + 6px); right: 12px; width: 320px; max-height: 60vh; overflow: auto; z-index: 45; padding: 6px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); backdrop-filter: blur(14px); pointer-events: auto; }
 #notif-list .hd { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px 6px; font: 500 10px var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: #6a7080; }
 #notif-list .hd button { font: 11px var(--font); color: var(--muted); letter-spacing: 0; text-transform: none; }
 #notif-list .empty { padding: 18px 10px; color: var(--muted); text-align: center; font-size: 12px; }
@@ -141,7 +142,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .ticon .i { stroke-width: 2.2; }
 
 /* ---------- toasts ---------- */
-#toasts { position: absolute; top: 56px; right: 12px; width: 268px; display: flex; flex-direction: column; gap: 7px; z-index: 35; }
+#toasts { position: absolute; top: calc(var(--bar-h) + 10px); right: 12px; width: 268px; display: flex; flex-direction: column; gap: 7px; z-index: 35; }
 .toast {
   display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: start; padding: 9px 11px; border-radius: 12px;
   background: rgba(21, 24, 32, 0.92); border: 1px solid var(--line); box-shadow: var(--shadow); backdrop-filter: blur(10px);
@@ -526,7 +527,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .brain-stat .l { font: 11px var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: #8fb8c9; }
 
 /* ---------- agent card ---------- */
-#agent-card { position: absolute; right: 16px; top: 120px; width: 300px; z-index: 18; padding: 14px 16px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); backdrop-filter: blur(14px); pointer-events: auto; font-size: 12.5px; animation: rise 0.25s ease; }
+#agent-card { position: absolute; right: 16px; top: calc(120px + var(--safe-t)); width: 300px; z-index: 18; padding: 14px 16px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); backdrop-filter: blur(14px); pointer-events: auto; font-size: 12.5px; animation: rise 0.25s ease; }
 #agent-card .agent-card-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 #agent-card .agent-card-head strong { flex: 1; font-weight: 700; }
 #agent-card .agent-card-meta { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
@@ -539,7 +540,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 #agent-card .row { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ---------- sub-agent progress cards (right) ---------- */
-#subagent-cards { position: absolute; right: 16px; top: 150px; width: 320px; display: flex; flex-direction: column; gap: 8px; z-index: 14; }
+#subagent-cards { position: absolute; right: 16px; top: calc(150px + var(--safe-t)); width: 320px; display: flex; flex-direction: column; gap: 8px; z-index: 14; }
 #subagent-cards.away { display: none; }
 .scard { position: relative; padding: 11px 14px 13px; border-radius: 12px; background: rgba(18, 18, 26, 0.92); border: 1px solid var(--line); box-shadow: var(--shadow); overflow: hidden; animation: rise 0.3s ease; }
 .scard .t { font-weight: 600; font-size: 14px; color: #f5f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -637,7 +638,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   .agents-pill { font-size: 11px; padding: 0 9px 0 8px; }
   .user-btn span:not(.user-avatar) { display: none; }
   .user-btn .chev { display: none; }
-  #subagent-cards { width: 260px; top: 110px; }
+  #subagent-cards { width: 260px; top: calc(110px + var(--safe-t)); }
 }
 @media (max-width: 1024px), (max-height: 700px) {
   :root { --panel-w: min(430px, calc(100vw - 32px)); --board-w: min(520px, calc(100vw - 32px)); }
@@ -654,7 +655,7 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
   #room-label .t1 { font-size: 20px; }
   .tiles { gap: 8px; }
   #team-cards.strip { right: 150px; }
-  #agent-card { top: 100px; width: 270px; }
+  #agent-card { top: calc(100px + var(--safe-t)); width: 270px; }
 }
 @media (max-width: 860px) {
   .tabs .tab { font-size: 12px; padding: 0 7px; }

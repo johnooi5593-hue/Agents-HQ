@@ -22,7 +22,6 @@
   const fmtInt = (n) => Number(n || 0).toLocaleString("en-US");
   const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : "");
   const cssq = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&"));
-  const BAR_H = 46;                                         // --bar-h in hud.css: billboards never slide under the top bar
   // Phones: the same query as the phone block in hud.css and PHONE_Q in office3d.js
   const PHONE_Q = "(max-width: 600px), (max-height: 500px) and (max-width: 1000px)";
   const phoneMQ = window.matchMedia ? window.matchMedia(PHONE_Q) : null;
@@ -520,7 +519,7 @@
     const vf = phone ? 1 : clamp(Math.min(window.innerWidth / 1440, window.innerHeight / 810), 0.8, 1);     // small windows: smaller billboards
     const scaleOf = phone ? (p) => clamp(0.86 + 0.14 * (p && p.scale ? p.scale : state.zoom / 100), 0.9, 1.08) : (p) => vf * clamp(0.72 + 0.28 * (p && p.scale ? p.scale : state.zoom / 100), 0.88, 1.35);
     const cardPos = {}, W = window.innerWidth, H = phone ? $("#tabs").getBoundingClientRect().top : window.innerHeight;
-    const barH = phone ? $("#topbar").offsetHeight : BAR_H;
+    const barH = $("#topbar").offsetHeight;                             // --bar-h in hud.css (taller under an iPad / iPhone status bar)
     const box = $("#office3d").getBoundingClientRect(), ox = box.left, oy = box.top;   // project() is relative to #office3d (between the bars on a phone)
     const project = (kind, key) => { const p = projectRaw(kind, key); return p && (ox || oy) ? Object.assign({}, p, { x: p.x + ox, y: p.y + oy }) : p; };
     // screen-fixed chrome the billboards never slide under: the docked card of the focused room, the sub-agent cards
