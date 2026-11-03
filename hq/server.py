@@ -25,6 +25,8 @@ import base64, datetime, gzip, hashlib, hmac, html, json, mimetypes, os, re, sec
 import datetime, gzip, hashlib, hmac, html, json, math, mimetypes, os, re, secrets, shutil, subprocess, sys, threading, time, uuid, webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from followups import FollowUps
+import covers_back
+import weather  # noqa: E402  (the PJ weather the office shows)
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs
@@ -280,14 +282,16 @@ def events(after=0):
                     pass
     except OSError:
         pass
-    open_ids, running = {}, {}
+    open_ids, running, starts = {}, {}, {}
     cutoff = time.time() * 1000 - 6 * 3600 * 1000           # a start older than six hours without a stop is a crash, not a run
     for e in lines:
         if e.get("event") == "start" and e.get("ts", 0) > cutoff:
-            open_ids[e.get("id") or e.get("agent")] = e.get("agent")
+            open_ids[e.get("id") or e.get("agent")] = e.get("agent"); starts[e.get("id") or e.get("agent")] = e.get("session")
         elif e.get("event") == "stop":
             open_ids.pop(e.get("id") or e.get("agent"), None)
-    for name in open_ids.values():
+    for oid, name in open_ids.items():
+        if activity.gone(starts.get(oid), oid):            # its log went quiet long ago: a run that died without a stop
+            continue
         running[name] = running.get(name, 0) + 1
     act = claude_activity()                                   # Claude sessions anywhere on this computer (see hq/activity.py)
     for name, n in act["running"].items():
@@ -519,13 +523,48 @@ PACKAGE_LINES = {
 }
 
 
-def edit_prompt(rel, ch, task_id, package="full"):
+REEL_STAGES = ('every clip-editor reports its REAL progress to its own reel task, from work really finished (never a guess or a clock): '
+               'node hq/tasks.js progress <id> <pct> "<STAGE> · <what exactly>", with CUT 0-25 (probe, pick the lines, tighten), '
+               'EDIT 25-50 (footage, the style plan, --check), RENDER 50-85 (start the render with HQ_TASK=<id> HQ_PCT=50:85 in front: '
+               'the render reports its real frames), SOUND 85-95 (music, SFX, earshot), CHECK 95-99, then 100 "DONE · edit.mp4 ready, <length>". '
+               'When a reel\'s moment is picked, rename its task: node hq/tasks.js title <id> "Reel <n> · <title>". A reel task that is '
+               'not needed: node hq/tasks.js remove <id>. When a reel is delivered: node hq/tasks.js move <id> review.')
+
+
+def reel_count(path):
+    """How many reels an Edit makes: 3 highlights from a whole service or sermon (over 20 minutes), else 1."""
+    secs = publish.duration(path) or 0
+    return 3 if secs > 20 * 60 else 1
+
+
+def next_task_id(db):
+    every = db["tasks"] + db.get("deleted", [])          # a deleted task keeps its id, so Restore never clashes
+    return "t" + str(max([0] + [int(t["id"][1:]) for t in every if str(t.get("id", "t"))[1:].isdigit()]) + 1)
+
+
+def add_reel_tasks(db, task, rel, n):
+    """One board task per reel, in doing at CUT 0%, so the owner sees them the moment Edit is pressed."""
+    base = os.path.splitext(os.path.basename(rel))[0]
+    ids = []
+    for k in range(n):
+        new = {"id": next_task_id(db), "title": (f"Reel {k + 1} of {n} · {base}" if n > 1 else f"Reel · {base}")[:200], "team": "Creative",
+               "agent": "clip-editor", "status": "doing", "kind": "task", "note": f"parent:{task['id']}", "subtitle": "CUT · starting",
+               "progress": 0, "date": None, "time": None, "created": now_iso(), "updated": now_iso(), "done_at": None}
+        if task.get("channel"):
+            new["channel"] = task["channel"]
+        db["tasks"].append(normalize_task(new)); ids.append(new["id"])
+    return ids
+
+
+def edit_prompt(rel, ch, task_id, package="full", reels=()):
     """The lead's instruction for the Edit button: edit-clips for that one video, for its channel and its package."""
     n = channels.name(ch)
     who = (f" Channel: {n} (key {ch}). Same procedures as the main channel: follow \"Brand rules\" and \"Lessons\" as always, read "
            f"\"{n} · Company\" instead of \"Company\" and \"{n} · Brand rules\" on top (its rules win where they differ); never use the "
            f"main channel's name, logo, slogans or hashtags.") if ch else ""
-    return f'/edit-clips "{rel}"{who} {PACKAGE_LINES.get(package, PACKAGE_LINES["full"])} Board task {task_id} is this video\'s New footage task.'
+    board = (f" The reel tasks are already on the board, one per reel: {', '.join(reels)} (start one clip-editor per task, all at once, "
+             f"and give each its task id). " + REEL_STAGES) if reels else ""
+    return f'/edit-clips "{rel}"{who} {PACKAGE_LINES.get(package, PACKAGE_LINES["full"])} Board task {task_id} is this video\'s New footage task.{board}'
 
 
 def approved_dir(folder, areas=("approved",)):
@@ -779,6 +818,13 @@ def _task_action(body):
             if ch is not None and ch != OFFICE and not (isinstance(ch, str) and channels.get(ch)):
                 return 400, {"error": "choose an existing channel"}
             task["channel"], task["updated"] = ch, now_iso(); save_tasks(db)
+            # its video folder follows (channel.txt picks the posting accounts); a thumbnail package keeps its own
+            m = re.search(r"out:([^\s,;]+)", task.get("note") or "")
+            name = m[1].strip("/").split("/")[0] if m else ""
+            d = safe_join(os.path.join(ROOT, "out"), name) if name and SAFE_NAME.match(name) and not name.startswith("thumbnail-final-") else None
+            if isinstance(ch, str) and ch != OFFICE and d and os.path.isdir(d):
+                with open(os.path.join(d, "channel.txt"), "w", encoding="utf-8") as f:
+                    f.write(ch)
             return 200, {"channel": task}
         if action == "approve":
             if not task:
@@ -809,7 +855,8 @@ def _task_action(body):
             if not got:
                 return 404, {"error": "that video is no longer waiting in the inbox"}
             task["package"] = body.get("package") if body.get("package") in ("video", "caption", "full") else "full"
-            run = desk.start(edit_prompt(*got, task["id"], task["package"]), tasks=[task["id"]])
+            reels = add_reel_tasks(db, task, got[0], reel_count(os.path.join(ROOT, got[0])))   # on the board at once, CUT 0%
+            run = desk.start(edit_prompt(*got, task["id"], task["package"], reels), tasks=[task["id"], *reels])
             set_status(task, "doing"); save_tasks(db)
             return 202, {"editing": task, "run": run.summary()}
         if action in ("run", "say"):                # Run / Run again, or the owner's message in the task's chat
@@ -822,7 +869,8 @@ def _task_action(body):
             head = (f"board task {task['id']} ({task['title']}; team {task.get('team') or 'auto'}"
                     f"{'; channel ' + channels.name(ch) if ch is not None else ''}; note: {task.get('note') or 'none'})")
             keep = (f"Keep the board task moving: node hq/tasks.js move {task['id']} doing while it is worked on, review when it "
-                    f"waits for the owner. If you need the owner's decision, end your reply with one clear question.")
+                    f"waits for the owner. Don't ask the owner questions (owner, 2026-11-02): decide with the saved style and rules, note the "
+                    f"decision in notes.md, and finish the work; only if it is truly blocked (a missing file), say so in one line.")
             if action == "say":
                 add_chat(task, "owner", text); task["asks"] = False
                 prompt = f"The owner writes about {head}: {text} / Reply to the owner in a few short lines; if it needs work, route it to the right team. {keep}"
@@ -1906,6 +1954,11 @@ def on_approved(name):
                 notifier.refresh()
         except Exception as e:
             sys.stderr.write(f"follow-ups for {name}: {e}\n")
+        try:                                              # its covers into the week's Drive folder (channels with coversBack)
+            key = channels_mod.folder_channel(os.path.join(ROOT, "approved", name))
+            covers_back.copy_back(ROOT, name, key, channels.get(key))
+        except Exception as e:
+            sys.stderr.write(f"covers back for {name}: {e}\n")
     threading.Thread(target=work, daemon=True).start()
 
 
@@ -2179,6 +2232,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(w) if w else self.send_json({"error": "no such work folder"}, 404)
         if path == "/api/chatter":
             return self.send_json(chatter_payload())
+        if path == "/api/weather":                        # the weather in PJ: the office's sky, rain and lightning follow it
+            return self.send_json(weather.current())
         if path == "/api/accounts":
             return self.send_json({**accounts.summary(qs.get("channel", [""])[0]), "tiktokRedirect": tiktok_redirect() or ""})
         if path == "/api/channels":
@@ -2507,7 +2562,15 @@ def office_slash():
 
 COPY_NOTE = ("When you give the owner a prompt or any text meant to be pasted somewhere else (a prompt for Codex or another AI, "
              "a caption, a message, an email, a command), put exactly that text, and nothing else, in its own fenced code block: "
-             "the Agents HQ chat shows a Copy button on each block.")
+             "the Agents HQ chat shows a Copy button on each block. "
+             # the owner, 2026-11-02, after a night of questions instead of reels: "when i say do the reels! DO IT", "dont ask anymore question"
+             "THE OWNER'S RULE: when the owner asks for work (\"do the reels\", \"edit\", \"make it\", \"OK\", \"done?\"), do it now with the "
+             "saved style and rules from the brain and start every worker in parallel. Do NOT ask the owner questions before or during the work, "
+             "and never end your reply on a question while the owner waits for work: decide sensibly, write the decision in notes.md, and report "
+             "only what was done and where the files are. If workers stop part-way, finish their work yourself in this run instead of "
+             "restarting them and reporting back. IMPORTANT: this is a one-shot run: every sub-agent you start is killed the moment your "
+             "reply ends. So never end your reply while a worker is still running: wait for every sub-agent you started to finish and "
+             "report (check their results), and only then reply to the owner.")
 
 
 def with_skills(prompt):

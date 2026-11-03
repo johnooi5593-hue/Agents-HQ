@@ -206,11 +206,15 @@ class Channels:
 
 
 def folder_channel(folder):
-    """The channel a work folder belongs to: channel.txt in it (or in the clip folder above a topic), else the main one."""
+    """The channel a work folder belongs to: channel.txt in it (or in the clip folder above a topic), else the main one.
+    "main" is the board's name for the main channel (CLAUDE.md: --channel main), so it means "" here too: read as a key,
+    the posting screen would look up a channel called "main" and show every account as not connected."""
     for d in (folder, os.path.dirname(folder)):
         try:
             with open(os.path.join(d, "channel.txt"), encoding="utf-8") as f:
                 key = f.read().strip()
+            if key == "main":
+                return ""
             if re.match(r"^[a-z0-9][a-z0-9-]{0,50}$", key):
                 return key
         except OSError:

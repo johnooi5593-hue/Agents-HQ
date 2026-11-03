@@ -94,6 +94,16 @@ class DeliveryRetryTests(unittest.TestCase):
         self.assertEqual(handler.payload["job"]["status"], "succeeded")
         self.assertEqual(handler.payload["delivery"]["status"], "failed")
         self.assertEqual(handler.payload["job"]["completedImages"], 4)
+    def test_cancelled_review_task_and_durable_purge_marker_never_recreate_delivery(self):
+        project = self.project(); delivery = self.bridge.register(project)
+        self.fixture.tasks[0]["status"] = "cancelled"
+        with self.assertRaisesRegex(DesignError, "cancelled"):
+            self.bridge.register(project)
+        marker = self.bridge.runtime_root / ".studio/sermon-design/purged/project-one.json"
+        marker.parent.mkdir(parents=True); marker.write_text('{"projectId":"project-one","status":"purged"}')
+        with self.assertRaisesRegex(DesignError, "Permanent deletion"):
+            self.bridge.register(project)
+        self.assertEqual(len(self.fixture.tasks), 1)
 
 
 if __name__ == "__main__": unittest.main()

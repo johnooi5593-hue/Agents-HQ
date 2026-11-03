@@ -493,6 +493,9 @@ class SermonDesignBridge:
         pid, revision, attempt = project.get("id"), export.get("projectRevision"), export.get("hqAttempt")
         if not re.fullmatch(ID, str(pid or "")) or not isinstance(revision, int) or not isinstance(attempt, int):
             raise DesignError("The renderer returned incomplete delivery provenance.", 502)
+        marker = inside(self.runtime_root, self.runtime_root / ".studio/sermon-design/purged" / (pid + ".json"))
+        if marker.exists():
+            raise DesignError("Permanent deletion has already started for this project. Delivery was not recreated.", 410)
         if project.get("revision") != revision:
             # A reopened draft may retain the preceding export. Its new titles
             # and layout are not the provenance of those older finished files.
@@ -509,7 +512,10 @@ class SermonDesignBridge:
                 cached = index["deliveries"][key]
                 if cached.get("cleanup", {}).get("status") == "purged":
                     raise DesignError("This project delivery was permanently deleted. It is not recreated by an old job.", 410)
-                if not any(t.get("id") == cached.get("taskId") for t in self.load_tasks().get("tasks", [])):
+                cached_task = next((t for t in self.load_tasks().get("tasks", []) if t.get("id") == cached.get("taskId")), None)
+                if cached_task and cached_task.get("status") == "cancelled":
+                    raise DesignError("The HQ task was cancelled. Delivery retry does not resume cancelled work.", 409)
+                if not cached_task:
                     raise DesignError("The saved HQ review task was removed. It was not recreated automatically; the editable project is still saved on the design engine.", 409)
                 locations = [self.hq_root / area / cached.get("folder", "") for area in ("out", "approved")]
                 present = [directory for directory in locations if directory.is_dir()]
@@ -567,6 +573,8 @@ class SermonDesignBridge:
             # A crash between board creation and index persistence must not duplicate a task.
             marker = "out:" + folder
             prior = next((t for t in self.load_tasks().get("tasks", []) if marker in (t.get("note") or "").split()), None)
+            if prior and prior.get("status") == "cancelled":
+                raise DesignError("The HQ task was cancelled. It was not resumed or duplicated.", 409)
             if prior:
                 task_id = prior["id"]
             else:

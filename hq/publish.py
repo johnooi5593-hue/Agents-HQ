@@ -21,7 +21,8 @@ import json, math, os, re, secrets, shutil, subprocess, tempfile, threading, tim
 from channels import folder_channel
 
 GRAPH = "https://graph.facebook.com/v23.0"
-YT_SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+YT_SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly "
+             "https://www.googleapis.com/auth/youtube")        # youtube: open a Short only once its thumbnail is on
 PLATFORMS = ("facebook", "instagram", "youtube", "tiktok")
 TT_API = "https://open.tiktokapis.com/v2"
 TT_SCOPES = "user.info.basic,video.upload"                      # drafts: the video lands in the TikTok inbox, the owner posts it
@@ -31,6 +32,13 @@ COVER_IG = "cover-codex-ig.png"                                # Instagram's 3:4
 
 class PostError(Exception):
     pass
+
+
+class IgRefused(PostError):
+    """Instagram's upload host refused the Reel. It often takes the same file later, so Agents HQ tries again by itself."""
+
+
+IG_LATER = (30 * 60, 60 * 60, 2 * 3600, 4 * 3600, 8 * 3600)    # Instagram refused: try again after these waits, then give up
 
 
 PROGRESS = threading.local()                                   # the post this thread works on: progress() shows on its row
@@ -132,16 +140,24 @@ def ig_ready(video):
     return None
 
 
-def cover_jpeg(cover):
+REEL_COVER = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=40:2,eq=brightness=-0.1[bg];"
+              "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
+
+
+def cover_jpeg(cover, reel=False):
     """The owner's thumbnail as a JPEG every platform takes (YouTube wants at most 2 MB, Instagram's cover is a JPEG,
-    a Codex pick is a large PNG), or None without ffmpeg. The picked file itself stays as it is."""
+    a Codex pick is a large PNG), or None without ffmpeg. The picked file itself stays as it is.
+    reel: Instagram's Reel cover, always 1080x1920. Instagram refuses Reel uploads whose cover is 3:4 (2026-11-02: both
+    3:4 Codex covers refused, every 9:16 one taken), so a 3:4 cover sits whole in the middle over a blurred copy of
+    itself: the profile grid shows the middle 3:4, which is exactly the owner's 3:4 design."""
     ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
     if not cover or not ff or not os.path.isfile(cover):
         return None
     fd, out = tempfile.mkstemp(prefix="hq-cover-", suffix=".jpg")
     os.close(fd)
     for q, scale in ((2, None), (4, None), (5, "1080:-2")):   # smaller only when it has to be
-        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", cover, "-frames:v", "1", "-q:v", str(q)] + (["-vf", "scale=" + scale] if scale else []) + [out]
+        vf = ["-filter_complex", REEL_COVER] if reel else (["-vf", "scale=" + scale] if scale else [])
+        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-i", cover, "-frames:v", "1", "-q:v", str(q)] + vf + [out]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=120, creationflags=0x08000000 if os.name == "nt" else 0)
             if r.returncode == 0 and 0 < os.path.getsize(out) <= 2 * 1024 * 1024:
@@ -509,8 +525,10 @@ def media_files(folder):
         root = office_root(folder)
         for rel in linked_videos(folder):
             found["video"].append(rel); found["abs"][rel] = os.path.join(root, rel)
-    rank = lambda n: (0 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I) else 2 if re.search(r"clean|nocap|no-captions", n, re.I)
-                      else 3 if os.path.basename(n).lower().startswith("cut") else 1)
+    # edit.mp4 itself first: kept older versions (edit-v1.mp4, edit-v3-softmusic.mp4) sort before it by name, and CAN 1030
+    # reel 2 went to Facebook and YouTube as edit-v1 instead of the approved edit.mp4 (2026-11-02)
+    rank = lambda n: (0 if re.fullmatch(r"(edit|final|reel)\.\w+", os.path.basename(n), re.I) else 1 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I)
+                      else 3 if re.search(r"clean|nocap|no-captions", n, re.I) else 4 if os.path.basename(n).lower().startswith("cut") else 2)
     found["video"].sort(key=rank)
     found["image"].sort(key=lambda n: (0 if os.path.basename(n).lower() == "cover-codex.png" else 1 if "cover" in os.path.basename(n).lower() else 2, n))   # the owner's Codex pick first
     return found
@@ -616,6 +634,8 @@ class Publisher:
         todo = [p for p in PLATFORMS if p in chosen and summary[p]["connected"]]
         if not todo:
             raise PostError("pick at least one connected account")
+        if not cover and any(p != "tiktok" for p in todo):      # owner, 2026-11-02: never posted without the thumbnail
+            raise PostError("pick your thumbnail first: nothing is posted without it")
         done = self.record(folder)
         again = [p for p in todo if (done.get(p) or {}).get("state") in ("posted", "scheduled") and not chosen[p].get("again")]
         if again:
@@ -643,8 +663,10 @@ class Publisher:
             try:
                 link, extra = self.send(p, video, cover_of(p), chosen[p], when, channel)
                 self.note(folder, p, state="scheduled" if when else "posted", link=link, error="", **extra)
+            except IgRefused as e:                              # Instagram said no for now: Agents HQ tries again later
+                self.later(folder, p, {"text": chosen[p], "video": rel(video), "cover": rel(cover_of(p))}, e)
             except Exception as e:                              # one platform failing never stops the others
-                self.note(folder, p, state="failed", error=str(e)[:400])
+                self.note(folder, p, state="failed", error=str(e)[:600])
             finally:
                 PROGRESS.report = None
 
@@ -664,7 +686,7 @@ class Publisher:
     def send(self, p, video, cover, text, when, channel):
         """One platform, with the owner's thumbnail as a JPEG every platform takes (the picked file stays as it is)."""
         progress(1, "preparing your thumbnail")
-        jpg = cover_jpeg(cover)
+        jpg = cover_jpeg(cover, reel=p == "instagram")
         try:
             return getattr(self, "post_" + p)(video, jpg or cover, text, when, channel)
         finally:
@@ -673,6 +695,19 @@ class Publisher:
                     os.remove(jpg)
                 except OSError:
                     pass
+
+    def later(self, folder, p, job, err, now=None):
+        """Instagram refused: park the post as scheduled for a later try (the scheduler runs it), or fail after the last."""
+        n = int(job.get("tries") or 0)
+        if n >= len(IG_LATER):
+            self.note(folder, p, state="failed", job=None, error=(
+                f"Instagram refused this Reel {n + 1} times over about {sum(IG_LATER) // 3600} hours. It was never posted without "
+                "your thumbnail. Post it by hand in the Instagram app with your thumbnail, and tell Claude."))
+            return
+        at = int((now or time.time()) + IG_LATER[n])
+        self.note(folder, p, state="scheduled", when=at, job=dict(job, tries=n + 1), error="",
+                  warning=f"Instagram refused the upload just now ({str(err).rstrip('.')}). Agents HQ tries again by itself at "
+                          f"{time.strftime('%H:%M', time.localtime(at))} (try {n + 2} of {len(IG_LATER) + 1}); keep the computer on.")
 
     def cancel(self, folder, platform):
         """Cancel a scheduled post that is still waiting here (Instagram). Facebook and YouTube already hold theirs."""
@@ -730,9 +765,11 @@ class Publisher:
                     link, extra = self.send(p, video, cover, job["text"], None, folder_channel(folder))
                     late = now - e["when"] > 15 * 60
                     self.note(folder, p, state="posted", link=link, error="",
-                              warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late else ""), **extra)
+                              warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late and not job.get("tries") else ""), **extra)
+                except IgRefused as ex:
+                    self.later(folder, p, job, ex, now)
                 except Exception as ex:
-                    self.note(folder, p, state="failed", error=str(ex)[:400])
+                    self.note(folder, p, state="failed", error=str(ex)[:600])
                 finally:
                     PROGRESS.report = None
             self.check_finished(folder)
@@ -778,25 +815,38 @@ class Publisher:
         with open(video, "rb") as f:
             http("POST", upload, body=Sending(f, size, 5, 85), headers={"Authorization": "OAuth " + tok, "offset": "0", "file_size": str(size),
                                                     "Content-Length": str(size)}, timeout=1800)
+        if cover:                                              # owner, 2026-11-02: never public without the thumbnail, so it goes
+            progress(86, "setting your thumbnail")             # on before the finish call publishes the Reel
+            try:
+                self.fb_thumb(vid, cover, tok, waits=(0, 10, 20))
+            except (PostError, OSError) as e:                  # before the finish Facebook may not take it yet: keep it a
+                draft = {"upload_phase": "finish", "video_id": vid, "video_state": "DRAFT",     # draft, never public
+                         "description": text.get("caption", ""), "access_token": tok}
+                try:
+                    http("POST", f"{GRAPH}/{page}/video_reels", data=draft)
+                    self.fb_thumb(vid, cover, tok)
+                    how = "Your thumbnail is on it: check it in Meta Business Suite (Content → Drafts) and publish it there"
+                except (PostError, OSError):
+                    how = "Set your thumbnail on it in Meta Business Suite (Content → Drafts), then publish it there"
+                raise PostError(f"Facebook would not take your thumbnail before publishing ({str(e)[:120]}), so the Reel was saved as "
+                                f"a draft, not public. {how}.") from None
         finish = {"upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED", "description": text.get("caption", ""), "access_token": tok}
         if when:                                               # Facebook holds it and publishes it at that time
             finish.update(video_state="SCHEDULED", scheduled_publish_time=str(int(when)))
-        progress(88, "publishing")
+        progress(90, "publishing")
         http("POST", f"{GRAPH}/{page}/video_reels", data=finish)
-        extra = {}
-        if cover:                                              # without this Facebook shows a frame of the video
-            progress(92, "setting your thumbnail")
+        if cover:                                              # once more after the finish, in case processing dropped it
             try:
-                self.fb_thumb(vid, cover, tok)
-            except (PostError, OSError) as e:
-                extra["warning"] = f"Posted, but Facebook did not take your thumbnail ({e}). Set it in Meta Business Suite."
-        return f"https://www.facebook.com/reel/{vid}", extra
+                self.fb_thumb(vid, cover, tok, waits=(5,))
+            except (PostError, OSError):
+                pass                                           # the one set before the finish stays
+        return f"https://www.facebook.com/reel/{vid}", {}
 
-    def fb_thumb(self, vid, cover, tok):
+    def fb_thumb(self, vid, cover, tok, waits=(0, 15, 30, 60)):
         """The owner's thumbnail on a Facebook video; Facebook may still be processing it, so a few tries."""
         with open(cover, "rb") as f:
             img = f.read()
-        for wait in (0, 15, 30, 60):
+        for wait in waits:
             time.sleep(wait)
             body, headers = multipart({"is_preferred": "true", "access_token": tok}, "source", os.path.basename(cover), img,
                                       "image/png" if cover.lower().endswith(".png") else "image/jpeg")
@@ -873,69 +923,27 @@ class Publisher:
                 pass
         parked.clear()
 
-    def ig_limit(self, video, base, m):
-        """Instagram refused the upload: test clips (never published) tell whether it is the length, and up to how long
-        this account takes videos from apps. Returns the longest accepted length in seconds, 0 when the length is not the
-        reason, or None when it can't tell."""
-        d, ff = duration(video), os.environ.get("FFMPEG") or shutil.which("ffmpeg")
-        if not d or not ff:
-            return None
-        fd, clip = tempfile.mkstemp(prefix="hq-igtest-", suffix=".mp4")
-        os.close(fd)
-
-        def takes(sec):
-            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=s=1080x1920:r=30:d={sec:.1f}",
-                            "-f", "lavfi", "-i", f"sine=f=440:d={sec:.1f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "38",
-                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
-                            "-use_editlist", "0", "-shortest", clip],
-                           capture_output=True, timeout=600, check=True, creationflags=0x08000000 if os.name == "nt" else 0)
-            return bool(self.ig_direct(clip, base, m, wait=False)[0])
-        try:
-            if takes(d):
-                return 0                                       # a clip as long is fine: it's something in the file itself
-            lo, hi = 5.0, d
-            while hi - lo > 5:
-                mid = (lo + hi) / 2
-                lo, hi = (mid, hi) if takes(mid) else (lo, mid)
-            return int(lo)
-        except (OSError, subprocess.SubprocessError, PostError):
-            return None
-        finally:
-            try:
-                os.remove(clip)
-            except OSError:
-                pass
-
     def post_instagram_file(self, video, cover, text, m):
         tok, ig = m["page_token"], m["ig_id"]
         base = {"media_type": "REELS", "caption": text.get("caption", ""), "share_to_feed": "true", "access_token": tok}
         parked, extra = [], {}                                 # the hidden cover on the Page
         try:
             progress(3, "sending your thumbnail")
-            url = self.cover_url(cover, m, parked)
-            cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
-            for wait in (30, 90):                              # a refusal can pass later: a 57-second Reel went through
-                if cid or err != "upload refused":            # this way on the account that refused a 56-second one
-                    break
-                progress(5, f"Instagram refused the upload, trying again in {wait} seconds")
-                time.sleep(wait)
+            # the owner's thumbnail always goes with it (owner, 2026-11-02: "don't keep forgetting"): never post without
+            # it. No cover link, or Instagram refuses: try again in a moment, then later by itself (IgRefused)
+            url = self.cover_url(cover, m, parked) if cover else ""
+            if cover and not url:
+                raise IgRefused("Instagram's copy of your thumbnail could not be made")
+            cid = err = None
+            for wait in (0, 30, 90):                           # a refusal can pass a moment later
+                if wait:
+                    progress(5, f"Instagram refused the upload, trying again in {wait} seconds")
+                    time.sleep(wait)
                 cid, err = self.ig_direct(video, dict(base, cover_url=url) if url else base, m)
-            if not cid and url and err != "upload refused":   # taken but not processed: try once without the cover
-                cid, err2 = self.ig_direct(video, base, m)
-                if cid:
-                    extra["warning"] = "Posted without your cover: Instagram would not take it."
-                else:
-                    err = err2
+                if cid or err != "upload refused":
+                    break
             if not cid and err == "upload refused":
-                progress(50, "Instagram refused it three times: finding out why")
-                cap, d = self.ig_limit(video, base, m), duration(video)
-                long = f"{int(d // 60)}:{int(d % 60):02d}" if d else ""
-                if cap:
-                    raise PostError(f"Instagram refused this video three times. Its test clips passed only up to about {cap} seconds today, "
-                                    f"and this one is {long}, but longer Reels have gone through before, so try Post again later. "
-                                    f"Otherwise post it by hand in the Instagram app, or ask Creative for an Instagram cut under {cap} seconds.")
-                raise PostError("Instagram refused this video file" + (" (a test clip just as long was fine, so it isn't the length)" if cap == 0 else "")
-                                + ". Post this one by hand in the Instagram app, and send a screenshot of this to Claude.")
+                raise IgRefused("Instagram refused the upload")
             if not cid:
                 raise PostError(f"Instagram could not process the video ({err}). Try Post again in a few minutes; if it keeps failing, "
                                 "post this one by hand in the Instagram app.")
@@ -994,8 +1002,12 @@ class Publisher:
         meta = {"snippet": {"title": text.get("title") or "Short", "description": text.get("description", ""), "categoryId": "22"},
                 "status": {"privacyStatus": text.get("privacy") if text.get("privacy") in ("public", "unlisted", "private") else "public",
                            "selfDeclaredMadeForKids": False}}
-        if when:                                               # uploaded private now, YouTube makes it public at that time
-            meta["status"].update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(when))))
+        want = dict(meta["status"])
+        if when:                                               # private now, YouTube makes it public at that time
+            want.update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(when))))
+        # owner, 2026-11-02: never public without the thumbnail. With one it goes up private (no publish time) and opens
+        # (or gets its schedule) only once the thumbnail is on; if YouTube refuses the thumbnail it simply stays private.
+        meta["status"] = {k: v for k, v in dict(want, privacyStatus="private").items() if k != "publishAt"} if cover else want
         size = os.path.getsize(video)
         _, h, _ = http("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
                        body=json.dumps(meta).encode(), headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json; charset=UTF-8",
@@ -1006,20 +1018,41 @@ class Publisher:
         with open(video, "rb") as f:
             _, _, v = http("PUT", where, body=Sending(f, size, 3, 92), headers={"Authorization": "Bearer " + tok, "Content-Type": "video/*", "Content-Length": str(size)}, timeout=3600)
         vid, extra = v["id"], {}
+        auth = {"Authorization": "Bearer " + tok}
+        if cover:
+            progress(94, "setting your thumbnail")
+            err = None
+            with open(cover, "rb") as f:
+                img = f.read()
+            for wait in (0, 15, 45):                           # YouTube may still be processing the upload
+                time.sleep(wait)
+                try:
+                    http("POST", f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={vid}", body=img,
+                         headers=dict(auth, **{"Content-Type": "image/png" if cover.lower().endswith(".png") else "image/jpeg"}))
+                    err = None
+                    break
+                except (PostError, OSError) as e:
+                    err = e
+            if err:                                            # it went up private, so it simply stays private
+                raise PostError(f"YouTube would not take your thumbnail ({err}), so the Short stays private, never public: "
+                                f"https://youtube.com/shorts/{vid} . Set the thumbnail in YouTube Studio and make it public there.")
+            if when and when - time.time() < 120:              # the upload took past the time: open it now
+                want = {k: v for k, v in want.items() if k != "publishAt"}
+                want["privacyStatus"] = text.get("privacy") if text.get("privacy") in ("public", "unlisted") else "public"
+            if want != meta["status"]:
+                progress(97, "scheduling it" if "publishAt" in want else f"making it {want['privacyStatus']}")
+                try:
+                    _, _, v = http("PUT", "https://www.googleapis.com/youtube/v3/videos?part=status", body=json.dumps(
+                        {"id": vid, "status": want}).encode(), headers=dict(auth, **{"Content-Type": "application/json; charset=UTF-8"}))
+                except (PostError, OSError) as e:              # e.g. connected before the edit permission was asked for
+                    raise PostError(f"On YouTube with your thumbnail, but still private ({e}): https://youtube.com/shorts/{vid} . "
+                                    f"Make it {'scheduled' if 'publishAt' in want else want['privacyStatus']} in YouTube Studio, and "
+                                    "reconnect YouTube once (user menu → Accounts) so it happens by itself.") from None
         privacy = (v.get("status") or {}).get("privacyStatus", "")
-        if privacy and privacy != meta["status"]["privacyStatus"] and not when:
+        if privacy and privacy != want["privacyStatus"] and not when:
             extra["warning"] = (f"YouTube set it to {privacy}: uploads from a new Google API project stay private until Google audits "
                                 "the project. Make it public in YouTube Studio if it lets you, or apply for the audit.")
         if when:
             extra["warning"] = ("Scheduled in YouTube Studio for that time. If your Google project hasn't passed the YouTube audit yet, "
                                 "YouTube keeps it private even then.")
-        if cover:
-            progress(95, "setting your thumbnail")
-            try:
-                with open(cover, "rb") as f:
-                    img = f.read()
-                http("POST", f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={vid}", body=img,
-                     headers={"Authorization": "Bearer " + tok, "Content-Type": "image/png" if cover.lower().endswith(".png") else "image/jpeg"})
-            except PostError as e:
-                extra["warning"] = (extra.get("warning", "") + f" The cover was not set ({e}); custom thumbnails need a verified channel.").strip()
         return f"https://youtube.com/shorts/{vid}", extra
