@@ -1099,6 +1099,8 @@
         const sched = !glow && (ts.find((t) => t.scheduled) || {}).scheduled;
         const posted = !glow && !sched && ts.length && ts.every((t) => t.status === "done") && ts.some((t) => (t.posted || []).length);
         const open = (pkg ? `<button class="btn sm ${pkg.ready ? "ready" : "primary"}" data-rv-folder="out/${esc(k)}" type="button">${pkg.ready ? "Post" : "Open"}</button>` : "")
+          // an approved video (posted, partly posted or not yet): open it again to post to the platforms still missing
+          + (!pkg && !(st.out || {})[k] && (st.approved || {})[k] ? `<button class="btn sm primary" data-rv-folder="approved/${esc(k)}" type="button">Open to post</button>` : "")
           + `<button class="btn sm mng vg-del" data-del-card="${esc(k)}" type="button" title="Delete this whole card" aria-label="Delete this whole card">${svg("trash")}</button>`;
         const head = byTitle ? `<span class="thumb vg-count">${rows.length}</span>` : folderThumb({ name: k, info });
         const folderNames = [...new Set([...(st.out && st.out[k] ? [k] : []), ...all.filter((r) => r.folder).flatMap((r) => r.folder.names || [r.folder.name])])];
