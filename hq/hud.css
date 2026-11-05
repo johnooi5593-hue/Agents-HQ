@@ -473,6 +473,22 @@ svg.i { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em;
 .vg-meta { font: 11px var(--mono); color: #7f8291; }
 .vg-chev { color: #6a7080; font-size: 18px; transform: rotate(90deg); transition: transform 0.15s; padding: 0 4px; }
 .vgroup.shut .vg-chev { transform: none; }
+/* the card's one plain status (owner, 2026-11-05: simpler board) */
+.vg-status { display: inline-block; align-self: flex-start; margin-top: 3px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; line-height: 1.5; }
+.vg-status.needs { background: rgba(228, 200, 48, 0.16); color: #f2d65a; }
+.vg-status.working { background: rgba(79, 140, 255, 0.16); color: #8fb3ff; }
+.vg-status.ready { background: rgba(61, 220, 151, 0.16); color: #5fe3a8; }
+.vg-status.posted { background: rgba(155, 109, 255, 0.18); color: #c4a8ff; }
+.vg-status.part { background: rgba(155, 109, 255, 0.18); color: #c4a8ff; }
+.vg-status.part b { color: #ff8a8a; font-weight: 800; }
+.vg-det { display: inline-flex; align-items: center; gap: 2px; font: 11px var(--mono); color: #7f8291; white-space: nowrap; }
+/* a video card: title and status use the full width, its buttons sit in a row underneath */
+#task-board .vg-head { flex-wrap: wrap; padding: 0 12px 10px 0; }
+#task-board .vg-tog { flex-basis: 100%; padding-bottom: 6px; }
+#task-board .vg-head > .btn:not(.vg-del) { margin-left: 68px; }
+#task-board .vg-head > .vg-del { margin-left: auto; }
+#task-board .vg-head:not(:has(> .btn:not(.vg-del))) { flex-wrap: nowrap; padding-bottom: 0; }   /* only Delete: it stays on the title row */
+#task-board .vg-head:not(:has(> .btn:not(.vg-del))) .vg-tog { flex-basis: auto; padding-bottom: 10px; }
 .vg-rows { padding: 0 8px 8px 22px; border-top: 1px solid var(--card-line); padding-top: 8px; }
 .vg-rows .trow { margin-bottom: 6px; }
 .vg-rows .trow:last-child, .vg-rows .task-detail:last-child { margin-bottom: 0; }
@@ -1189,12 +1205,20 @@ body.review-open { overflow: hidden; }
 
 /* ---------- phone: the review header clears the status bar, the whole video fits above the buttons;
    the task board is compact, with New task and Add files folded away until tapped ---------- */
-.ph-tools { display: none; }
+/* New task is folded away everywhere (owner, 2026-11-05: simpler board); Add files folds away on a phone only */
+.ph-tools { display: flex; gap: 8px; padding: 10px var(--gut-r, 14px) 0 var(--gut-l, 14px); }
+.ph-tools button { flex: 1; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: #1b1f2b; color: #dfe4f0; font: 600 13px Inter, sans-serif; cursor: pointer; }
+.ph-tools button.on { border-color: #4f7cff; background: #22305a; color: #fff; }
+.ph-tools [data-ph-toggle="drop"] { display: none; }
+.add-task.ph-hide { display: none; }
 @media (max-width: 600px), (max-height: 500px) and (max-width: 1000px) {
   .rv-head { padding-top: calc(env(safe-area-inset-top, 0px) + 14px); background: #12151c; }
   .rv-video video { max-height: min(52vh, calc(100dvh - 340px)); }
 
   .ph-tools { display: flex; gap: 8px; padding: 10px var(--gut-r) 0 var(--gut-l); }
+  .ph-tools [data-ph-toggle="drop"] { display: block; }
+  .vg-det { font-size: 0; gap: 0; }
+  .vg-det .vg-chev { font-size: 18px; }
   .ph-tools button { flex: 1; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: #1b1f2b; color: #dfe4f0; font: 600 13.5px Inter, sans-serif; }
   .ph-tools button.on { border-color: #4f7cff; background: #22305a; color: #fff; }
   .add-task.ph-hide, .drop-strip.ph-hide { display: none; }

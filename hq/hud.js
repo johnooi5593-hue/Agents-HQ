@@ -85,7 +85,7 @@
     status: null, teams: [], agents: [], brain: null, brainNotes: null,
     notifs: [], notifTotal: 0, notifSeeded: false, unread: 0,
     view: "office", panelTeam: null, panelTab: "overview", focused: null,
-    filter: "all", chFilter: "all", openDetail: null, reedit: null, flash: null, calMonth: new Date().toISOString().slice(0, 7), calDays: {},
+    filter: "needs", chFilter: "all", openDetail: null, reedit: null, flash: null, calMonth: new Date().toISOString().slice(0, 7), calDays: {},
     askAgent: null,
     run: { id: null, offset: 0, quiet: false, seen: new Set(), prompt: "" },
     hookRunning: null, evOffset: 0, hookSig: "", hookAt: 0,   // the hook feed's {agent: count}, polled every 2 s from /api/events
@@ -326,7 +326,7 @@
   function deleteGroup(c) {
     const nT = c.ids.length, nF = c.folders.length;
     const what = [nT && `${nT} task${nT === 1 ? "" : "s"}`, nF && `${nF} folder${nF === 1 ? "" : "s"}`].filter(Boolean).join(" and ");
-    if (!confirm(`Delete “${c.title}”?\n\n${what} go to the Deleted tab (Restore brings them back).` + (c.studio ? "\nIts Codex Studio projects go to the Studio's Trash." : ""))) return;
+    if (!confirm(`Delete “${c.title}”?\n\n${what} go to History → Deleted (Restore brings them back).` + (c.studio ? "\nIts Codex Studio projects go to the Studio's Trash." : ""))) return;
     const clean = c.studio && confirm("Also free the space in Codex Studio?\n\nOK: the pictures Codex generated for these posters are deleted for good (the photos and references you uploaded are kept). This can't be undone.\nCancel: keep them in the Studio's Trash.");
     postJSON("/api/tasks", { action: "remove-group", ids: c.ids, folders: c.folders, studio: c.studio, clean }).then((r) => {
       toast("chief", "Deleted", `${r.removed} task${r.removed === 1 ? "" : "s"} to Deleted${r.folders ? `, ${r.folders} folder${r.folders === 1 ? "" : "s"} off the board` : ""}${c.studio ? `, ${r.studioTrashed} Studio project${r.studioTrashed === 1 ? "" : "s"} ${clean ? "trashed and cleaned" : "to the Studio's Trash"}` : ""}.`
@@ -348,7 +348,7 @@
       if (folders.length) await postJSON("/api/tasks", { action: "folder-hide", folders }).catch(() => null);
       await refresh();
       const all = ids.length + folders.length;
-      if (r) undoToast(`Deleted${all > 1 ? ` all ${all} versions of` : ""} "${shortTask(r.task.title, 44)}". It is in the Deleted tab; files were not touched.`, async () => {
+      if (r) undoToast(`Deleted${all > 1 ? ` all ${all} versions of` : ""} "${shortTask(r.task.title, 44)}". It is in History → Deleted; files were not touched.`, async () => {
         for (const x of ids) await postJSON("/api/tasks", { action: "restore", id: x }).catch(() => null);
         if (folders.length) await postJSON("/api/tasks", { action: "folder-show", folders }).catch(() => null);
         await refresh(); toast("chief", "Board", "It is back on the board.");
@@ -790,6 +790,30 @@
   function saveOpenCards() { try { localStorage.setItem("hq-open-cards", JSON.stringify([...openCards()].slice(-200))); } catch (e) { /* private window */ } }
   const postedTag = '<span class="posted-tag" title="Posted to social media">POSTED</span>';
   const PLAT_NAME = { facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
+  // the one thing a video card asks of the owner next, named the way the button says it
+  function pkgNext(pkg) {
+    const s = pkg.stages.find((x) => !pkg.done[x]);
+    const ts = Object.values(pkg.thumbs || { main: pkg.thumb }).filter(Boolean);
+    if (s === "script") return "Approve script";
+    if (s === "video") return "Approve video";
+    if (s === "caption") return pkg.captionsBusy ? "Writing captions…" : (pkg.captions || []).length ? (pkg.caption == null ? "Pick caption" : "Confirm caption") : "Get captions";
+    if (s === "thumbnail") return ts.some((x) => ["watching", "dispatching"].includes(x.status)) ? "Making thumbnails…" : ts.some((x) => x.status === "delivered" && !x.picked) ? "Pick thumbnail" : ts.some((x) => x.status === "failed") ? "Thumbnail failed · try again" : "Make thumbnails";
+    return "Open";
+  }
+  // a video card's one plain status: Needs you, Working, Ready to post, Scheduled, or where it went out (✓ / ✗ per platform)
+  function cardStatus({ pkg, ts, went, failed, sched, approvedOnly }) {
+    const pill = (cls, text) => `<span class="vg-status ${cls}">${text}</span>`;
+    const running = ts.find((t) => t.status === "doing" && !t.asks);
+    if (pkg && pkg.ready) return pill("ready", "Ready to post");
+    if (!pkg && ts.some((t) => t.asks)) return pill("needs", "Needs you · answer the lead");
+    if (pkg) { const n = pkgNext(pkg); return /…$/.test(n) ? pill("working", "Working · " + esc(n.replace(/…$/, ""))) : pill("needs", "Needs you · " + esc(n)); }
+    if (running) return pill("working", "Working" + (running.progress != null && running.progress < 100 ? ` · ${running.progress}%` : ""));
+    if (went.length || failed.length) return pill(failed.length ? "part" : "posted", [...went.map((x) => `✓ ${esc(PLAT_NAME[x] || x)}`), ...failed.map((x) => `<b title="Did not go out: tap Post to ${esc(PLAT_NAME[x] || x)} to try again">✗ ${esc(PLAT_NAME[x] || x)}</b>`)].join("&nbsp; "));
+    if (sched) return "";                                   // SCHEDULED is already on the title
+    if (ts.some((t) => t.status === "review")) return pill("needs", "Needs you");
+    if (approvedOnly) return pill("ready", "Approved · not posted yet");
+    return "";
+  }
   const schedWhen = (s) => { const d = new Date(s.when * 1000); return `${DOW[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} ${fmtTime(pad2(d.getHours()) + ":" + pad2(d.getMinutes()))}`; };
   const schedTag = (s) => `<span class="sched-tag" title="Scheduled: ${esc(s.platforms.map((p) => PLAT_NAME[p] || p).join(", "))}">SCHEDULED · ${esc(schedWhen(s))}</span>`;
   function editChooser(t) {                                 // Edit on new footage: the owner picks the package and how many videos first
@@ -1010,6 +1034,12 @@
     // the older tasks (and older folders without a task) are listed inside its ⋯, and its Delete removes them all
     const SS = /^sermon-studio-([A-Za-z0-9_-]+?)-r(\d+)-a\d+$/, ssOf = (name) => SS.exec(name || "");
     const outOf = (t) => { const m = /out:([^\s,;]+)/.exec(t.note || ""); return m ? m[1].replace(/\/+$/, "") : ""; };
+    // the approved folder a card's tasks name themselves (out:<name>, the newest -vN first), else the video's own name
+    const approvedOf = (list) => {
+      const has = (n) => n && Object.hasOwn(st.approved || {}, n);
+      const own = list.map((t) => outOf(t).split("/")[0]).filter((n) => has(n) && !/^thumbnail-final-/.test(n)).sort((a, b) => (+((/-v(\d+)$/.exec(b) || [])[1] || 1)) - (+((/-v(\d+)$/.exec(a) || [])[1] || 1)));
+      return own[0] || (list[0] && has(list[0].video) ? list[0].video : "");
+    };
     const newestOf = {}, olderIds = new Set(); state.older = {};
     for (const t of allTasks.filter((x) => x.status === "review").map((x) => ({ t: x, m: ssOf(outOf(x)) })).filter((x) => x.m).sort((a, b) => +b.m[2] - +a.m[2])) {
       const top = newestOf[t.m[1]];
@@ -1017,18 +1047,23 @@
       olderIds.add(t.t.id); (state.older[top.id] ||= []).push({ name: outOf(t.t), rev: +t.m[2], task: t.t.id });
     }
     const tasks = allTasks.filter(inChannel).filter((t) => !olderIds.has(t.id));
+    const schedPost = (t) => t.kind === "post" && t.date && t.status === "todo";   // a scheduled post waits for its time, not for the owner: Posted tab
     const asked = (t) => t.asks && ["todo", "doing"].includes(t.status);       // the lead asked the owner something: it waits for you
-    const doing = tasks.filter((t) => t.status === "doing" && !asked(t)), review = tasks.filter((t) => t.status === "review" || asked(t)), todo = tasks.filter((t) => t.status === "todo" && !asked(t));
+    const doing = tasks.filter((t) => t.status === "doing" && !asked(t)), review = tasks.filter((t) => t.status === "review" || asked(t)), todo = tasks.filter((t) => t.status === "todo" && !asked(t) && !schedPost(t));
     // All shows what finished today; the Done tab shows the last 60 finished tasks, so older work can still be re-edited
     const doneAll = tasks.filter((t) => t.status === "done").sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
-    const doneToday = doneAll.filter((t) => isToday(t.done_at)), done = state.filter === "done" ? doneAll.slice(0, 60) : doneToday;
+    // four tabs (owner, 2026-11-05: "simplify it"): Needs you · Working · Posted · History; older tab names still land somewhere
+    state.filter = { all: "needs", waiting: "needs", running: "working", done: "history", cancelled: "history", deleted: "history" }[state.filter] || state.filter;
+    if (!["needs", "working", "posted", "history"].includes(state.filter)) state.filter = "needs";
+    const wentOut = (t) => (t.posted || []).length || t.scheduled || (t.failed || []).length;
+    const postedDone = doneAll.filter(wentOut).slice(0, 60), done = doneAll.filter((t) => !wentOut(t)).slice(0, 60);
     const cancelled = tasks.filter((t) => t.status === "cancelled").sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // every finished folder in out/ waits for the owner: edits (edit.mp4), but also notes-only or script-only work
     const SPECIAL_OUT = ["scripts", "radar", "pulse"], outNames = new Set(st.waiting_for_approval || []);
     for (const [name, info] of Object.entries(st.out || {})) if (!SPECIAL_OUT.includes(name) && info && (info.files || []).length) outNames.add(name);
     // Native Studio deliveries already have a real review task. Keep that task
     // as the single approval entry, without changing ordinary out/ cards.
-    // a folder without a task: its channel is its channel.txt (none: the main channel); Delete moves it to the Deleted tab.
+    // a folder without a task: its channel is its channel.txt (none: the main channel); Delete moves it to History → Deleted.
     // Every version of one Studio project (sermon-studio-<project>-r<rev>-a<n>) is one row: the newest, the rest inside it.
     const groups = {};
     for (const name of uncoveredSermonOutFolders(outNames, allTasks.filter((t) => t.status === "review"))) {
@@ -1048,16 +1083,13 @@
       return { g, folders: i < 0 ? [] : outDeleted.splice(i, 1)[0].names };
     });
     const nDeleted = deletedTasks.length + outDeleted.length;
-    const counts = { all: doing.length + review.length + todo.length + doneToday.length + outWaiting.length, running: doing.length, waiting: review.length + outWaiting.length, done: Math.min(60, doneAll.length), cancelled: cancelled.length, deleted: nDeleted };
-    if (state.filter === "cancelled" && !cancelled.length && !allTasks.some((t) => t.status === "cancelled")) state.filter = "all";
-    const anyDeleted = (st.deleted || []).length || outGroups.some((g) => g.hidden);
-    if (state.filter === "deleted" && !anyDeleted) state.filter = "all";
-    const f = state.filter, show = (k) => f === "all" || f === k;
+    const counts = { needs: review.length + outWaiting.length + todo.length, working: doing.length, posted: new Set([...tasks.filter(schedPost), ...postedDone].map((t) => t.video || t.id)).size, history: done.length + cancelled.length + nDeleted };
+    const f = state.filter, show = (k) => ({ running: "working", waiting: "needs" })[k] === f;
     const sec = (title, dot, n) => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span></div>`;
     const folderTitle = (g) => (g.project ? `Sermon poster · ${g.project.slice(0, 8)}` : g.name.replace(/[-_]+/g, " "));
-    const folderThumb = ({ name, info }) => {               // cover.jpg, else the first picture in the folder
+    const folderThumb = ({ name, info, area = "out" }) => {   // cover.jpg, else the first picture in the folder
       const pic = info.cover ? "cover.jpg" : (info.files || []).find((f) => /\.(jpe?g|png)$/i.test(f) && !f.startsWith("_"));
-      return pic ? `<img class="thumb" src="${phoneImg(`/files/out/${encodeURIComponent(name)}/${encodeURIComponent(pic)}`)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
+      return pic ? `<img class="thumb" src="${phoneImg(`/files/${area}/${encodeURIComponent(name)}/${encodeURIComponent(pic)}`)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
     };
     const approvalRow = (g, inGroup) => {
       const { name, info } = g, all = g.names.join("|"), key = "out:" + name, open = state.openDetail === key, fixed = name.startsWith("thumbnail-final-");
@@ -1066,7 +1098,7 @@
       const versions = older.length ? `<div class="td-vers"><span class="td-l">Older versions · ${older.length}</span>${older.map((x) => `<button class="btn sm" data-rv-folder="out/${esc(x.name)}" type="button">${svg("play")} v${x.rev}</button>`).join("")}</div>` : "";
       const detail = open ? `<div class="task-detail"><div><b>out/${esc(name)}</b> <span class="hint">· ${nFiles} files${g.project ? ` · newest is v${g.rev}` : ""}</span></div>${versions}
         <div class="td-grid"><span class="td-l">Channel</span><select class="field td-ch" data-out-ch="${esc(all)}" aria-label="Channel of this folder" ${fixed ? "disabled" : ""}>${chOpts}</select></div>
-        <div class="hint" style="margin-top:6px">${fixed ? "A thumbnail package keeps the channel it was made for." : "The channel also picks the accounts on the posting screen."} Delete moves ${older.length ? `all ${g.names.length} versions` : "it"} to the Deleted tab; the files stay in out/.</div>
+        <div class="hint" style="margin-top:6px">${fixed ? "A thumbnail package keeps the channel it was made for." : "The channel also picks the accounts on the posting screen."} Delete moves ${older.length ? `all ${g.names.length} versions` : "it"} to History → Deleted; the files stay in out/.</div>
         <div class="td-end"><button class="btn sm danger" data-del-out="${esc(all)}" type="button">Delete${older.length ? ` all ${g.names.length}` : ""}</button></div></div>` : "";
       const what = info.edit ? "edit ready" : `${nFiles} file${nFiles === 1 ? "" : "s"}`;
       return `<div class="trow approval hot" data-out="${esc(name)}"><span class="g ia" data-rv-folder="out/${esc(name)}">${folderThumb(g)}</span><div class="tt ia" data-rv-folder="out/${esc(name)}"><div class="title">${esc(inGroup ? (info.edit ? "Video edit" : "Files") : folderTitle(g))}</div><div class="meta">${chPill(info.ch || "")}${tagPill("Creative")}<span>${g.project ? `v${g.rev}${older.length ? ` · +${older.length} older` : ""}` : what} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div></div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button><button class="btn sm mng ${open ? "on" : ""}" data-manage="${esc(key)}" type="button" title="Manage: channel, delete" aria-label="Manage this folder" aria-expanded="${open}">⋯</button></div></div>${detail}`;
@@ -1087,26 +1119,30 @@
       return order.map((k) => {
         const info = (st.out || {})[k] || {}, pkg = cards && !info.hidden && info.pkg, all = rowsOf[k];
         if (cards && !!(pkg && pkg.ready) !== wantReady) return "";
-        if (!pkg && all.length < 2) return all[0].row(false);
+        const lone = all.length < 2 && all[0].t, own = lone && approvedOf([all[0].t]);
+        if (!pkg && all.length < 2 && !(own && ((all[0].t.posted || []).length || (all[0].t.failed || []).length || all[0].t.status === "done"))) return all[0].row(false);
         const rows = pkg ? all.filter((r) => r.t && !/(?:^|\s)thumbnail-request:/.test(r.t.note || "")) : all;
         const folder = all.find((r) => r.folder), ts = rows.filter((r) => r.t).map((r) => r.t);
         const byTitle = k.startsWith("title:"), anyReady = ts.some((t) => t.final);
         const shut = !openCards().has(k) && !rows.some((r) => state.openDetail === (r.t ? r.t.id : "out:" + k));   // every card starts closed
         const asks = ts.filter((t) => t.asks).length, blocked = ts.filter((t) => /(?:^|\s)Blocked:/.test(t.note || "")).length;
-        const meta = [rows.length && `${rows.length} task${rows.length === 1 ? "" : "s"}`, asks && `${asks} ${asks === 1 ? "asks" : "ask"} you`, blocked && `${blocked} blocked`, byTitle && anyReady && "ready to post"].filter(Boolean).join(" · ");
+        const meta = [asks && `${asks} ${asks === 1 ? "asks" : "ask"} you`, blocked && `${blocked} blocked`, byTitle && anyReady && "ready to post"].filter(Boolean).join(" · ");
         const title = folder ? folderTitle(folder.folder) : byTitle ? all[0].groupTitle : k.replace(/[-_]+/g, " ");
         const glow = (pkg && pkg.ready) || (byTitle && anyReady);
         const sched = !glow && (ts.find((t) => t.scheduled) || {}).scheduled;
         const posted = !glow && !sched && ts.length && ts.every((t) => t.status === "done") && ts.some((t) => (t.posted || []).length);
-        const open = (pkg ? `<button class="btn sm ${pkg.ready ? "ready" : "primary"}" data-rv-folder="out/${esc(k)}" type="button">${pkg.ready ? "Post" : "Open"}</button>` : "")
+        const ownApproved = approvedOf(ts), approvedOnly = !pkg && !(st.out || {})[k] && !!ownApproved && !ts.some((t) => (st.out || {})[outOf(t).split("/")[0]]);   // a new version waiting in out/ is the card, not the old approved one
+        const went = [...new Set(ts.flatMap((t) => t.posted || []))], failed = [...new Set(ts.flatMap((t) => t.failed || []))].filter((x) => !went.includes(x));
+        const status = cardStatus({ pkg, ts, went, failed, sched, approvedOnly });
+        const open = (pkg ? `<button class="btn sm ${pkg.ready ? "ready" : "primary"}" data-rv-folder="out/${esc(k)}" type="button">${esc(pkg.ready ? "Post" : pkgNext(pkg))}</button>` : "")
           // an approved video (posted, partly posted or not yet): open it again to post to the platforms still missing
-          + (!pkg && !(st.out || {})[k] && (st.approved || {})[k] ? `<button class="btn sm primary" data-rv-folder="approved/${esc(k)}" type="button">Open to post</button>` : "")
+          + (approvedOnly ? `<button class="btn sm ${failed.length ? "ready" : "primary"}" data-rv-folder="approved/${esc(ownApproved)}" type="button">${esc(failed.length ? "Post to " + failed.map((x) => PLAT_NAME[x] || x).join(", ") : went.length || sched ? "Open" : "Post")}</button>` : "")
           + `<button class="btn sm mng vg-del" data-del-card="${esc(k)}" type="button" title="Delete this whole card" aria-label="Delete this whole card">${svg("trash")}</button>`;
-        const head = byTitle ? `<span class="thumb vg-count">${rows.length}</span>` : folderThumb({ name: k, info });
+        const head = byTitle ? `<span class="thumb vg-count">${rows.length}</span>` : approvedOnly ? folderThumb({ name: ownApproved, info: st.approved[ownApproved], area: "approved" }) : folderThumb({ name: k, info });
         const folderNames = [...new Set([...(st.out && st.out[k] ? [k] : []), ...all.filter((r) => r.folder).flatMap((r) => r.folder.names || [r.folder.name])])];
         (state.cardItems ||= {})[k] = { ids: ts.map((t) => t.id), folders: folderNames, title,
           studio: [...ts.map((t) => t.note || ""), ...folderNames].some((x) => /sermon-studio-/.test(x)) };
-        return `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${posted ? "is-posted" : ""} ${sched ? "is-sched" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : sched ? schedTag(sched) : posted ? postedTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? '<span class="vg-chev">›</span>' : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
+        return `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${posted ? "is-posted" : ""} ${sched ? "is-sched" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : sched ? schedTag(sched) : posted ? postedTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${status}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? `<span class="vg-det">${shut ? "Details" : "Hide"} <span class="vg-chev">›</span></span>` : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
       }).join("");
     };
     const videoOf = (t) => { const m = /source-task:(\S+)/.exec(t.note || ""), src = m && allTasks.find((x) => x.id === m[1]); return (src && (src.video || outOf(src))) || t.video || outOf(t); };   // a thumbnail package joins its video
@@ -1125,26 +1161,30 @@
     const scrollTop = p.querySelector(".pbody") ? p.querySelector(".pbody").scrollTop : 0;
     const teamOpts = state.teams.map((t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
     let body = "";
-    const runningSec = show("running") ? sec("Running", "#4f8cff", doing.length) + (byVideo(taskItems(doing)) || '<div class="hint" style="margin:2px 0 6px">Nothing running. Press Run on a task or send a brief.</div>') : "";
+    const runningSec = show("running") ? sec("Working", "#4f8cff", doing.length) + (byVideo(taskItems(doing)) || '<div class="hint" style="margin:2px 0 6px">Nothing running. Press Run on a task or send a brief.</div>') : "";
     const waitItems = [...folderItems(outWaiting), ...taskItems(review)], readyCards = show("waiting") ? byVideo(waitItems, true) : "";
     const nReady = outWaiting.filter((g) => g.info.pkg && g.info.pkg.ready).length;
     const readySec = readyCards ? sec("Ready to post", "#3ddc97", nReady) + readyCards : "";
-    const waitingSec = show("waiting") ? sec("Waiting for you", "#e4c830", counts.waiting - nReady) + (byVideo(waitItems, false) || '<div class="hint" style="margin:2px 0 6px">Nothing waits for your OK.</div>') : "";
-    body += readySec + (isPhone() ? waitingSec + runningSec : runningSec + waitingSec);      // a phone is for approving: what waits for you comes first
-    if (f === "all" && todo.length) body += sec("To do", "#6b7280", todo.length) + byVideo(taskItems(todo));
-    if (show("done")) body += sec(f === "done" ? "Done" : "Done today", "#4cceac", done.length) + (byVideo(taskItems(done)) || `<div class="hint" style="margin:2px 0 6px">${f === "done" ? "Nothing finished yet." : "Nothing finished yet today."}</div>`) + (f === "done" && done.some(canReedit) ? '<div class="hint" style="margin:6px 0">Re-edit sends finished work back to the team as a new version; the approved one stays as it is.</div>' : "");
-    if (f === "cancelled") body = sec("Cancelled", "#6b7280", cancelled.length) + (cancelled.map(taskRow).join("") || '<div class="hint" style="margin:2px 0 6px">Nothing cancelled here.</div>') + '<div class="hint" style="margin:6px 0">Restore puts a task back in To do. Delete (under ⋯) moves it to the Deleted tab; its files stay.</div>';
-    if (f === "deleted") body = sec("Deleted", "#6b7280", nDeleted)
-      + deletedTasks.map(({ g, folders }) => deletedRow(taskTitle(g[0]), g[0].ch, g[0].deleted_at, `data-restore="${esc(g.map((t) => t.id).join("|"))}" data-restore-folders="${esc(folders.join("|"))}"`, g.length + folders.length > 1 ? ` · ${g.length + folders.length} versions` : "")).join("")
-      + outDeleted.map((g) => deletedRow(folderTitle(g), g.info.ch || "", g.info.deleted_at, `data-restore-out="${esc(g.names.join("|"))}"`, g.names.length > 1 ? ` · ${g.names.length} versions` : "")).join("")
-      + (nDeleted ? "" : '<div class="hint" style="margin:2px 0 6px">Nothing deleted here.</div>') + '<div class="hint" style="margin:6px 0">Restore puts it back where it was. Deleting never touches the files; they stay in out/.</div>';
+    const waitingSec = show("waiting") ? sec("Needs you", "#e4c830", review.length + outWaiting.length - nReady) + (byVideo(waitItems, false) || '<div class="hint" style="margin:2px 0 6px">Nothing needs you right now.</div>') : "";
+    if (f === "needs") body += readySec + waitingSec + (todo.length ? sec("Not started · press Run or Edit", "#6b7280", todo.length) + byVideo(taskItems(todo)) : "");
+    if (f === "working") body += runningSec;
+    if (f === "posted") body += byVideo(taskItems([...tasks.filter(schedPost), ...postedDone])) || '<div class="hint" style="margin:2px 0 6px">Nothing posted yet.</div>';
+    if (f === "history") {
+      body += sec("Finished", "#4cceac", done.length) + (byVideo(taskItems(done)) || '<div class="hint" style="margin:2px 0 6px">Nothing finished yet.</div>')
+        + (done.some(canReedit) ? '<div class="hint" style="margin:6px 0">Re-edit sends finished work back to the team as a new version; the approved one stays as it is.</div>' : "");
+      if (cancelled.length) body += sec("Cancelled", "#6b7280", cancelled.length) + cancelled.map(taskRow).join("") + '<div class="hint" style="margin:6px 0">Restore puts a task back in Needs you. Delete (under ⋯) moves it to Deleted; its files stay.</div>';
+      if (nDeleted) body += sec("Deleted", "#6b7280", nDeleted)
+        + deletedTasks.map(({ g, folders }) => deletedRow(taskTitle(g[0]), g[0].ch, g[0].deleted_at, `data-restore="${esc(g.map((t) => t.id).join("|"))}" data-restore-folders="${esc(folders.join("|"))}"`, g.length + folders.length > 1 ? ` · ${g.length + folders.length} versions` : "")).join("")
+        + outDeleted.map((g) => deletedRow(folderTitle(g), g.info.ch || "", g.info.deleted_at, `data-restore-out="${esc(g.names.join("|"))}"`, g.names.length > 1 ? ` · ${g.names.length} versions` : "")).join("")
+        + '<div class="hint" style="margin:6px 0">Restore puts it back where it was. Deleting never touches the files; they stay in out/.</div>';
+    }
     // channel chips: open work per channel (cancelled and finished tasks are not counted)
     const open = (t) => ["todo", "doing", "review"].includes(t.status), nOpen = (pred, ch) => allTasks.filter((t) => open(t) && !olderIds.has(t.id) && pred(t)).length + outAll.filter((g) => ch === undefined || (g.info.ch || "") === ch).length;
     const chips = [["all", "All channels", nOpen(() => true)], ...chList().map((c) => [c.key, c.name, nOpen((t) => t.ch === c.key, c.key)]), ["@office", "Whole office", nOpen((t) => t.ch == null, null)]];
     const chRow = `<div class="chrow" role="group" aria-label="Show tasks for">${chips.map(([k, l, n]) => `<button class="chchip ${state.chFilter === k ? "active" : ""}" data-chf="${esc(k)}" type="button" style="--chc:${k === "all" ? "#7b6cf6" : k === "@office" ? "#4a5060" : hashColor("channel:" + k)}"><i></i>${esc(l)} <b>${n}</b></button>`).join("")}</div>`;
     const addCh = state.chFilter === "all" ? "auto" : state.chFilter === "@office" ? "@office" : "ch:" + state.chFilter;
     const chOpts = [["auto", "Channel: auto"], ...chList().map((c) => ["ch:" + c.key, c.name]), ["@office", "Whole office"]].map(([v, l]) => `<option value="${esc(v)}" ${v === addCh ? "selected" : ""}>${esc(l)}</option>`).join("");
-    const tabs = [["all", "All"], ["running", "Running"], ["waiting", "Waiting"], ["done", "Done"], ...(allTasks.some((t) => t.status === "cancelled") || f === "cancelled" ? [["cancelled", "Cancelled"]] : []), ...(anyDeleted ? [["deleted", "Deleted"]] : [])];
+    const tabs = [["needs", "Needs you"], ["working", "Working"], ["posted", "Posted"], ["history", "History"]];
     p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">${state.chFilter === "all" ? "Whole office" : esc(chName(state.chFilter === "@office" ? null : state.chFilter))} · today${st.desk && st.desk.running ? ` · <b class="jobs">${st.desk.running} of ${st.desk.limit} jobs running</b>${st.desk.queued ? `, ${st.desk.queued} waiting` : ""}` : ""}</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
       <div class="ph-tools"><button class="${state.phAdd ? "on" : ""}" data-ph-toggle="add" type="button">${state.phAdd ? "× Close" : "+ New task"}</button><button class="${state.phDrop || state.upKind ? "on" : ""}" data-ph-toggle="drop" type="button">${state.upKind ? `Uploading ${state.upPct || 0}%` : state.phDrop ? "× Close" : "⤒ Add files"}</button></div>
       <form class="add-task ${state.phAdd ? "" : "ph-hide"}" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team" aria-label="Team"><option value="">Team: auto</option>${teamOpts}</select><select id="task-ch" aria-label="Channel">${chOpts}</select><button class="btn blue" type="submit">Add</button></form>
@@ -2419,12 +2459,12 @@
       if (d.chf != null) { state.chFilter = d.chf; state.openDetail = null; renderBoard(); return; }
       if (d.vgroup != null) { const s = openCards(); if (!s.delete(d.vgroup)) s.add(d.vgroup); saveOpenCards(); renderBoard(); return; }
       if (d.manage) { state.openDetail = state.openDetail === d.manage ? null : d.manage; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
-      if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is under Cancelled if you want it back."); return; }
+      if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is in History → Cancelled if you want it back."); return; }
       if (d.del) { deleteTask(d.del); return; }
       if (d.delCard) { const c = (state.cardItems || {})[d.delCard]; if (c) deleteGroup(c); return; }
       if (d.delOut) {                                       // one folder, or every version of one project ("a|b|c")
         const folders = d.delOut.split("|"); if (state.openDetail === "out:" + folders[0]) state.openDetail = null;
-        taskAction({ action: "folder-hide", folders }).then((r) => { if (r) undoToast(`Deleted${folders.length > 1 ? ` all ${folders.length} versions` : ""}. It is in the Deleted tab; the files stay in out/.`, () => taskAction({ action: "folder-show", folders }, "It is back on the board.")); });
+        taskAction({ action: "folder-hide", folders }).then((r) => { if (r) undoToast(`Deleted${folders.length > 1 ? ` all ${folders.length} versions` : ""}. It is in History → Deleted; the files stay in out/.`, () => taskAction({ action: "folder-show", folders }, "It is back on the board.")); });
         return;
       }
       if (d.reedit) { state.reedit = d.reedit; state.openDetail = d.reedit; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); const x = $("#reedit-text"); if (x) x.focus(); return; }
@@ -2486,7 +2526,7 @@
         const t = ((state.status && state.status.tasks) || []).find((x) => x.id === id);
         postJSON("/api/tasks", { action: "reedit", id }).then((r) => {
           send(`Re-edit requested by the owner on board task ${id}${t ? ` (${t.title})` : ""}: ${text}\nThe approved version in ${r.from} stays untouched (it may be posted already). A copy is ready in ${r.folder}: make the changes there, then put the new version back in Waiting for my OK (node hq/tasks.js move ${id} review). Save what we learned with /retro.`, id);
-          state.reedit = null; state.openDetail = null; state.flash = id; if (state.filter === "done") state.filter = "all";
+          state.reedit = null; state.openDetail = null; state.flash = id; state.filter = "working";
           toast("chief", "Sent to the team", `Re-edit: ${shortTask(text, 60)}`);
           return refresh();
         }).then(() => { const row = document.querySelector(`.trow[data-task="${id}"]`); if (row) row.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => { state.flash = null; }, 2500); })

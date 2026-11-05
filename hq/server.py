@@ -1064,10 +1064,13 @@ def status_payload():
         t["live"] = live.get(t["id"])                       # the lead is on it right now ("working"), or it waits in line ("queued")
         t["video"] = task_video(t, thumb_jobs)              # the video it belongs to: the board groups a project's tasks by it
         if t["video"] and t["status"] == "done":
-            if t["video"] not in posted_cache:
-                sched = {}
-                posted_cache[t["video"]] = (posted_platforms(t["video"], sched), sched or None)
-            t["posted"], t["scheduled"] = posted_cache[t["video"]]   # out already: purple; waiting for its time: SCHEDULED
+            m = re.search(r"out:([^\s,;]+)", t.get("note") or "")
+            own = m[1].strip("/").split("/")[0] if m else ""
+            where = own if own and not own.startswith("thumbnail-final-") and os.path.isdir(os.path.join(ROOT, "approved", own)) else t["video"]   # a re-edit's v2 is its own folder
+            if where not in posted_cache:
+                sched, failed = {}, []
+                posted_cache[where] = (posted_platforms(where, sched, failed), sched or None, failed)
+            t["posted"], t["scheduled"], t["failed"] = posted_cache[where]   # out already: purple; waiting for its time: SCHEDULED; failed: offered again
         t["final"] = task_final(t)
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
         t["scripts"] = scripts.for_task(t)                  # the picked passages the owner approves before any video is cut
@@ -2614,9 +2617,10 @@ def task_video(t, thumb_jobs):
     return re.sub(r"-v\d+$", "", name)
 
 
-def posted_platforms(name, scheduled=None):
+def posted_platforms(name, scheduled=None, failed=None):
     """Where approved/<name> (or one of its topics) went out: the platforms whose post finished. scheduled, a dict, also
-    gets the platforms still waiting for their time and the earliest one: {"platforms": [...], "when": unix time}."""
+    gets the platforms still waiting for their time and the earliest one: {"platforms": [...], "when": unix time}.
+    failed, a list, gets the platforms whose last try failed and that never went out (the board offers them again)."""
     base = os.path.join(ROOT, "approved", name)
     if not SAFE_NAME.match(name) or not os.path.isdir(base):
         return []
@@ -2627,6 +2631,8 @@ def posted_platforms(name, scheduled=None):
                 rec = json.load(f)
         except (OSError, ValueError):
             continue
+        if not isinstance(rec, dict):
+            continue
         found += [p for p in publish.PLATFORMS if isinstance(rec.get(p), dict) and rec[p].get("state") == "posted" and p not in found]
         if scheduled is not None:
             for p in publish.PLATFORMS:
@@ -2634,6 +2640,10 @@ def posted_platforms(name, scheduled=None):
                 if e.get("state") in ("scheduled", "uploading") and e.get("when"):
                     scheduled.setdefault("platforms", []).append(p)
                     scheduled["when"] = min(scheduled.get("when") or e["when"], e["when"])
+        if failed is not None:
+            failed += [p for p in publish.PLATFORMS if isinstance(rec.get(p), dict) and rec[p].get("state") == "failed" and p not in failed]
+    if failed is not None:                                 # went out or waiting for its time elsewhere: not failed
+        failed[:] = [p for p in failed if p not in found and p not in (scheduled or {}).get("platforms", [])]
     return found
 
 
