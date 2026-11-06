@@ -7,6 +7,7 @@ The owner picks the package before the edit (or later on the video's card):
 The video is READY when every step of its package is done. Its choices live in out/<name>/package.json
 (an agent may leave the package word in package.txt before the owner has touched it).
 """
+import calendar
 import json
 import os
 import re
@@ -33,6 +34,44 @@ def has_video(d):
         return any(f.lower().endswith(CLIP_EXT) for f in os.listdir(d))
     except OSError:
         return False
+
+
+SETTLE = 15                                                     # seconds a new video file must sit unchanged (a copy may still be running)
+STALE = 20 * 60                                                 # a "doing" task silent this long next to a finished video: its run died
+NOT_FINAL = re.compile(r"(^|[-_. ])(clean|nocap|no-text|src\d*|tight|comp|raw|draft|phone)([-_. ]|$)", re.I)   # working and phone copies, not the edit to approve
+
+
+def final_videos(d):
+    """The finished-edit candidates in a folder (edit.mp4, final.mp4, …), not the clean or working copies."""
+    try:
+        return [f for f in os.listdir(d) if f.lower().endswith(CLIP_EXT) and not NOT_FINAL.search(f)]
+    except OSError:
+        return []
+
+
+def video_stamp(d):
+    """When the newest finished video was written, None without one."""
+    stamps = []
+    for f in final_videos(d):
+        try:
+            stamps.append(os.path.getmtime(os.path.join(d, f)))
+        except OSError:
+            pass
+    return max(stamps) if stamps else None
+
+
+def settled_video(d, now=None):
+    """True when the folder holds a finished video that is not still being written."""
+    now = time.time() if now is None else now
+    stamp = video_stamp(d)
+    return stamp is not None and abs(now - stamp) >= SETTLE
+
+
+def _iso(s):
+    try:
+        return calendar.timegm(time.strptime(str(s)[:19], "%Y-%m-%dT%H:%M:%S")) if s else None   # the board writes UTC
+    except ValueError:
+        return None
 
 
 class Packages:
@@ -126,8 +165,11 @@ class Packages:
             if style not in {t["id"] for t in templates}:
                 style = None
             both = all(thumbs[slot] and thumbs[slot]["picked"] for slot in SIZES)
+            editing, edit_pct, edit_run = self._editing(name, d)
             done = {"script": scripted,
-                    "video": bool(pkg.get("videoOkAt") or (row and row.get("mode", "video") == "video")),   # Codex only starts on an approved video
+                    # Codex only starts on an approved video; an OK counts for the video it was given on, so a re-edit's
+                    # new video (or one still being made) needs its own OK
+                    "video": not editing and bool(self._ok_current(pkg, d) or (row and row.get("mode", "video") == "video")),
                     "caption": confirmed,
                     "thumbnail": both}
             return {"preset": pkg["preset"], "name": NAMES[pkg["preset"]], "stages": stages, "done": done, "captions": captions,
@@ -135,7 +177,51 @@ class Packages:
                     "sizes": {k: v["label"] for k, v in SIZES.items()},
                     "cover": COVER if both else None, "coverIg": SIZES["ig"]["cover"] if both else None,
                     "channel": channel, "templates": templates, "style": style, "ready": all(done[s] for s in stages),
-                    "captionsBusy": self.job_running(self._captions_job(name)), "captionsProgress": self.job_progress(self._captions_job(name))}
+                    "captionsBusy": self.job_running(self._captions_job(name)), "captionsProgress": self.job_progress(self._captions_job(name)),
+                    "editing": editing, "editProgress": edit_pct, "editRunning": edit_run}
+
+    @staticmethod
+    def _ok_current(pkg, d):
+        """The owner's OK counts for the video it was given on. In approved/ it always counts (a video rebuilt there,
+        like 1101 Children's 9:16, stays approved); in out/ a newer video (a re-edit's -v2 copies the old OK) needs a new one."""
+        ok = pkg.get("videoOkAt")
+        if not isinstance(ok, (int, float)) or isinstance(ok, bool):
+            return False
+        if os.path.basename(os.path.dirname(os.path.normpath(d))) == "approved":
+            return True
+        stamp = video_stamp(d)
+        return stamp is not None and ok >= stamp - 1
+
+    def _tasks(self):
+        """The board's tasks, read at most once a second (the board asks for every video's state on each poll)."""
+        now = time.time()
+        cache = getattr(self, "_task_cache", None)
+        if cache and now - cache[0] < 1:
+            return cache[1]
+        try:
+            tasks = [t for t in self.load_tasks().get("tasks", []) if isinstance(t, dict)]
+        except Exception:
+            tasks = []
+        self._task_cache = (now, tasks)
+        return tasks
+
+    def _editing(self, name, d):
+        """(True, progress % or None, whether an edit task runs) while the edit isn't really finished: no settled finished video in the folder yet,
+        or this video's edit task is still running on the board. Approve video waits for it (CAN 1106 #3, 2026-11-06:
+        the notes landed in out/ before the video, and the panel already offered Approve video). A "doing" task that has
+        been silent for STALE next to a settled video doesn't count: its run died, and the video must stay approvable."""
+        if os.path.basename(os.path.dirname(os.path.normpath(d))) == "approved":
+            return False, None, False                           # already approved and moved: the edit is long finished
+        marker, now = "out:" + name, time.time()
+        settled = settled_video(d, now)
+        runs = [t for t in self._tasks() if t.get("status") == "doing" and t.get("kind") not in ("post", "meeting", "approval")
+                and marker in str(t.get("note") or "").split()]
+        if settled:
+            runs = [t for t in runs if now - (_iso(t.get("updated")) or 0) < STALE]
+        pct = next((t["progress"] for t in runs if isinstance(t.get("progress"), (int, float))), None)
+        if runs or not settled:
+            return True, pct, bool(runs)
+        return False, None, False
 
     def _thumb(self, d, row, templates, slot):
         """One size's thumbnails for the card: status, progress, the 3 options shown, and whether the owner picked one."""
@@ -214,7 +300,11 @@ class Packages:
                     raise DesignError("Choose Video only, Video + caption or Full set.", 400)
                 pkg["preset"] = body["preset"]
             elif act == "video-ok":
-                pkg["videoOkAt"] = pkg.get("videoOkAt") or time.time()
+                d = self._dir(name)
+                if self._editing(name, d)[0]:
+                    raise DesignError("This video is still being edited. Approve it once it's finished.", 409)
+                if not self._ok_current(pkg, d):
+                    pkg["videoOkAt"] = time.time()
             elif act == "write-captions":                       # Social writes the three title + caption + hashtag sets
                 if self.job_running(self._captions_job(name)):
                     return self.state(name)                      # already writing: a second click starts nothing

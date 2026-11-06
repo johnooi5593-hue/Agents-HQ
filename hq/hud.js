@@ -795,7 +795,7 @@
     const s = pkg.stages.find((x) => !pkg.done[x]);
     const ts = Object.values(pkg.thumbs || { main: pkg.thumb }).filter(Boolean);
     if (s === "script") return "Approve script";
-    if (s === "video") return "Approve video";
+    if (s === "video") return pkg.editing ? (pkg.editRunning ? "Still editing…" : "No video yet") : "Approve video";
     if (s === "caption") return pkg.captionsBusy ? "Writing captions…" : (pkg.captions || []).length ? (pkg.caption == null ? "Pick caption" : "Confirm caption") : "Get captions";
     if (s === "thumbnail") return ts.some((x) => ["watching", "dispatching"].includes(x.status)) ? "Making thumbnails…" : ts.some((x) => x.status === "delivered" && !x.picked) ? "Pick thumbnail" : ts.some((x) => x.status === "failed") ? "Thumbnail failed · try again" : "Make thumbnails";
     return "Open";
@@ -806,6 +806,7 @@
     const running = ts.find((t) => t.status === "doing" && !t.asks);
     if (pkg && pkg.ready) return pill("ready", "Ready to post");
     if (!pkg && ts.some((t) => t.asks)) return pill("needs", "Needs you · answer the lead");
+    if (pkg && pkg.editing && !pkg.editRunning) return pill("working", "No video yet");   // nothing for the owner to do
     if (pkg) { const n = pkgNext(pkg); return /…$/.test(n) ? pill("working", "Working · " + esc(n.replace(/…$/, ""))) : pill("needs", "Needs you · " + esc(n)); }
     if (running) return pill("working", "Working" + (running.progress != null && running.progress < 100 ? ` · ${running.progress}%` : ""));
     if (went.length || failed.length) return pill(failed.length ? "part" : "posted", [...went.map((x) => `✓ ${esc(PLAT_NAME[x] || x)}`), ...failed.map((x) => `<b title="Did not go out: tap Post to ${esc(PLAT_NAME[x] || x)} to try again">✗ ${esc(PLAT_NAME[x] || x)}</b>`)].join("&nbsp; "));
@@ -2105,7 +2106,9 @@
     const step = (s, body, locked) => `<div class="pk-sec ${pkg.done[s] ? "ok" : ""} ${locked ? "locked" : ""}"><div class="pk-h"><span class="pk-n">${pkg.done[s] ? svg("check") : n(s)}</span><b>${PKG_STEPS[s]}</b></div>${locked ? `<div class="hint">${locked}</div>` : body}</div>`;
     let h = `<div class="rv-sec pk ${pkg.ready ? "is-ready" : ""}"><div class="rv-h">${pkg.ready ? readyTag + " Ready to post" : "Get it ready"} <span>${pkg.stages.filter((s) => pkg.done[s]).length} of ${pkg.stages.length} done</span></div>
       <div class="pk-presets" role="group" aria-label="What this video needs">${PKG_PRESETS.map(([k, l]) => `<button class="rv-chip ${pkg.preset === k ? "on" : ""}" data-pkg="preset" data-pkg-val="${k}" type="button">${pkg.preset === k ? svg("check") : ""}${l}</button>`).join("")}</div>`;
-    h += step("video", pkg.done.video ? '<div class="hint">Approved. Changes now go through a re-edit.</div>' : '<div class="row pk-act"><button class="btn sm" data-rv-mode="changes" type="button">Ask for video changes</button><button class="btn sm primary" data-pkg="video-ok" type="button">Approve video</button></div>');
+    h += step("video", pkg.done.video ? '<div class="hint">Approved. Changes now go through a re-edit.</div>'
+      : pkg.editing ? (pkg.editRunning && pkg.editProgress != null ? pkgProg("Still editing: the video isn't finished yet", pkg.editProgress, false) : `<div class="hint"><b>${pkg.editRunning ? "Still editing: the video isn't finished yet." : "No finished video in this folder yet."}</b></div>`) + '<div class="hint">Approve video shows up here once the finished video is in. Nothing to check before that.</div>'
+      : '<div class="row pk-act"><button class="btn sm" data-rv-mode="changes" type="button">Ask for video changes</button><button class="btn sm primary" data-pkg="video-ok" type="button">Approve video</button></div>');
     if (has("caption")) {
       const caps = (pkg.captions.length ? `<div class="pub-caps">${pkg.captions.map((o, i) => `<button class="pub-cap ${i === pkg.caption ? "on" : ""} ${capOpen("pk", i) ? "full" : ""}" data-pkg="caption" data-pkg-val="${i}" type="button">${i === pkg.caption ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title)}</b><span>${esc(o.caption)}</span>${capMore("pk", i, o.caption)}</button>`).join("")}</div>` : '<div class="hint">No title + caption sets yet.</div>')
         + (pkg.captionsBusy ? pkgProg(pkg.captionsProgress ? "Social is writing 3 title + caption sets" : "Waiting for a free slot, then Social writes 3 sets", pkg.captionsProgress, true) + '<div class="hint">They show up here by themselves.</div>'
