@@ -42,6 +42,14 @@ v2 (the default, owner-approved on Pong+Gospel 11/14, 2026-10-30):
             leak after every "flash"; "leak": true on a line adds a soft leak at its start; plan "light" adds a warm
             bloom and floating light particles (kept off the face) to the end: true (from where the grade turns
             warm), a time in seconds, or {"from": t, "to": t, "bloom": 0.16, "particles": true}.
+            Colour rule (owner 2026-11-08), with plan "cards": 2: the arc and the warm light run at half strength (cc.GRADE_SCALE,
+            cc.LIGHT_SCALE), so they stay subtle on an already graded source; "grade": "neutral" = no colour shift
+            (the camera still moves), "light": false = no warm light, "grade": "classic-arc" = the full strength of
+            the approved Pong 11/14 look (on "grade_arc", else the 1114 arc itself).
+  words     (plan "cards": 2 only; without it cards and grade are exactly as before) cards break only between whole words: per-character word timing is rebuilt into words (line "word_list"
+            / "segments", else jieba when installed); particles (咯 哦 啦 呢 耶 啊) never sit alone on a card; a chunk
+            under 0.4 s on screen joins its neighbour (plan "min_card": seconds, 0 = never); a short card's entrance
+            is sped up so it has landed 4 frames before the card goes.
   accents   per line "accent": rings (two light rings open as it lands), orbs (two soft lights drift together),
             halo (a soft gold glow behind it).
 --classic (or plan "motion": "classic") renders the v1 look: hard-cut cards, no camera, grade, light or accents, and
@@ -65,14 +73,102 @@ AUTO_ANIMS = ["rise", "slide", "slam", "stagger", "slide", "wipe"]   # neighbour
 
 
 # ---- caption cards ----------------------------------------------------------------------------------------------------
-def chunk_words(ln):
+# 2026-11-08 (1107 Children review, t207): whole words on every card, particles never alone, no card too short to land.
+# All of it (and the half-strength grade / light in cc.grade_of) only with plan "cards": 2; without the flag a plan
+# renders exactly as before, so locked / approved reels stay byte-identical.
+PARTICLES = set("咯哦啦呢耶啊呀吧嘛喔咧")                    # sentence-final particles: never alone on a card
+SUFFIXES = set("们的了着过")                                 # bound to the word before when words are rebuilt
+MIN_CARD = 0.4                                              # a card chunk shorter than this joins its neighbour
+LAND_MARGIN = 4                                             # every card's entrance has landed this many frames before it ends
+_JIEBA = []                                                 # [module or None], imported on first need, never installed
+
+
+def _jieba():
+    if not _JIEBA:
+        try:
+            import jieba                                        # optional: whole Chinese words for per-character timing
+            jieba.setLogLevel(60)
+            _JIEBA.append(jieba)
+        except Exception:
+            _JIEBA.append(None)
+    return _JIEBA[0]
+
+
+def _content(ch):
+    return ch.isalnum()                                         # a letter, digit or CJK character; never punctuation
+
+
+def whole_words(ln, words, warn=None):
+    """The spoken words as whole words. Speech-to-text (and AI-voice timing) sometimes gives one entry per character
+    (蒙/古/包), and then a card could break inside a word (蒙古|包). The line's "word_list" (or "segments": a list, or one
+    string with spaces, e.g. "看 我的 蒙古包", spelling the spoken words) groups the entries; without it, per-character
+    entries are grouped with jieba when it is installed (else they stay as they are, with a warning). Particles
+    (咯 哦 啦 呢 耶 啊 ...) and bound suffixes (们 的 了 着 过) join the word before. A spoken entry is never split.
+    Each whole word keeps the first entry's start and the last entry's end."""
+    lid = ln.get("id")
+    wl = ln.get("word_list") or ln.get("segments")
+    if isinstance(wl, str):
+        wl = wl.split()
+    cjk = [w for w in words if any(is_cjk(c) for c in w["t"])]
+    per_char = len(cjk) >= 3 and all(sum(1 for c in w["t"] if _content(c)) == 1 for w in cjk)
+    chars = [(c, i) for i, w in enumerate(words) for c in w["t"] if _content(c)]
+    spoken = "".join(c for c, _ in chars)
+    if not wl:
+        if not per_char:
+            return words
+        jb = _jieba()
+        if jb is None:
+            if warn is not None:
+                warn.append(f"line {lid}: one timing entry per character and no jieba: cards may break inside a word; "
+                            f"give the line a \"word_list\" (the words with spaces)")
+            return words
+        if "".join(c for c in ln["text"] if _content(c)) == spoken:   # clause by clause: a word never runs over a comma
+            wl = [w for part in re.split(r"\W+", ln["text"]) if part for w in jb.lcut(part)]
+        else:
+            wl = jb.lcut(spoken)
+    segs = [s for s in ("".join(c for c in str(x) if _content(c)) for x in wl) if s]
+    if "".join(segs) != spoken:
+        if warn is not None:
+            warn.append(f"line {lid}: word_list '{' '.join(map(str, wl))}' does not spell the spoken words '{spoken}'; "
+                        f"the words are used as spoken")
+        return words
+    starts = set()                                              # where a clause starts (after a comma or sentence end),
+    if "".join(c for c in ln["text"] if _content(c)) == spoken:   # counted in spoken characters
+        k = 0
+        for part in re.split(r"\W+", ln["text"]):
+            if part:
+                starts.add(k); k += len(part)
+    merged, k = [], 0
+    for sg in segs:
+        pause = k > 0 and words[chars[k][1]]["start"] - words[chars[k - 1][1]]["end"] > 0.35
+        if merged and k not in starts and not pause and all(c in PARTICLES or c in SUFFIXES for c in sg) and len(sg) <= 2:
+            merged[-1] += sg                                    # never across a comma or a pause: a clause's first word stays
+        else:
+            merged.append(sg)
+        k += len(sg)
+    rng, k = [], 0
+    for sg in merged:
+        i0, i1 = chars[k][1], chars[k + len(sg) - 1][1]; k += len(sg)
+        if rng and i0 <= rng[-1][1]:
+            rng[-1][1] = max(rng[-1][1], i1)                    # never split a spoken entry
+        else:
+            rng.append([i0, i1])
+    return [{"t": "".join(words[j]["t"] for j in range(i0, i1 + 1)), "start": words[i0]["start"],
+             "end": max(words[i0]["start"], words[i1]["end"])} for i0, i1 in rng]
+
+
+def chunk_words(ln, warn=None, v2=False):
     """The line -> card chunks: 2-6 CJK characters or 1-3 Latin words, never across a pause > 0.35 s or a sentence end.
     The card text is always the line's own "text" (the corrected wording); the speech-to-text "words" only give the
-    timing and where a spoken word starts and ends, so a word is never split across two cards. Each chunk keeps its
-    character span in the line text ("span": (a, b)) so key words map onto it exactly."""
+    timing and where a spoken word starts and ends, so a word is never split across two cards (per-character words are
+    first rebuilt into whole words, see whole_words). A particle (咯 哦 啦 ...) never sits alone on a card: it joins the
+    chunk before. Each chunk keeps its character span in the line text ("span": (a, b)) so key words map onto it.
+    v2 (plan "cards": 2): whole words, particles, punctuation taking no room; without it the chunks are as before."""
     text = ln["text"]
     ct = char_times(ln)
     words = [w for w in ln.get("words") or [] if (w.get("t") or "").strip()]
+    if v2:
+        words = whole_words(ln, words, warn)
     toks = []                                                   # display units: one CJK character or one Latin word
     for u in cc.units(text):
         if u["gap"]:
@@ -101,9 +197,19 @@ def chunk_words(ln):
         else:
             g["end"] = groups[k + 1]["start"] if k + 1 < len(groups) else max(g["start"], ln["end"])
         g["cjk"] = any(is_cjk(c) for t_ in g["toks"] for c in t_["text"])
-        g["size"] = sum(1.0 if (is_cjk(t_["text"][0]) or len(t_["text"]) == 1) else 1.0 if len(t_["text"]) < 9 else 1.6 for t_ in g["toks"])
+        g["size"] = sum(0.0 if v2 and not any(_content(c) for c in t_["text"]) else   # v2: punctuation (！) takes no room
+                        1.0 if (is_cjk(t_["text"][0]) or len(t_["text"]) == 1) else 1.0 if len(t_["text"]) < 9 else 1.6 for t_ in g["toks"])
     out, cur, n = [], [], 0
     for g in groups:
+        if v2 and all(c in PARTICLES for t_ in g["toks"] for c in t_["text"]):
+            if cur:                                             # a particle stays with the words before it
+                cur.append(g); n += g["size"]
+                if g["brk"]:
+                    out.append(cur); cur, n = [], 0
+                continue
+            if out and not out[-1][-1]["brk"] and g["start"] - out[-1][-1]["end"] <= 0.35:
+                out[-1].append(g)                               # ... unless a pause or a comma / sentence end is between
+                continue
         limit = 6 if g["cjk"] else 3
         gap = cur and (g["start"] - cur[-1]["end"] > 0.35)
         if cur and (n + g["size"] > limit or gap):
@@ -132,6 +238,13 @@ def display_map(text, a, b):
     return m
 
 
+def landing_frames(anim, n):
+    """Frames (at the first card's speed) until a card's entrance has fully landed: box, every character, overshoot."""
+    if anim == "stagger":
+        return 2 + max(0, n - 1) * (1.5 if n <= 4 else 1.0) + 5
+    return {"cut": 0, "rise": 6, "slide": 7, "slam": 7, "wipe": 10}.get(anim, 8)
+
+
 class CardRenderer:
     """Caption cards with their entrance, key-word bar and swell-before-exit. A settled card is cached as one sprite."""
 
@@ -139,6 +252,7 @@ class CardRenderer:
         self.box, self.c1, self.c2 = colors.get("box", CARD["box"]), colors.get("text", CARD["text"]), colors.get("text2", CARD["text2"])
         self.y = y; self.cache = {}
         self.neg = neg                                          # key_style "negative": the key word is a photo negative
+        self.v2 = False                                         # plan "cards": 2: short cards get a quicker entrance
 
     def build(self, text):
         if text in self.cache:
@@ -218,8 +332,12 @@ class CardRenderer:
         """c: card chunk (text, t0, t1, anim, dir, first, last, exit, keys [(a, b, t_key)])"""
         d = self.build(c["text"])
         sp = 1.0 if c["first"] else 1.7                         # follow-on chunks move faster
-        fe = (t - c["t0"]) * FPS * sp
         anim = c["anim"]
+        land = landing_frames(anim, len(d["glyphs"]))            # a short card gets a quicker entrance, so it has fully
+        avail = (c["t1"] - c["t0"]) * FPS - LAND_MARGIN          # landed LAND_MARGIN frames before it goes (never slower)
+        if self.v2 and land / sp > avail:
+            sp = land / max(1.0, avail)
+        fe = (t - c["t0"]) * FPS * sp
         gx = gy = 0.0; gs = 1.0; ga = 1.0; gbl = 0.0; gmb = 0.0; gbr = 1.0
         box_sx, anchor_l, reveal, streak = 1.0, False, None, 0.0
         char_fn = lambda i, n, g: (0.0, 1.0, 1.0)
@@ -279,16 +397,62 @@ class CardRenderer:
         self.put_neg(fr, kimg, d["size"], W / 2 + gx, self.y + gy, gs, alpha=ga, blur=gbl, mblur=gmb)
 
 
-def card_timeline(lines, bigs, dur, classic, warn=None):
+def card_keys(ln, ct, a, b, t, classic):
+    """The key-word bars on the card that shows text[a:b]: [(start, end in the card text, time spoken)], and which keys."""
+    text, ks, hits = ln["text"], [], []
+    dm = display_map(text, a, b)
+    for key in ([] if classic else cc.line_keys(ln)):
+        kp = text.find(key)
+        if kp < 0:
+            continue
+        hit = [i_ for i_ in range(max(kp, a), min(kp + len(key), b)) if i_ in dm]
+        if not hit:
+            continue
+        tk = ct[hit[0]] if ct[hit[0]] is not None else t
+        ks.append((dm[hit[0]], dm[hit[-1]] + 1, tk - F1)); hits.append(key)
+    return ks, hits
+
+
+def join_short(tl, lines, classic, min_card=MIN_CARD):
+    """A card on screen for less than MIN_CARD joins its neighbour of the same line, back to back (the one that makes
+    the shorter card; the next one on a tie), so no word flashes by before it lands. Runs after the cards have made
+    room for big type, so a card shortened by it joins too. The joined card shows the line's own text over both spans,
+    with its key bars made again. Returns the joins (["line 21: 看 + 我的蒙古包", ...])."""
+    joins = []
+    while True:
+        k = next((k for k, c in enumerate(tl) if 2 * F1 < c["t1"] - c["t0"] < min_card - 1e-6 and not c.get("alone")), None)
+        if k is None:
+            return joins
+        c = tl[k]
+        nb = [j for j in (k + 1, k - 1) if 0 <= j < len(tl) and tl[j]["li"] == c["li"] and tl[j]["t1"] - tl[j]["t0"] > 2 * F1
+              and abs(tl[max(j, k)]["t0"] - tl[min(j, k)]["t1"]) <= 2 * F1]
+        if not nb:
+            c["alone"] = True                                   # nothing to join: its entrance is sped up instead (draw)
+            continue
+        ln = lines[c["li"]]
+        span = lambda j: display(ln["text"][tl[min(j, k)]["span"][0]:tl[max(j, k)]["span"][1]])
+        j = min(nb, key=lambda j: len(span(j)))
+        lo, hi = tl[min(j, k)], tl[max(j, k)]
+        a, b = lo["span"][0], hi["span"][1]
+        ks, _ = card_keys(ln, char_times(ln), a, b, lo["t0"] + F1, classic)
+        joins.append(f"line {c['line']}: {lo['text']} + {hi['text']}")
+        tl[min(j, k):max(j, k) + 1] = [dict(lo, t1=hi["t1"], text=span(j), span=(a, b), keys=ks, last=hi["last"], exit=hi["exit"])]
+
+
+JOINS = []                                                  # the card joins of the last card_timeline() (for the report)
+
+
+def card_timeline(lines, bigs, dur, classic, warn=None, min_card=0.0, v2=False):
     """Every card chunk with its time, entrance and key-word bars. Cards wait while big type is up. A key word that
     spans two cards gets a bar on each part; a key that can't show (its card is cut away for big type) is a warning."""
     warn = [] if warn is None else warn
     tl, sdir, auto, prev = [], 1, 0, None
+    del JOINS[:]
     for i, ln in enumerate(lines):
         if (ln.get("kind") or "card") != "card":
             continue
         nxt = lines[i + 1]["start"] if i + 1 < len(lines) else dur
-        ch = chunk_words(ln)
+        ch = chunk_words(ln, warn, v2)
         ct = char_times(ln)
         text = ln["text"]
         if classic:
@@ -312,20 +476,11 @@ def card_timeline(lines, bigs, dur, classic, warn=None):
             # a card ends one frame before the next one starts (next t0 = its t - F1), so two cards never share a frame
             end = ch[k + 1]["t"] - F1 if k + 1 < len(ch) else min(ln["end"] + 0.3, nxt - F1)
             a, b = c["span"]
-            dm = display_map(text, a, b)
-            ks = []
-            for key in ([] if classic else cc.line_keys(ln)):
-                kp = text.find(key)
-                if kp < 0:
-                    continue
-                hit = [i_ for i_ in range(max(kp, a), min(kp + len(key), b)) if i_ in dm]
-                if not hit:
-                    continue
-                tk = ct[hit[0]] if ct[hit[0]] is not None else c["t"]
-                ks.append((dm[hit[0]], dm[hit[-1]] + 1, tk - F1))
+            ks, hits = card_keys(ln, ct, a, b, c["t"], classic)
+            for key in hits:
                 placed.setdefault(key, []).append(len(tl))
             tl.append({"t0": max(c["t"] - F1, 0), "t1": end, "text": c["text"], "anim": anim, "dir": sdir, "first": k == 0,
-                       "last": k == len(ch) - 1, "keys": ks, "line": ln.get("id"), "exit": not classic})
+                       "last": k == len(ch) - 1, "keys": ks, "line": ln.get("id"), "exit": not classic, "span": (a, b), "li": i})
         for key in ([] if classic else cc.line_keys(ln)):
             if key in text and key not in placed:
                 warn.append(f"line {ln.get('id')}: key '{key}' is not on any card (nothing of it shows on screen)")
@@ -336,6 +491,8 @@ def card_timeline(lines, bigs, dur, classic, warn=None):
                     c["t0"] = b.t_out + 6 * F1
                 else:
                     c["t1"] = min(c["t1"], b.t_in); c["exit"] = False    # cut away for big type, no swell
+    if v2 and min_card > 0:
+        JOINS.extend(join_short(tl, lines, classic, min_card))   # no card too short to land
     out = []
     for c in tl:
         alive = c["t1"] - c["t0"] > 2 * F1
@@ -856,8 +1013,8 @@ def dot(r):
     return _dots[r]
 
 
-def particles(fr, t, a0, face):
-    """Floating warm light from a0 on, faded out around the face."""
+def particles(fr, t, a0, face, k=1.0):
+    """Floating warm light from a0 on, faded out around the face; k: strength (the colour rule's LIGHT_SCALE)."""
     if t < a0:
         return
     env = min(1, (t - a0) / 1.5); fx, fy = face[0] * W, face[1] * H
@@ -865,7 +1022,7 @@ def particles(fr, t, a0, face):
         y = (q["y"] - q["vy"] * (t - a0)) % 1900 + 10
         x = q["x"] + q["amp"] * math.sin(2 * math.pi * q["fr"] * t + q["ph"])
         dface = math.hypot((x - fx) / 330, (y - fy) / 300)
-        al = q["a"] * env * min(1, max(0.0, dface - 0.6) / 0.5) * (0.75 + 0.25 * math.sin(2 * math.pi * 0.6 * t + q["ph"]))
+        al = k * q["a"] * env * min(1, max(0.0, dface - 0.6) / 0.5) * (0.75 + 0.25 * math.sin(2 * math.pi * 0.6 * t + q["ph"]))
         if al > 0.02:
             put(fr, dot(q["r"]), x, y, alpha=al)
 
@@ -1002,7 +1159,9 @@ def main():
             if b.t_out < b.settle + 0.5:
                 warn.append(f"line {b.id}: the {b.kind} is up only {max(0, b.t_out - b.settle):.2f}s after it lands; give it a longer line")
             bigs.append(b)
-    timeline = card_timeline(lines, bigs, full, classic, warn)
+    cards2 = cc.cards_v2(plan)                                  # plan "cards": 2 (t207, 2026-11-08); else exactly as before
+    cards.v2 = cards2
+    timeline = card_timeline(lines, bigs, full, classic, warn, float(plan.get("min_card", MIN_CARD)), cards2)   # 0 = never join
     trans = [(ln["start"], ln["transition"]) for ln in lines if ln.get("transition")]
     by_line = {b.id: b for b in bigs}
     accents = [] if classic else [(by_line[ln.get("id")], ln["accent"]) for ln in lines if ln.get("accent") and ln.get("id") in by_line]
@@ -1062,14 +1221,15 @@ def main():
     # the picture punch on punch lines when the camera doesn't carry it: classic (v1, 1.35x) or v2 with the camera off
     punches = [(b.t_in - 3 * F1, b.t_out) for b in bigs if b.kind == "punch"] if (not cam and not a.no_punch) else []
     punch_zoom = 1.35 if classic else float(ccfg.get("punch_scale", 1.25))
-    gpts = None
+    gpts, gk, lsc, gmode = None, 1.0, 1.0, "off"
     if not classic:
-        gpts = plan.get("grade", [[0.0, 0.0]])                 # default: neutral, with the light vignette
-        gpts = sorted([float(p[0]), float(p[1])] for p in gpts) if gpts else None   # "grade": false / [] = no grade
-    light = None if classic else cc.light_of(plan)              # "light": true / a time / {"from": t, ...}
+        # colour rule (owner 2026-11-08): the arc and the warm light at half the approved 1114 strength by default;
+        # "grade": "neutral" = no colour shift, "classic-arc" = the 1114 strength, false / [] = no grade at all
+        gi = cc.grade_of(plan); gpts, gk, lsc, gmode = gi["pts"], gi["k"], gi["light_k"], gi["mode"]
+    light = None if classic else cc.light_of(plan)              # "light": true / a time / {"from": t, ...}; false = none
     bloom_pts = None
     if light:
-        lf = float(light["from"]); lt = float(light.get("to", full)); bs = float(light.get("bloom", 0.16))
+        lf = float(light["from"]); lt = float(light.get("to", full)); bs = float(light.get("bloom", 0.16)) * lsc
         bloom_pts = [[lf, 0.0], [min(lt, lf + 3.0), bs], [lt, bs]]
     leaks = [] if classic else (
         [{"t": tc, "dur": 0.9, "amp": 0.55, "what": "after the flash"} for tc, k in trans if k == "flash"]
@@ -1142,7 +1302,7 @@ def main():
             upmax = max(upmax, 1.0)
         if any(p0 <= t <= p1 for p0, p1 in punches):
             arr = zoom(arr, punch_zoom)
-        af = grade(arr, interp(gpts, t)) if gpts else arr.astype(np.float32)
+        af = grade(arr, gk * interp(gpts, t)) if gpts else arr.astype(np.float32)
         if bloom_pts and t >= bloom_pts[0][0]:
             af = bloom(af, interp(bloom_pts, t))
         for tc, kind in trans:
@@ -1161,7 +1321,7 @@ def main():
         arr = stage(arr, stage_env(t))
         fr = Image.fromarray(arr).convert("RGBA")
         if light and light.get("particles", True):
-            particles(fr, t, float(light["from"]), face)
+            particles(fr, t, float(light["from"]), face, lsc)
         for b, kind in accents:
             accent(fr, t, b, kind)
         for c in timeline:
@@ -1191,7 +1351,10 @@ def main():
            "render_seconds": round(time.time() - t0, 1)}
     if preview:
         out.update(preview=[round(frm, 3), round(end, 3)])
-    out.update(source=src_video, max_upscale=round(upmax, 3))
+    out.update(source=src_video, max_upscale=round(upmax, 3), cards_mode=2 if cards2 else 1, grade=gmode, grade_strength=gk if gpts else 0.0,
+               light_strength=lsc if light else 0.0)
+    if JOINS:
+        out.update(card_joins=list(JOINS))                      # short card chunks joined to a neighbour (MIN_CARD)
     if cam:
         out.update(camera_pieces=len(cam.pieces), max_zoom=round(cam.smax, 3))
         if hr:

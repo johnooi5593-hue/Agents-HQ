@@ -1,0 +1,16 @@
+{
+ "note": "1107 Children 16:9: every readable (or name-like) label, in 1920x1080 pixels of vo-video16.mp4. Found on native-resolution zooms of every shot (check16/).",
+ "boxes": [
+  {"what": "teacher lanyard badge (VICKY ONG + Chinese name), leader shot", "t0": 10.15, "t1": 12.2,
+   "keys": [[10.15, 830, 740, 200, 185]]},
+  {"what": "door charts (PJ list with rows of names) beside the Prayer Room sign, girl-walking shot", "t0": 12.2, "t1": 14.2,
+   "keys": [[12.2, 958, 168, 132, 220], [12.45, 956, 143, 134, 225], [12.7, 956, 128, 136, 230], [12.95, 956, 108, 140, 240],
+            [13.2, 960, 98, 142, 242], [13.45, 1042, 92, 60, 240], [13.7, 1062, 88, 42, 240], [13.95, 1066, 78, 40, 242], [14.2, 1068, 74, 40, 242]]},
+  {"what": "helper's lanyard badge at the right edge, helper shot", "t0": 28.2, "t1": 29.1,
+   "keys": [[28.2, 1832, 495, 88, 140], [28.7, 1835, 500, 85, 140]]},
+  {"what": "name sticker on the white water bottle, roof shot", "t0": 32.2, "t1": 34.2,
+   "keys": [[32.2, 1610, 500, 235, 140]]},
+  {"what": "name sticker on the blue water bottle, V-sign boy shot", "t0": 39.8, "t1": 41.8,
+   "keys": [[39.8, 1782, 196, 86, 54], [40.3, 1818, 220, 88, 54], [40.8, 1830, 226, 88, 54], [41.8, 1840, 222, 80, 54]]}
+ ]
+}

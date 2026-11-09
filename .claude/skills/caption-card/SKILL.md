@@ -16,9 +16,24 @@ preview) next to it. One command per Bash call; quoted absolute paths; run from 
 line. Never upload, post or delete anything. `render.py` is v2 (the default); `--classic` (or plan `"motion": "classic"`) gives the
 v1 look (hard-cut cards, no camera, grade or light, a 1.35x picture punch). `render_v1.py` is the original v1 renderer, kept as is.
 
+**Rules for every caption-card edit** (owner, 2026-11-08, from the 1107 Children review):
+- **`"cards": 2` on every new plan** (`plan.py` writes it; kids-review's makeplan.py too). It switches on the 2026-11-08
+  fixes: whole words on the cards, short-card joins, quicker entrances for short cards, and the half-strength grade arc and
+  warm light. A plan without it renders exactly as before (frame for frame), so a locked or approved reel never changes.
+- **Colour:** bright and clean, white balance neutral (white walls white, skin natural, never orange or tanned). With
+  `"cards": 2` the renderer's grade arc and warm light run at half the approved 1114 strength; on a source that is already
+  graded, use `"grade": "neutral"` and `"light": false` (step 6). Never stack a warm arc on a warm grade.
+- **Children / event reviews** come in both 9:16 and 16:9; the **kids-review** skill makes both from this renderer
+  (its `make_renderers.py` patches this render.py at run time, so run its `--check` after any change here).
+- **Before the brand check**, run the vision pre-checks `tools/vision/faces.py` (nothing on a face) and
+  `tools/vision/gradecheck.py` (skin and whites not orange) on the render, and fix what they flag.
+
 Reference: the owner-approved v2 is Pong+Gospel 11/14 (`work/creative/pong-1114-caption-card/v2/edit-sfx.mp4`, plan
 `v2/skilltest_plan.json`, full-resolution footage `v2/cut_hr.mp4` + `cutmap.json`). Read that plan once: it is a worked example of
-most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of plan `hr`).
+most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of plan `hr`). It has no `"cards"` key, so it
+still renders exactly as approved (checked 2026-11-09: PSNR 99 dB, identical, on every frame of 0-8 s and 50-58 s). Do not add
+`"cards": 2` to it: that joins its two short cards (你不是 0.38 s, 你只是 0.36 s) into smaller 8-9 character cards and halves
+its arc; `"grade": "classic-arc"` keeps the arc's full strength but not the cards.
 
 ## Steps
 1. **Source.** A clean, caption-free edit (e.g. `clean.mp4` / `cut.mp4`), or cut a topic from a RAW livestream as in the
@@ -34,6 +49,16 @@ most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of
 2. **Plan.** `python "$CC/plan.py" <clip> <dir>/plan.json` (CPU faster-whisper, local large-v3-turbo; `YS_LANG=zh` for Chinese),
    or reuse an existing plan's lines: `python "$CC/plan.py" --from-plan <other plan.json> <dir>/plan.json`. Read the transcript;
    fix clearly misheard words in `text` (the cards show `text`; the word times stay for timing) and say so in `note`.
+   **Whole words on the cards** (plan `"cards": 2`). Cards break only between spoken words. When a line's `words` are one entry per
+   character (AI-voice lines, some speech-to-text), the renderer rebuilds whole words with `jieba` (when installed, clause by
+   clause) so 蒙古包 / 帮忙 never split; to set them yourself (or without jieba) give the line `"word_list": "看 我的 蒙古包"`
+   (the spoken words with spaces, or a list; `"segments"` works too; it must spell the words exactly, else it is ignored with
+   a warning). Particles (咯 哦 啦 呢 耶 啊 ...) never sit alone on a card: they join the words before, but never across a
+   comma, a sentence end or a pause over 0.35 s (a clause's first word stays with its clause). A card that would be
+   on screen under 0.4 s joins its neighbour in the line (also when big type shortened it), and every card's entrance
+   is sped up when needed so it has fully landed 4 frames before the card goes. The render's JSON lists `card_joins`; a
+   joined card holds more characters, so its type is smaller. Plan `"min_card"` (seconds, default 0.4; `0` = never join)
+   changes the limit. Without `"cards": 2` none of this applies (the cards are as before).
 3. **Every card line:** `"key"`: the stressed word(s) of the line, exact parts of `text` (a yellow bar wipes in under it as it is
    spoken, the word turns deep blue and pops). One key on most lines, two on a list (`["麻烦", "担心"]`), none on a bridge line
    (`[]`). Optional `"anim"`: `rise`, `slide`, `slam`, `stagger`, `wipe` or `cut`; leave it out and the lines take turns, so
@@ -67,9 +92,17 @@ most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of
      `"on": false` (no camera)`}`.
    - `"grade"`: `[[t, g], ...]` with g -1 (cool, dim) .. 0 (neutral) .. +1 (warm), eased between points, with a vignette. Follow
      the message: cool through the problem, neutral at the turn, warm at the promise
-     `[[0,-1],[26.54,-1],[30,0],[46,0.3],[49,1],[65.6,1]]`.
+     `[[0,-1],[26.54,-1],[30,0],[46,0.3],[49,1],[65.6,1]]`. **Colour rule (owner 2026-11-08): with `"cards": 2` the arc
+     runs at half strength** (`cc.GRADE_SCALE` 0.5), so even g +1 stays a subtle warmth (without the flag: full, as before). `"grade": "neutral"`: no colour or brightness
+     shift at all (only the light vignette; the camera, cards and big type are unchanged), the choice for a source that is
+     already graded (kids-review's grade.py, a colourist's grade). `"grade": "classic-arc"`: the full strength of the approved
+     Pong 11/14 look on `"grade_arc": [[t, g], ...]` (left out: the 1114 arc itself); only for a sermon on an ungraded camera
+     file like 1114. `false` / `[]`: no grade and no vignette.
    - `"light"`: warm bloom and floating light particles (kept off the face) to the end: `true` (from where the grade turns
-     warm), a time, or `{"from": 46, "bloom": 0.16, "particles": true}`.
+     warm), a time, or `{"from": 46, "bloom": 0.16, "particles": true}`; `false` (or left out): none. Bloom and particles
+     also run at half strength with `"cards": 2` (`cc.LIGHT_SCALE` 0.5; `"bloom": 0.16` gives 0.08), full with
+     `"grade": "classic-arc"` or without the flag. The
+     flash and line `leak` light leaks are unchanged (short, planned per line).
    - `"hr"`, `"hr_map"`: the full-resolution footage and its framing map (paths relative to the plan's folder;
      for a plan in 1114's `v2/`: `"hr": "cut_hr.mp4", "hr_map": "../cutmap.json"`). When the files are there, every render and preview uses them.
    - `"card": {"box", "text", "text2"}` for a church colour pair, `"card_y"` (default 0.51, the chest).
@@ -86,7 +119,9 @@ most fields below (it was rendered with the `--hr` / `--hr-map` flags instead of
 9. **Look.** `python "D:/Agents HQ/.claude/skills/poster-kinetic/scripts/preview.py" <dir>/edit.mp4 <dir>/preview.jpg --at <t1>,<t2>,...`
    at each big moment (entry, +0.1 s, +0.3 s, landed), two cards with their key bars, a cut, the flash and the pull-back.
    Check: big type lands on its word, never on the face, readable on the picture, cards never doubled with big type, every key
-   bar shows on its word, no zoom jump at a cut or a punch, no black borders, no clipped text, Traditional characters drawn.
+   bar shows on its word, no zoom jump at a cut or a punch, no black borders, no clipped text, Traditional characters drawn,
+   no card split inside a word, no word that never lands, skin natural (not orange). Then the vision pre-checks
+   (`tools/vision/faces.py`, `tools/vision/gradecheck.py`) before the brand check.
 10. **Music and sound.** The sfx skill: its step 0 blends the owner's music under the voice (`music.py`, every edit); then start from `edit.sfx-events.json` (a draft of every big move, camera punch-in and pull-back), keep
     the true punchlines (a sermon stays reverent: 1-3 hits a minute), run its `place.py`.
 11. **Deliver** as the other styles do: `notes.md` (title, punchline, the big moments and why, fonts, the transcript), Agents HQ

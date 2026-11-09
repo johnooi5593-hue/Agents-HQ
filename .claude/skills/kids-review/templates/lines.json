@@ -1,0 +1,286 @@
+{
+ "note": "Voice script + caption plan of a kids review (worked example: 1107 Children, 25 shots of 2 s, 52.2 s). One line per shot, said by host voice 3B. t = start (s, 0.15-0.25 s after the shot's cut); text = what the host says (exact, particles 啦/咯/哦/咧/耶, never a child's name); shot = what is on screen (check every line against it); seg = the line's words separated by spaces, so a caption card never splits a word (regroup_words.py; leave it out to let jieba guess). Every other field goes onto the caption-card plan line as is (makeplan.py): key = the candy key word(s), an exact part of text; kind hook / writeon / punch for the big moments (rows, phrase, color, y = 9:16 height, accent rings|halo, transition flash); punch_in, leak, sway as in the caption-card skill; bubble left|right makes a speech-bubble card (or set it in cute.json).",
+ "voice": {
+  "name": "zh-CN-XiaoyiNeural",
+  "rate": "+22%",
+  "pitch": "+25Hz",
+  "volume": "+10%"
+ },
+ "plan": {
+  "card": {
+   "box": "#FFD3EA",
+   "text": "#F0347F",
+   "text2": "#C8166A"
+  },
+  "card_y": 0.66,
+  "motion": "v2",
+  "camera": {
+   "face": [
+    0.5,
+    0.36
+   ],
+   "cuts": "auto",
+   "pull_back": "auto",
+   "punch_scale": 1.22
+  },
+  "grade": "auto",
+  "light": {
+   "from": 0.5,
+   "bloom": 0.0,
+   "particles": true
+  }
+ },
+ "lines": [
+  {
+   "t": 0.15,
+   "text": "哇！头上戴的是什么啊？",
+   "shot": "boys with paper yurts on their heads",
+   "seg": "哇 头上 戴的 是什么啊",
+   "kind": "hook",
+   "color": "#FF7AC8",
+   "rows": [
+    "哇",
+    "头上戴的",
+    "是什么啊"
+   ],
+   "y": 0.64,
+   "why": "opens on the yurts on their heads: a question to hook"
+  },
+  {
+   "t": 2.35,
+   "text": "今天的小朋友们好热闹哦！",
+   "shot": "the play mat, many children",
+   "seg": "今天的 小朋友们 好热闹哦",
+   "key": [
+    "好热闹"
+   ]
+  },
+  {
+   "t": 4.35,
+   "text": "先来听故事咯！",
+   "shot": "teacher telling a story",
+   "seg": "先来 听故事咯",
+   "key": [
+    "听故事"
+   ]
+  },
+  {
+   "t": 6.3,
+   "text": "吃点心，喝点水！",
+   "shot": "girl with a drink, boys with a snack",
+   "seg": "吃点心 喝点水",
+   "key": [
+    "点心"
+   ]
+  },
+  {
+   "t": 8.35,
+   "text": "看！今天要做的是蒙古包耶！",
+   "shot": "the paper yurt model",
+   "seg": "看 今天 要做的 是 蒙古包耶",
+   "kind": "writeon",
+   "color": "gold",
+   "phrase": "蒙古包",
+   "transition": "flash",
+   "accent": "halo",
+   "why": "the craft of the day: the name to remember"
+  },
+  {
+   "t": 10.75,
+   "text": "老师教我们一步一步来！",
+   "shot": "leader holding up the puzzle board",
+   "seg": "老师 教我们 一步一步来",
+   "key": [
+    "一步一步"
+   ]
+  },
+  {
+   "t": 12.3,
+   "text": "拿好零件，出发啦！",
+   "shot": "girl walking with her pieces",
+   "seg": "拿好 零件 出发啦",
+   "key": [
+    "出发啦"
+   ]
+  },
+  {
+   "t": 14.3,
+   "text": "小小手也会帮忙哦！",
+   "shot": "toddler pointing at the board",
+   "seg": "小小手 也会帮忙哦",
+   "key": [
+    "小小手"
+   ]
+  },
+  {
+   "t": 16.3,
+   "text": "轻轻压，拆下来！",
+   "shot": "pressing out the pieces",
+   "seg": "轻轻压 拆下来",
+   "key": [
+    "拆下来"
+   ]
+  },
+  {
+   "t": 18.3,
+   "text": "一片一片，好认真咧！",
+   "shot": "boy popping out pieces",
+   "seg": "一片一片 好认真咧",
+   "key": [
+    "好认真"
+   ],
+   "punch_in": 1.12
+  },
+  {
+   "t": 20.3,
+   "text": "整个教室都在忙咯！",
+   "shot": "the whole room building",
+   "seg": "整个 教室 都在忙咯",
+   "key": [
+    "都在忙"
+   ],
+   "leak": true
+  },
+  {
+   "t": 22.3,
+   "text": "专心专心，拼起来！",
+   "shot": "boy in blue building",
+   "seg": "专心专心 拼起来",
+   "key": [
+    "拼起来"
+   ]
+  },
+  {
+   "t": 24.3,
+   "text": "妹妹也一起做，好可爱哦！",
+   "shot": "little girl building",
+   "seg": "妹妹 也一起做 好可爱哦",
+   "key": [
+    "好可爱"
+   ]
+  },
+  {
+   "t": 26.45,
+   "text": "耶！比个V！",
+   "shot": "boy in orange makes a V sign",
+   "seg": "耶 比个V",
+   "kind": "punch",
+   "color": "#FF7AC8",
+   "phrase": "比个V",
+   "y": 0.66,
+   "accent": "rings",
+   "why": "the boy's V sign: a happy hit"
+  },
+  {
+   "t": 28.3,
+   "text": "大家互相帮忙！",
+   "shot": "girl and a helper",
+   "seg": "大家 互相帮忙",
+   "key": [
+    "互相帮忙"
+   ]
+  },
+  {
+   "t": 30.3,
+   "text": "一起来，慢慢拼！",
+   "shot": "an adult helping a child",
+   "seg": "一起来 慢慢拼",
+   "key": [
+    "慢慢拼"
+   ]
+  },
+  {
+   "t": 32.3,
+   "text": "屋顶好了，好漂亮！",
+   "shot": "girl holding the yurt roof",
+   "seg": "屋顶 好了 好漂亮",
+   "kind": "writeon",
+   "color": "#FF7AC8",
+   "phrase": "好漂亮",
+   "y": 0.66,
+   "accent": "halo",
+   "why": "the finished yurt roof: a cute wow"
+  },
+  {
+   "t": 34.3,
+   "text": "宝宝也来啦，好开心哦！",
+   "shot": "mum with her baby",
+   "seg": "宝宝 也来啦 好开心哦",
+   "key": [
+    "好开心"
+   ],
+   "sway": true
+  },
+  {
+   "t": 36.3,
+   "text": "最后一步咯！",
+   "shot": "boy finishing his yurt",
+   "seg": "最后 一步咯",
+   "key": [
+    "最后一步"
+   ]
+  },
+  {
+   "t": 38.15,
+   "text": "我们完成啦！",
+   "shot": "a finished yurt",
+   "seg": "我们 完成啦",
+   "kind": "punch",
+   "color": "yellow",
+   "phrase": "完成啦",
+   "y": 0.53,
+   "accent": "halo",
+   "why": "the yurt is finished: the payoff",
+   "note": "host voice 3B line; v3 brand check: y 0.53 (9:16 only; cc16 ignores plan y) and halo instead of rings, off the woman in the cap"
+  },
+  {
+   "t": 39.95,
+   "text": "看，我的蒙古包！",
+   "shot": "boy holding up his yurt",
+   "seg": "看 我的蒙古包",
+   "key": [
+    "蒙古包"
+   ]
+  },
+  {
+   "t": 41.95,
+   "text": "哇，好多蒙古包！",
+   "shot": "children showing their yurts",
+   "seg": "哇 好多蒙古包",
+   "key": [
+    "好多"
+   ]
+  },
+  {
+   "t": 43.95,
+   "text": "来来来，大家一起来拍个全体照啊！",
+   "shot": "group photo",
+   "seg": "来来来 大家一起来 拍个全体照啊",
+   "transition": "flash",
+   "key": [
+    "全体照"
+   ],
+   "note": "a card, so the group photo stays sharp"
+  },
+  {
+   "t": 46.55,
+   "text": "一、二、三，耶！",
+   "shot": "group raising their yurts",
+   "seg": "一 二 三 耶",
+   "key": [
+    "耶"
+   ]
+  },
+  {
+   "t": 49.15,
+   "text": "下次见啦，拜拜！",
+   "shot": "group waving",
+   "seg": "下次见啦 拜拜",
+   "key": [
+    "下次见啦"
+   ],
+   "leak": true,
+   "note": "a card, so the group photo stays sharp"
+  }
+ ]
+}

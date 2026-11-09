@@ -1,0 +1,16 @@
+{
+ "note": "16:9 layout of plan.json for scripts/cc16/render.py: big type off the faces in the landscape frame (x, y as fractions of 1920x1080). Lines not listed use the renderer's landscape defaults (cards y 0.82; hook 0.66, writeon / punch 0.70, centred).",
+ "card_y": 0.82,
+ "lines": {
+  "1": {
+   "x": 0.21,
+   "y": 0.79,
+   "why": "two boys' faces fill the middle and right of the opening shot; the bottom-left (orange shirt) is free. v3 brand check: 0.83 -> 0.79, the bottom row 是什么啊 ran off the bottom edge at 1.9-2.1 s"
+  },
+  "14": {
+   "x": 0.5,
+   "y": 0.8,
+   "why": "比个V: at 0.70 it touched the boy's V hand under the 1.22x punch-in; 0.80 sits on his shirt and the table"
+  }
+ }
+}

@@ -1,0 +1,296 @@
+{
+ "note": "Test spec (t202): the two v2 placements the brand-checker failed, at their original positions, with the v2 typed face boxes. Not a real plan.",
+ "max_on_screen": 4,
+ "avoid": [
+  {
+   "start": 0.0,
+   "end": 2.2,
+   "what": "face (typed v2): boy with the yurt hat",
+   "box": {
+    "9x16": [
+     0.05,
+     0.08,
+     0.62,
+     0.42
+    ]
+   }
+  },
+  {
+   "start": 0.0,
+   "end": 2.2,
+   "what": "face (typed v2): boy top right",
+   "box": {
+    "9x16": [
+     0.74,
+     0.08,
+     1.0,
+     0.3
+    ]
+   }
+  },
+  {
+   "start": 4.2,
+   "end": 6.2,
+   "what": "face (typed v2): teacher",
+   "box": {
+    "9x16": [
+     0.25,
+     0.0,
+     0.75,
+     0.32
+    ]
+   }
+  },
+  {
+   "start": 6.2,
+   "end": 8.2,
+   "what": "face (typed v2): girl with a drink",
+   "box": {
+    "9x16": [
+     0.3,
+     0.02,
+     0.65,
+     0.24
+    ]
+   }
+  },
+  {
+   "start": 10.2,
+   "end": 12.2,
+   "what": "face (typed v2): leader",
+   "box": {
+    "9x16": [
+     0.22,
+     0.03,
+     0.62,
+     0.35
+    ]
+   }
+  },
+  {
+   "start": 12.2,
+   "end": 14.2,
+   "what": "face (typed v2): girl walking",
+   "box": {
+    "9x16": [
+     0.3,
+     0.05,
+     0.72,
+     0.32
+    ]
+   }
+  },
+  {
+   "start": 14.2,
+   "end": 16.2,
+   "what": "face (typed v2): toddler",
+   "box": {
+    "9x16": [
+     0.28,
+     0.08,
+     0.78,
+     0.34
+    ]
+   }
+  },
+  {
+   "start": 22.2,
+   "end": 24.2,
+   "what": "face (typed v2): boy in blue",
+   "box": {
+    "9x16": [
+     0.28,
+     0.28,
+     0.9,
+     0.52
+    ]
+   }
+  },
+  {
+   "start": 24.2,
+   "end": 26.2,
+   "what": "face (typed v2): little girl",
+   "box": {
+    "9x16": [
+     0.1,
+     0.36,
+     0.5,
+     0.6
+    ]
+   }
+  },
+  {
+   "start": 26.2,
+   "end": 28.2,
+   "what": "face (typed v2): boy in orange",
+   "box": {
+    "9x16": [
+     0.22,
+     0.03,
+     0.78,
+     0.34
+    ]
+   }
+  },
+  {
+   "start": 28.2,
+   "end": 30.2,
+   "what": "face (typed v2): girl in a mask",
+   "box": {
+    "9x16": [
+     0.28,
+     0.15,
+     0.72,
+     0.42
+    ]
+   }
+  },
+  {
+   "start": 30.2,
+   "end": 32.2,
+   "what": "face (typed v2): grandma and child",
+   "box": {
+    "9x16": [
+     0.42,
+     0.08,
+     0.88,
+     0.58
+    ]
+   }
+  },
+  {
+   "start": 32.2,
+   "end": 34.2,
+   "what": "face (typed v2): girl with the roof",
+   "box": {
+    "9x16": [
+     0.28,
+     0.02,
+     0.72,
+     0.32
+    ]
+   }
+  },
+  {
+   "start": 34.2,
+   "end": 36.2,
+   "what": "face (typed v2): mum and baby",
+   "box": {
+    "9x16": [
+     0.08,
+     0.0,
+     0.98,
+     0.5
+    ]
+   }
+  },
+  {
+   "start": 36.2,
+   "end": 38.0,
+   "what": "face (typed v2): boy finishing",
+   "box": {
+    "9x16": [
+     0.28,
+     0.0,
+     0.92,
+     0.42
+    ]
+   }
+  },
+  {
+   "start": 38.0,
+   "end": 39.8,
+   "what": "face (typed v2): woman in a cap",
+   "box": {
+    "9x16": [
+     0.38,
+     0.18,
+     0.72,
+     0.34
+    ]
+   }
+  },
+  {
+   "start": 39.8,
+   "end": 41.8,
+   "what": "face (typed v2): boy with his yurt",
+   "box": {
+    "9x16": [
+     0.32,
+     0.03,
+     0.82,
+     0.37
+    ]
+   }
+  },
+  {
+   "start": 41.8,
+   "end": 43.8,
+   "what": "face (typed v2): children close up",
+   "box": {
+    "9x16": [
+     0.0,
+     0.12,
+     0.72,
+     0.36
+    ]
+   }
+  },
+  {
+   "start": 43.8,
+   "end": 52.2,
+   "what": "face (typed v2): group photo (whole picture band)",
+   "box": {
+    "9x16": [
+     0.0,
+     0.3,
+     1.0,
+     0.66
+    ]
+   }
+  }
+ ],
+ "stickers": [
+  {
+   "t": 0.7,
+   "dur": 1.55,
+   "kind": "sparkle",
+   "pos": {
+    "9x16": [
+     0.91,
+     0.47
+    ],
+    "16x9": [
+     0.8,
+     0.55
+    ]
+   },
+   "size": 0.12,
+   "group": "burst:hook",
+   "sfx": "chime",
+   "sfx_db": -6,
+   "what": "hook: sparkles (v2 position)",
+   "color": "pink"
+  },
+  {
+   "t": 38.62,
+   "dur": 1.15,
+   "kind": "rainbow",
+   "pos": {
+    "9x16": [
+     0.83,
+     0.09
+    ],
+    "16x9": [
+     0.88,
+     0.15
+    ]
+   },
+   "size": 0.24,
+   "group": "burst:done",
+   "sfx": "pop",
+   "sfx_db": 0,
+   "what": "done: rainbow (v2 position)"
+  }
+ ]
+}

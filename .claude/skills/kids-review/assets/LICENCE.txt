@@ -1,0 +1,11 @@
+Children combined review music (owner 2026-11-03: "音乐换成比较小孩子 happy happy 的那种")
+
+File:     blue-sky.mp3
+Title:    Blue Sky.mp3
+Author:   Sergmusic (Freesound)
+Licence:  CC0 1.0 Universal (public domain dedication), https://creativecommons.org/publicdomain/zero/1.0/ - no attribution required
+Found:    Openverse search "happy ukulele" (music-search/q/candidates/happy-ukulele/candidates.json has the source page)
+Why:      earshot rank for 'happy playful cheerful children's music, cute and bouncy' put it first (z +4.2 strong; montage.wav scored +0.8);
+          describe: cheerful ukulele, playful and quirky, celebratory and joyful, music-box melody; 94.4 s, music ends 92.47 s.
+Note:     a 0.43 s musical break at 60.8 s in the track (57.2 s in the video).
+Source:   https://freesound.org/people/Sergmusic/sounds/639933 (Freesound 639933; file https://cdn.freesound.org/previews/639/639933_14100637-hq.mp3)

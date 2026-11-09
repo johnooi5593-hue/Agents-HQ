@@ -15,6 +15,16 @@
 <title>Agents HQ</title>
 <meta name="description" content="Agents HQ: an office of AI agents in eight teams around one shared brain.">
 <link rel="stylesheet" href="/hud.css">
+<style>
+/* t205 stalled pill, t206 phone line, t208 model picker (Opus 5.5 | Fable 5.1) */
+.stall-pill { display: inline-block; padding: 2px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.18); color: #f5b041; font: 700 10.5px/1.5 inherit; white-space: nowrap; margin-right: 4px; }
+.vg-status.stalled { background: rgba(245, 158, 11, 0.18); color: #f5b041; }
+.pk-phone a { color: #8fb3ff; }
+.model-seg { display: inline-flex; align-items: center; border: 1px solid var(--line, #2a2d34); border-radius: 8px; overflow: hidden; flex: none; }
+.model-seg button, #lead-log form .model-seg button { height: 30px; padding: 0 9px; border: 0; border-radius: 0; background: transparent; color: var(--muted, #9aa0aa); font: 600 11px/1 inherit; cursor: pointer; white-space: nowrap; }
+.model-seg button.on, #lead-log form .model-seg button.on { background: rgba(155, 109, 255, 0.22); color: #e2d6ff; }
+.model-tag { display: inline-block; padding: 1px 6px; border-radius: 5px; background: rgba(155, 109, 255, 0.22); color: #e2d6ff; font: 700 10px/1.5 inherit; }
+</style>
 </head>
 <body>
 <!-- the 3D office (hq/office3d.js) fills the window. "view active" keeps the first-version scene drawing as well. -->
@@ -107,7 +117,7 @@
   <div id="lead-log">
     <div class="bar" id="lead-bar"><i class="dot"></i><span class="lt" id="lead-text">Lead · idle</span><button class="btn sm stop-btn" id="lead-stop" type="button" title="Stop everything the lead is doing" hidden>■ Stop</button><span class="car">▴</span><button class="xbtn lead-x" id="lead-close" type="button" title="Close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
     <div class="con" id="lead-con"><div class="ev system">waiting for the first message</div></div>
-    <form id="lead-form"><input id="lead-input" type="text" placeholder="Tell the lead anything, e.g. OK, or: redo it in /poster-kinetic (type / for a skill)" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>
+    <form id="lead-form"><input id="lead-input" type="text" placeholder="Tell the lead anything, e.g. OK, or: redo it in /poster-kinetic (type / for a skill)" autocomplete="off" enterkeyhint="send"><span class="model-seg" role="group" aria-label="Model for this request"><button type="button" data-model-pick="opus" class="on" aria-pressed="true">Opus 5.5</button><button type="button" data-model-pick="fable" aria-pressed="false">Fable 5.1</button><button type="button" data-model-keep="" aria-pressed="false" title="Keep Fable for the next requests too (this window only)" hidden>Keep</button></span><button type="submit">Send</button></form>
   </div>
 
   <!-- voice: a small orb button when idle, the full listening overlay when open -->

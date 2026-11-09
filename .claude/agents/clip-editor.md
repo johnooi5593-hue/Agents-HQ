@@ -15,6 +15,7 @@ skills:
   - sermon-moments
   - sfx
   - pixel
+  - kids-review
 ---
 Before you start, read the lessons from earlier projects: `mcp__memory__open_nodes` with names ["Lessons"]. Apply the ones tagged with your team, marked for it, or about your kind of work; that is how the office gets better each time.
 

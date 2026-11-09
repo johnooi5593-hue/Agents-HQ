@@ -1,0 +1,7 @@
+{
+ "note": "Per-shot grade overrides of ONE kids review, read by grade.py --fix (matched by the shot's start time in s). stop = exposure in stops (replaces the computed one); wb = white-balance gains [R, G, B] (replace the computed ones); warm_desat = extra desaturation 0-1 on orange / skin hues. Use it only for a shot the brand check flags (orange or hot skin, clipped faces), and say why. Worked example: 1107 Children v3, the mum-and-baby shot.",
+ "shots": [
+  {"from": 34.2, "stop": 0.05, "wb": [0.965, 1.0, 1.06], "warm_desat": 0.38,
+   "why": "mum and baby, 34.2-36.2 s: skin too hot and orange under the caption grade arc (brand check v3)"}
+ ]
+}

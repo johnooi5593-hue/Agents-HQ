@@ -14,6 +14,7 @@ import re
 import shutil
 import threading
 import time
+from urllib.parse import quote
 
 import publish
 from sermon_design import DesignError
@@ -41,18 +42,38 @@ STALE = 20 * 60                                                 # a "doing" task
 NOT_FINAL = re.compile(r"(^|[-_. ])(clean|nocap|no-text|src\d*|tight|comp|raw|draft|phone)([-_. ]|$)", re.I)   # working and phone copies, not the edit to approve
 
 
-def final_videos(d):
-    """The finished-edit candidates in a folder (edit.mp4, final.mp4, …), not the clean or working copies."""
+def broken_videos(d, valid, now=None):
+    """The settled finished-edit candidates that valid(path) says are broken (t205: a render that died left an edit.mp4
+    without its moov atom). A file still being written (younger than SETTLE) is never probed."""
+    if valid is None:
+        return []
+    now = time.time() if now is None else now
+    out = []
+    for f in final_videos(d):
+        p = os.path.join(d, f)
+        try:
+            if abs(now - os.path.getmtime(p)) >= SETTLE and valid(p) is False:
+                out.append(f)
+        except OSError:
+            pass
+    return out
+
+
+def final_videos(d, valid=None, now=None):
+    """The finished-edit candidates in a folder (edit.mp4, final.mp4, …), not the clean or working copies;
+    with valid (media_check.readable), not the broken ones either."""
     try:
-        return [f for f in os.listdir(d) if f.lower().endswith(CLIP_EXT) and not NOT_FINAL.search(f)]
+        names = [f for f in os.listdir(d) if f.lower().endswith(CLIP_EXT) and not NOT_FINAL.search(f)]
     except OSError:
         return []
+    bad = set(broken_videos(d, valid, now)) if valid else set()
+    return [f for f in names if f not in bad]
 
 
-def video_stamp(d):
+def video_stamp(d, valid=None):
     """When the newest finished video was written, None without one."""
     stamps = []
-    for f in final_videos(d):
+    for f in final_videos(d, valid):
         try:
             stamps.append(os.path.getmtime(os.path.join(d, f)))
         except OSError:
@@ -60,9 +81,12 @@ def video_stamp(d):
     return max(stamps) if stamps else None
 
 
-def settled_video(d, now=None):
-    """True when the folder holds a finished video that is not still being written."""
+def settled_video(d, now=None, valid=None):
+    """True when the folder holds a finished video that is not still being written; with valid, a broken finished video
+    (no moov atom) means no finished video at all, even next to an older good one: it is the one that would be posted."""
     now = time.time() if now is None else now
+    if valid and broken_videos(d, valid, now):
+        return False
     stamp = video_stamp(d)
     return stamp is not None and abs(now - stamp) >= SETTLE
 
@@ -75,9 +99,13 @@ def _iso(s):
 
 
 class Packages:
-    def __init__(self, root, thumbs, task_action, approve_folder, load_tasks, start_job, job_progress=None):
+    def __init__(self, root, thumbs, task_action, approve_folder, load_tasks, start_job, job_progress=None, valid=None, phone=None,
+                 valid_exact=None):
         self.root, self.thumbs, self.task_action, self.approve_folder = root, thumbs, task_action, approve_folder
         self.load_tasks, self.start_job, self.lock = load_tasks, start_job, threading.RLock()
+        self.valid = valid                                         # media_check.readable_nowait: a broken edit.mp4 is no video (t205)
+        self.valid_exact = valid_exact                             # media_check.readable: run on the owner's Approve video click
+        self.phone = phone or (lambda d: None)                     # the phone copy's state for a folder (t206), None without one
         self.job_progress = job_progress or (lambda prefix: None)   # a running lead job's estimated %, None when none runs
         self.job_running = lambda prefix: self.job_progress(prefix) is not None
 
@@ -166,6 +194,10 @@ class Packages:
                 style = None
             both = all(thumbs[slot] and thumbs[slot]["picked"] for slot in SIZES)
             editing, edit_pct, edit_run = self._editing(name, d)
+            broken = [] if self._area(name) == "approved" else broken_videos(d, self.valid)
+            phone = None if editing else self.phone(d)
+            if phone and phone.get("file"):                     # downloaded through /files/ (login applies), never ?phone
+                phone = {**phone, "url": f"/files/{self._area(name)}/{quote(name)}/{quote(phone['file'])}"}
             done = {"script": scripted,
                     # Codex only starts on an approved video; an OK counts for the video it was given on, so a re-edit's
                     # new video (or one still being made) needs its own OK
@@ -178,7 +210,9 @@ class Packages:
                     "cover": COVER if both else None, "coverIg": SIZES["ig"]["cover"] if both else None,
                     "channel": channel, "templates": templates, "style": style, "ready": all(done[s] for s in stages),
                     "captionsBusy": self.job_running(self._captions_job(name)), "captionsProgress": self.job_progress(self._captions_job(name)),
-                    "editing": editing, "editProgress": edit_pct, "editRunning": edit_run}
+                    "editing": editing, "editProgress": edit_pct, "editRunning": edit_run,
+                    "broken": broken, "brokenHint": "broken file - re-render" if broken else "",
+                    "phone": phone}
 
     @staticmethod
     def _ok_current(pkg, d):
@@ -213,7 +247,7 @@ class Packages:
         if os.path.basename(os.path.dirname(os.path.normpath(d))) == "approved":
             return False, None, False                           # already approved and moved: the edit is long finished
         marker, now = "out:" + name, time.time()
-        settled = settled_video(d, now)
+        settled = settled_video(d, now, self.valid)
         runs = [t for t in self._tasks() if t.get("status") == "doing" and t.get("kind") not in ("post", "meeting", "approval")
                 and marker in str(t.get("note") or "").split()]
         if settled:
@@ -292,7 +326,13 @@ class Packages:
 
     def action(self, body):
         name, act = body.get("name"), body.get("action")
-        self._dir(name)
+        d0 = self._dir(name)
+        if act == "video-ok" and self.valid_exact:              # the owner's click: really probe its videos, before the lock
+            for f in final_videos(d0):
+                try:
+                    self.valid_exact(os.path.join(d0, f))       # fills the cache the status check (valid) reads
+                except Exception:
+                    pass
         with self.thumbs.lock:
             pkg = self.read(name)
             if act == "preset":
@@ -302,6 +342,9 @@ class Packages:
             elif act == "video-ok":
                 d = self._dir(name)
                 if self._editing(name, d)[0]:
+                    bad = broken_videos(d, self.valid)
+                    if bad:                                     # t205: a render that died left a file nothing can play
+                        raise DesignError(f"{bad[0]} is broken - re-render it, then approve the new video.", 409)
                     raise DesignError("This video is still being edited. Approve it once it's finished.", 409)
                 if not self._ok_current(pkg, d):
                     pkg["videoOkAt"] = time.time()

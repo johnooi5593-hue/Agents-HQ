@@ -27,6 +27,9 @@ PLATFORMS = ("facebook", "instagram", "youtube", "tiktok")
 TT_API = "https://open.tiktokapis.com/v2"
 TT_SCOPES = "user.info.basic,video.upload"                      # drafts: the video lands in the TikTok inbox, the owner posts it
 VIDEO_EXT = (".mp4", ".mov", ".m4v")
+# the phone copy (t206: phone.mp4, 1080p ≤ 30 MB, for watching on the phone) is never posted: only the approved edit.mp4
+# goes out. The same "phone" word video_package.NOT_FINAL skips (tests/test_phone_copy.py checks the two agree).
+PHONE_COPY = re.compile(r"(^|[-_. ])phone([-_. ]|$)", re.I)
 COVER_IG = "cover-codex-ig.png"                                # Instagram's 3:4 Codex cover, next to the 9:16 cover-codex.png
 
 
@@ -497,7 +500,8 @@ def linked_videos(folder):
         rel = rel.replace("\\", "/").strip("/")
         for cand in (rel, "approved/" + rel[4:] if rel.startswith("out/") else None):
             full = cand and os.path.realpath(os.path.join(root, cand))
-            if full and full.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(full) and cand not in out:
+            if full and full.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(full) and cand not in out \
+                    and not PHONE_COPY.search(os.path.basename(cand)):
                 out.append(cand); break
     return out
 
@@ -516,7 +520,8 @@ def media_files(folder):
             for fn in sorted(filenames):
                 path = fn if level == 0 else rel.replace(os.sep, "/") + "/" + fn
                 if fn.lower().endswith(VIDEO_EXT):
-                    found["video"].append(path)
+                    if not PHONE_COPY.search(fn):                  # phone.mp4 is for the owner's phone, never a post
+                        found["video"].append(path)
                 elif fn.lower().endswith((".jpg", ".jpeg", ".png")):
                     found["image"].append(path)
         if found["video"]:

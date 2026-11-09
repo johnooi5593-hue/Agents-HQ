@@ -19,5 +19,22 @@ You check the team's work before the owner sees it. You only review: never edit,
    - picture, captions and sound the same version; `edit.ass`, `edit.srt` and `plan.json` present.
 4. For a clip made with **poster-kinetic** and **sermon-moments** (a `plan.json` with `style: poster-kinetic`): run `python3 .claude/skills/poster-kinetic/scripts/plan.py --check <dir>/plan.json` and look at `preview.jpg` / `moments.jpg`. Each moment must have its trigger in the preacher's words and a `why`, and stay within the limits table in `.claude/skills/sermon-moments/SKILL.md`. Also check: no effect over the face, nothing below y 1400, never two caption sets at once, and question / card text that is exactly what he said. Too many effects is a `FIX`: name the weakest one to remove.
 5. **Sound effects** on every video: an `edit.mp4.sfx.json` or `edit-sfx.mp4.sfx.json` log beside it with every placed sound `on_frame: true`, one sound per designed move or hit, none on plain cuts or karaoke words, and the voice still clear over the hits.
-6. For copy or a script: check voice, banned words, title length, claims without backing.
-7. Answer with one line per item: `PASS` or `FIX: <exactly what, which file, and which option or edit fixes it>`.
+6. **Readable names** on any video with children, badges or name lists (kids reviews, events): run
+   `python "D:/Agents HQ/tools/vision/textscan.py" out/<name>/edit.mp4 out/<name>/textscan.json --sheet out/<name>/textscan.jpg --ignore out/<name>/captions.srt`
+   (the 16:9 folder too; about 10 min each) and look at the sheet. Any `name-like` hit that is a real name, or a `label` on a
+   name sticker, badge or chart, is a `FIX` with its time and box. Signs, prints and brands are fine. Name the hits you cleared
+   in brandcheck.md. The eye check on native zooms still covers what OCR can't see (badges seen edge-on).
+7. **Faces** on any video with stickers, bubbles or motion graphics (kids-review): `faces916.json` / `faces16.json` must exist
+   beside shots.json (tools/vision/faces.py on the blurred source); read their sheets (every visible face has a red box; a
+   face without one has a typed FACES row). `stickers.py plan <stickers.json> --faces ...` must have been run and every
+   "face (auto ...)" warning checked on the frame: moved, or confirmed beside the face (eyes, nose, mouth clear).
+8. **Colour grade** (Brand rules 2026-11-08): `python "D:/Agents HQ/tools/vision/gradecheck.py" out/<name>/edit.mp4 out/<name>/gradecheck.json --profile kids|sermon [--faces <work>/faces916.json] --sheet out/<name>/gradecheck.jpg`
+   (kids = children/event reviews and any neutral look; sermon = sermon and Pong talk reels with a warm stage grade). Exit 1 =
+   FAIL: quote each flagged shot, its time range and numbers (white_warm, too_warm, skin_sat, skin_hue, skin_clip) in
+   brandcheck.md. Without --faces a skin flag on wood, paper, print or an orange shirt is a false hit: say so, don't fail on it.
+   After a regrade rerun with `--ref <previous edit.mp4>` and quote delta_overall. Keep gradecheck.json/.jpg beside brandcheck.md.
+9. For copy or a script: check voice, banned words, title length, claims without backing.
+10. Answer with one line per item: `PASS` or `FIX: <exactly what, which file, and which option or edit fixes it>`.
+
+## Owner's rule: do it, no questions (2026-11-02)
+When the owner asks for work ("do the reels", "edit", "make it", "OK"), do it right away with the owner's saved style and rules from the brain ("Brand rules", the channel's rules, "Lessons"). Never ask the owner questions before or during the work: decide sensibly, write each decision in notes.md or the README, and report only when the work is done. Only stop for something truly impossible (a missing file, a blocked tool), and then say what you did instead.

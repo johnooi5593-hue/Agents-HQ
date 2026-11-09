@@ -316,9 +316,46 @@ def has_digit(s):
     return bool(re.search(r"[0-9０-９一二三四五六七八九十百千万零两]", s))
 
 
+# Colour rule (owner, 2026-11-08, on the 1107 Children review: skin went orange where the arc stacked on a graded
+# source): any style's warm grade arc stays subtle, never orange. With plan "cards": 2 (t207) the plan's "grade" arc and
+# "light" (warm bloom and particles) run at half the strength of the approved Pong 11/14 look; "grade": "classic-arc"
+# keeps the full strength. Without "cards": 2 a list arc and the light are exactly as before (locked reels unchanged).
+GRADE_SCALE = 0.5                                           # the arc's colour shift (g -1 .. +1) x this
+LIGHT_SCALE = 0.5                                           # the warm light's bloom and particles x this
+CLASSIC_ARC = [[0.0, -1.0], [26.54, -1.0], [30.0, 0.0], [46.0, 0.3], [49.0, 1.0], [65.6, 1.0]]   # Pong 11/14 v2
+GRADE_MODES = ("neutral", "classic-arc")
+
+
+def cards_v2(plan):
+    """Plan "cards": 2 switches on the t207 behaviour (whole words, short-card joins, quicker entrances, half-strength
+    grade and light). Anything else (left out, 1) renders exactly as before."""
+    return plan.get("cards") == 2
+
+
+def grade_of(plan):
+    """The plan's grade: {"pts": [[t, g], ...] or None (no grade at all), "k": arc strength, "light_k": warm light
+    strength, "mode"}.
+      "grade": [[t, g], ...]   the arc; with "cards": 2 at the subtle strength (GRADE_SCALE, LIGHT_SCALE), else full
+      left out / "neutral"     no colour or brightness shift (g 0: the light vignette only); the camera still moves
+      "classic-arc"            the owner-approved Pong 11/14 strength (1.0) on "grade_arc" (else the 1114 arc itself)
+      false / []               no grade and no vignette"""
+    g = plan.get("grade", [[0.0, 0.0]])
+    gs, ls = (GRADE_SCALE, LIGHT_SCALE) if cards_v2(plan) else (1.0, 1.0)
+    if g == "neutral":
+        return {"pts": [[0.0, 0.0]], "k": gs, "light_k": ls, "mode": "neutral"}
+    if g == "classic-arc":
+        arc = plan.get("grade_arc") or CLASSIC_ARC
+        return {"pts": sorted([float(p[0]), float(p[1])] for p in arc), "k": 1.0, "light_k": 1.0, "mode": "classic-arc"}
+    if not g or not isinstance(g, list):
+        return {"pts": None, "k": gs, "light_k": ls, "mode": "off"}
+    return {"pts": sorted([float(p[0]), float(p[1])] for p in g), "k": gs, "light_k": ls, "mode": "arc"}
+
+
 def warm_from(plan):
     """Where the grade arc turns warm: the time of the first "grade" point above 0 (0.0 when there is none)."""
-    pts = [(_num(p[0]), _num(p[1])) for p in (plan.get("grade") or []) if isinstance(p, list) and len(p) == 2]
+    g = plan.get("grade")
+    g = (plan.get("grade_arc") or CLASSIC_ARC) if g == "classic-arc" else g
+    pts = [(_num(p[0]), _num(p[1])) for p in (g if isinstance(g, list) else []) if isinstance(p, list) and len(p) == 2]
     for t, g in sorted((p for p in pts if None not in p), key=lambda p: p[0]):
         if g > 0:
             return t
@@ -439,6 +476,17 @@ def check(plan):
                 warn.append(f"two card lines in a row both '{a_}'; neighbours read better with different entrances")
                 break
         g = plan.get("grade")
+        arcpt = lambda g: isinstance(g, list) and all(isinstance(p, list) and len(p) == 2 and _num(p[0]) is not None
+                                                       and -1 <= (_num(p[1]) if _num(p[1]) is not None else 9) <= 1 for p in g)
+        if isinstance(g, str):
+            if g not in GRADE_MODES:
+                err.append(f"grade is a list of [time, value], or one of {GRADE_MODES}")
+            g = None
+        if plan.get("grade_arc") is not None:
+            if not (arcpt(plan["grade_arc"]) and plan["grade_arc"]):
+                err.append("grade_arc is a list of [time, value] with value -1 (cool) .. 0 (neutral) .. +1 (warm)")
+            elif plan.get("grade") != "classic-arc":
+                warn.append("grade_arc is only used with \"grade\": \"classic-arc\"; it is ignored")
         if g and not (isinstance(g, list) and all(isinstance(p, list) and len(p) == 2 and _num(p[0]) is not None
                                                       and -1 <= (_num(p[1]) if _num(p[1]) is not None else 9) <= 1 for p in g)):
             err.append("grade is a list of [time, value] with value -1 (cool) .. 0 (neutral) .. +1 (warm)")
@@ -446,6 +494,12 @@ def check(plan):
             err.append("light is true (start where the grade turns warm), a time in seconds, or {\"from\": t, \"bloom\": 0.16} (numbers)")
         elif plan.get("light") is True and warm_from(plan) == 0.0:
             warn.append("light: true starts where the grade turns warm, but no grade point is above 0, so the light covers the whole clip")
+        if plan.get("cards") not in (None, 1, 2):
+            err.append("cards is 2 (whole words, short-card joins, quicker entrances, half-strength grade; t207) or left out")
+        if "min_card" in plan and not cards_v2(plan):
+            warn.append("min_card only works with \"cards\": 2; it is ignored")
+        if "min_card" in plan and not (0 <= (_num(plan["min_card"]) if _num(plan["min_card"]) is not None else -1) <= 1):
+            err.append("min_card is the shortest card in seconds (0.4 by default; 0 = never join short cards)")
         cam = plan.get("camera") or {}
         if not isinstance(cam, dict):
             err.append("camera is an object: {\"face\": [x, y], \"cuts\": \"auto\" or [times], \"pull_back\": \"auto\"}")

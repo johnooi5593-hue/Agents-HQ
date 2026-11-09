@@ -8,7 +8,8 @@ usage: python plan.py <video> <out/plan.json> [--max-chars 12]          transcri
 Every line starts as "kind": "card". The agent then gives each card line its stressed word ("key") and, where it wants a
 particular one, its entrance ("anim"), and picks about one line every 8 s for big type (hook, breathe, number, writeon,
 punch). Plan level (v2): "camera" {"face": [x, y], "cuts": "auto" or [times], "pull_back": "auto", "sway": [[t0, t1]]},
-"grade" [[t, g], ...], "light" true / a time / {"from": t, "bloom": 0.16}. See the skill's GUIDE.md for every field.
+"grade" [[t, g], ...], "light" true / a time / {"from": t, "bloom": 0.16}, "cards": 2 (new plans: whole words on the
+cards, short-card joins, quicker entrances, half-strength grade and light; t207). See the skill's GUIDE.md for every field.
 """
 import argparse, importlib.util, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
@@ -17,7 +18,7 @@ import cc  # noqa: E402
 FIELDS = {"kind": "card", "color": None, "rows": None, "key_row": None, "number": None, "label": None, "unit": None,
           "phrase": None, "sub": None, "y": None, "transition": None, "anim": None, "key": [], "sway": False, "punch_in": None,
           "accent": None, "leak": False, "why": "", "note": ""}
-V2 = {"motion": "v2", "camera": {"face": [0.5, 0.3], "cuts": "auto", "pull_back": "auto"}, "grade": [[0.0, 0.0]], "light": None}
+V2 = {"motion": "v2", "cards": 2, "camera": {"face": [0.5, 0.3], "cuts": "auto", "pull_back": "auto"}, "grade": [[0.0, 0.0]], "light": None}
 
 
 def write_md(path, plan):

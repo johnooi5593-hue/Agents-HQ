@@ -1,0 +1,6 @@
+{
+ "note": "Cute-edition settings of ONE kids review; put it beside plan.json (cute.py reads it from the plan's folder). bubbles: line id -> speech-bubble tail side (about 3 lines: a 'let's go' line, the group-photo count, the goodbye; a plan line's own \"bubble\" wins). stickers: the sticker plan per size, relative to this file, so a card pop is dropped where a sticker sound is within 0.35 s. card_y: a line's card height for ONE frame size (fraction of the frame height), for lines whose card would sit on a face; plan.json is shared by both sizes. Worked example: 1107 Children.",
+ "bubbles": {"3": "right", "24": "left", "25": "right"},
+ "stickers": {"9x16": "stickers.json", "16x9": "stickers.json"},
+ "card_y": {"9x16": {"13": 0.74, "16": 0.56}}
+}

@@ -42,6 +42,10 @@ import webpush  # noqa: E402  (phone notifications for the installed app)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
 from sermon_design import DesignError  # noqa: E402
 from video_package import Packages  # noqa: E402  (each video's steps: video, caption, thumbnails → READY)
+from video_package import settled_video  # noqa: E402
+import media_check  # noqa: E402  (t205: a broken edit.mp4, no moov atom, is no finished video)
+import phone_copy as phone_mod  # noqa: E402  (t206: the 1080p ≤ 30 MB phone.mp4, made in the background)
+from stall_watch import Watchdog  # noqa: E402  (t205: a "doing" task with no live run and no growing files is stalled)
 from scripts_step import Scripts  # noqa: E402  (scripts first: the owner approves the passages before any video is cut)
 from thumbnail_design import ThumbnailDesignBridge  # noqa: E402
 from thumbnail_design import small_image as thumbnail_preview, send_preview as thumbnail_send_preview  # noqa: E402
@@ -391,13 +395,42 @@ def set_status(t, status):
         t["done_at"] = None
 
 
+class phone_released:
+    """t206: before an approve takes thumbnail_design.lock, stop the phone copy being made from out/<name> (Windows can't
+    move a folder with an open file) and keep it from being queued again until the move is over. Done before the lock,
+    so board polls never wait for it (up to 10 s). `ok` is False when the encode is still stopping."""
+
+    def __init__(self, name):
+        jobs = globals().get("phone_jobs")
+        self.jobs, self.src, self.ok = jobs, None, True
+        if jobs and isinstance(name, str) and name and SAFE_NAME.match(name):
+            src = safe_join(os.path.join(ROOT, "out"), name)
+            self.src = src if src and os.path.isdir(src) else None
+
+    def __enter__(self):
+        if self.src:
+            self.ok = self.jobs.release(self.src)
+        return self
+
+    def __exit__(self, *exc):
+        if self.src:
+            self.jobs.moved(self.src)
+        return False
+
+
+PHONE_STOPPING = (409, {"error": "The phone copy of this video is still stopping. Try again in a moment."})
+
+
 def approve_folder(name):
-    """Serialize final approval against new thumbnail revisions."""
+    """Serialize final approval against new thumbnail revisions (the phone copy is stopped first, outside the lock)."""
     bridge = globals().get("thumbnail_design")
-    if bridge:
-        with bridge.lock:
-            return _approve_folder(name)
-    return _approve_folder(name)
+    with phone_released(name) as phone:
+        if not phone.ok:
+            return PHONE_STOPPING
+        if bridge:
+            with bridge.lock:
+                return _approve_folder(name)
+        return _approve_folder(name)
 
 
 def _approve_folder(name):
@@ -414,7 +447,14 @@ def _approve_folder(name):
     dst = os.path.join(ROOT, "approved", name)
     if os.path.exists(dst):
         return 409, {"error": "already approved"}
-    shutil.move(src, dst)
+    # t206: the caller stopped its phone copy before taking the lock (phone_released); if one still runs, never wait here
+    jobs = globals().get("phone_jobs")
+    if jobs and jobs.making(src):
+        return PHONE_STOPPING
+    try:                                             # os.rename moves the whole folder or nothing: out/ is never half-copied
+        os.rename(src, dst)
+    except OSError as e:
+        return 409, {"error": f"The folder could not be moved to approved/ (is a file in it still open?): {e}"}
     on_approved(name)
     return 200, {"approved": name}
 
@@ -710,15 +750,29 @@ def task_action(body):
     if body.get("action") == "remove-group":
         return remove_group(body)
     bridge = globals().get("thumbnail_design")
-    if bridge:
-        with bridge.lock:
-            return _task_action(body)
-    return _task_action(body)
+    name = None
+    if body.get("action") == "approve":                 # t206: stop its phone copy before the lock (phone_released)
+        t = next((x for x in load_tasks().get("tasks", []) if x.get("id") == body.get("id")), None)
+        m = re.search(r"out:([^\s,;]+)", (t or {}).get("note") or "")
+        name = m[1].strip("/") if m else None
+    with phone_released(name) as phone:
+        if not phone.ok:
+            return PHONE_STOPPING
+        if bridge:
+            with bridge.lock:
+                return _task_action(body)
+        return _task_action(body)
 
 
 def _task_action(body):
     """POST /api/tasks: add, move, remove, approve, progress. Returns (http code, payload)."""
     action = body.get("action")
+    model = None
+    if action in ("edit", "run", "say"):                    # t208: the picker's Opus 5.5 | Fable 5.1, optional
+        try:
+            model = model_choice(body.get("model"))
+        except ValueError as e:
+            return 400, {"error": str(e)}
     with TASK_LOCK:
         db = load_tasks()
         task = next((t for t in db["tasks"] if t.get("id") == body.get("id")), None)
@@ -860,7 +914,7 @@ def _task_action(body):
             task["package"] = body.get("package") if body.get("package") in ("video", "caption", "full") else "full"
             videos = body.get("videos") if isinstance(body.get("videos"), int) and 1 <= body["videos"] <= 8 else 0   # scripts first: how many
             reels = [] if videos else add_reel_tasks(db, task, got[0], reel_count(os.path.join(ROOT, got[0])))   # on the board at once, CUT 0% (scripts first: the reels come after)
-            run = desk.start(edit_prompt(*got, task["id"], task["package"], reels, videos), tasks=[task["id"], *reels])
+            run = desk.start(edit_prompt(*got, task["id"], task["package"], reels, videos), tasks=[task["id"], *reels], model=model)
             set_status(task, "doing"); save_tasks(db)
             return 202, {"editing": task, "run": run.summary()}
         if action in ("run", "say"):                # Run / Run again, or the owner's message in the task's chat
@@ -882,7 +936,7 @@ def _task_action(body):
                 again = "This task was started before and stopped before it was finished: check what is already done, then finish it. " if task["status"] == "doing" else ""
                 prompt = f"/brief {task['title']} ({head}). {again}{keep}"
                 set_status(task, "doing"); task["subtitle"], task["asks"] = "", False
-            run = desk.start(prompt, tasks=[task["id"]])
+            run = desk.start(prompt, tasks=[task["id"]], model=model)
             save_tasks(db)
             return 202, {"run": run.summary(), "task": task}
         if action == "progress":
@@ -1039,6 +1093,8 @@ def status_payload():
     ag, running, tasks = agents()["agents"], events()["running"], db["tasks"]
     hidden = {h["name"]: h.get("deleted_at") for h in (db.get("hidden_out") or []) if isinstance(h, dict)}
     hidden.update({h: None for h in (db.get("hidden_out") or []) if isinstance(h, str)})
+    review_out = {m[1].strip("/").split("/")[0] for t in tasks if t.get("status") == "review"
+                  for m in [re.search(r"out:([^\s,;]+)", t.get("note") or "")] if m}   # videos waiting for the owner's OK
     for name, info in s["out"].items():                   # each finished folder: its channel, and whether the owner deleted it from the board
         if "edit" in info:
             info["ch"] = channels_mod.folder_channel(os.path.join(ROOT, "out", name))
@@ -1048,6 +1104,13 @@ def status_payload():
             if not name.startswith(("thumbnail-final-", "sermon-studio-")):
                 try:
                     info["pkg"] = packages.state(name)                 # its steps and what the owner picked: the board's card
+                    d = os.path.join(ROOT, "out", name)
+                    # t206: its phone copy, in the background; only for a video on the board that waits for the owner (its
+                    # task in review) or that the owner already OK'd, never for every old folder in out/ (code review A2)
+                    wanted = name not in hidden and (info["pkg"]["done"].get("video") or name in review_out)
+                    if wanted and not info["pkg"]["editing"] and not (info["pkg"]["phone"] or {}).get("ready") \
+                            and settled_video(d, valid=media_check.readable_nowait):
+                        phone_jobs.want(d)
                 except Exception as e:
                     sys.stderr.write(f"package of {name}: {e}\n")
     s["deleted"] = sorted(db.get("deleted") or [], key=lambda t: t.get("deleted_at") or "", reverse=True)
@@ -1075,7 +1138,16 @@ def status_payload():
         t["footage"] = bool(task_footage(t))                # New footage that waits for the Edit button
         t["scripts"] = scripts.for_task(t)                  # the picked passages the owner approves before any video is cut
         t["ch"] = task_channel(t)                           # its channel (key, "" main) or None: the whole office
-    s["channels"] = [{"key": c["key"], "name": c.get("name") or ("Main channel" if c["main"] else c["key"])} for c in channels.payload()["channels"]]
+    try:                                                    # t205: doing, silent, no live run, no growing files → stalled
+        watchdog.mark(tasks)
+        for t in tasks:
+            m = re.search(r"out:([^\s,;]+)", t.get("note") or "") if t.get("stalled") else None
+            pkg = (s["out"].get(m[1].strip("/").split("/")[0]) or {}).get("pkg") if m else None
+            if pkg is not None and not pkg.get("stalled"):
+                pkg["stalled"] = {"task": t["id"], "since": t["stalled_since"], "minutes": t["stalled_min"]}
+    except Exception as e:                                  # the watchdog never breaks the board
+        sys.stderr.write(f"stall watch: {e}\n")
+    s["channels"] =[{"key": c["key"], "name": c.get("name") or ("Main channel" if c["main"] else c["key"])} for c in channels.payload()["channels"]]
     for c in s["channels"][1:]:                             # a channel's clips wait in inbox/<key>/
         s["inbox"]["clips"] += [c["key"] + "/" + n for n in files(channels.inbox(c["key"]), CLIP_EXT)]
     s["desk"], s["auth"], s["running"], s["tasks"] = desk.state(), bool(PASSWORD), running, tasks
@@ -1130,6 +1202,10 @@ class Notifier:
             for e in new:
                 ts = e.get("ts", 0) or now
                 self.last_ts = max(self.last_ts, ts)
+                if e.get("event") == "stalled" and self.seeded:     # t205: the watchdog's line, once per stall
+                    self._item(fresh, e.get("team") or "Office", f"{e.get('title') or e.get('task')} stalled · no progress for {e.get('minutes')} min",
+                               "stalled", ts, task=e.get("task"), bad=True)
+                    continue
                 team = team_of.get(e.get("agent")) if e.get("event") == "start" else None
                 if not team:
                     continue
@@ -1527,9 +1603,29 @@ FABLE_MODEL = os.environ.get("HQ_FABLE_MODEL", "claude-fable-5-1")
 FABLE_ASK = re.compile(r"\b(use|with|on|switch to)\s+fable\b|^\s*fable\s*[:,]|^\s*/fable\b|用\s*fable", re.I)
 
 
-def model_for(prompt):
-    """The office runs on Opus 5.5. Fable only when the owner asks for it in the message ("use Fable…", "fable: …",
-    "/fable …"); that one run, and the sub-agents it starts, use Fable."""
+MODEL_CHOICES = ("opus", "fable")                                   # the app's picker (t208): Opus 5.5 | Fable 5.1
+FABLE_NOTE = ("(The owner picked Fable 5.1 for this request in the app's model picker: pass model: \"fable\" to every sub-agent "
+              "you start for it, and go back to Opus 5.5 afterwards.)")
+OPUS_NOTE = "(The owner picked Opus 5.5 for this request in the app's model picker: every sub-agent runs on Opus 5.5, not Fable.)"
+
+
+def model_choice(value):
+    """The request's optional model field: "opus", "fable", or None when not given. Raises ValueError otherwise."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str) and value.strip().lower() in MODEL_CHOICES:
+        return value.strip().lower()
+    raise ValueError('model must be "opus" or "fable"')
+
+
+def model_for(prompt, choice=None):
+    """The office runs on Opus 5.5. Fable when the owner picks it in the app (choice "fable"), or, without a pick, when
+    the owner asks for it in the message ("use Fable…", "fable: …", "/fable …"); that one run, and the sub-agents it
+    starts, use Fable. An explicit pick wins over the message; anything else is Opus 5.5."""
+    if choice == "fable":
+        return FABLE_MODEL
+    if choice == "opus":
+        return DEFAULT_MODEL
     return FABLE_MODEL if FABLE_ASK.search(prompt or "") else DEFAULT_MODEL
 
 
@@ -1539,8 +1635,9 @@ TASK_REF = re.compile(r"hq/tasks\.js\"?\s+(?:move|progress|note|channel)\s+(t\d+
 class Run:
     """One message to the lead. tasks: the board tasks it works on (the one it was started from, and any it adds or moves),
     so the board shows which task is really being worked on and the lead's reply lands in that task's chat."""
-    def __init__(self, prompt, tasks=()):
+    def __init__(self, prompt, tasks=(), model=None):
         self.id, self.prompt, self.events, self.done, self.ok = uuid.uuid4().hex[:8], prompt, [], False, None
+        self.model, self.fable = model, model == "fable"      # the owner's pick in the app ("opus" | "fable" | None); Desk.start resolves fable
         self.tasks, self.started, self.started_at = list(dict.fromkeys(tasks)), False, None
         self.proc, self.stopped = None, False                # the claude process, and whether the owner pressed Stop
         self._link(prompt)
@@ -1578,7 +1675,7 @@ class Run:
 
     def summary(self):
         return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events),
-                "tasks": self.tasks, "queued": not self.started and not self.done}
+                "tasks": self.tasks, "queued": not self.started and not self.done, "model": "fable" if self.fable else "opus"}
 
 
 class RunTimes:
@@ -1663,10 +1760,12 @@ class Desk:
         self.spent += float(ev.get("cost_usd") or 0)
         self.context = max(self.context, int(ev.get("context") or 0))
 
-    def start(self, prompt, tasks=()):
-        """Start a message, or line it up behind the one the lead is working on (it starts by itself when that is done)."""
+    def start(self, prompt, tasks=(), model=None):
+        """Start a message, or line it up behind the one the lead is working on (it starts by itself when that is done).
+        model: the owner's pick in the app ("opus" | "fable"), None to follow the message."""
         with self.lock:
-            run = Run(prompt, tasks)
+            run = Run(prompt, tasks, model)
+            run.fable = model_for(prompt, model) == FABLE_MODEL
             self.runs[run.id] = run
             self.order.append(run.id)
             if self.current and not self.current.done:
@@ -1725,7 +1824,12 @@ class Desk:
         for attempt in (1, 2):
             # one line: claude.cmd on Windows cuts -p at the first newline and drops the flags after it
             prompt = re.sub(r"\s*\n+\s*", " / ", with_skills(run.prompt).strip())
-            cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model_for(prompt)]
+            model = model_for(prompt, run.model)
+            if run.model == "fable" and not FABLE_ASK.search(prompt):
+                prompt += " / " + FABLE_NOTE                 # the lead passes Fable on to its sub-agents, as with "use Fable"
+            elif run.model == "opus" and FABLE_ASK.search(prompt):
+                prompt += " / " + OPUS_NOTE                  # the picker said Opus 5.5: the words "use Fable" don't switch the sub-agents
+            cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model]
             cmd += ["--append-system-prompt", COPY_NOTE]       # prompts go in their own block: the app gives each one a Copy button
             allowed = allow_list()
             if allowed:
@@ -1891,8 +1995,8 @@ class Desks:
                 d.on_done = lambda run: self.on_done and self.on_done(run)
             return self.lanes[key]
 
-    def start(self, prompt, tasks=()):
-        run = self.lane(lane_of(list(tasks))).start(prompt, tasks)
+    def start(self, prompt, tasks=(), model=None):
+        run = self.lane(lane_of(list(tasks))).start(prompt, tasks, model)
         with self.lock:
             self.runs[run.id] = run
             self.order.append(run.id)
@@ -1951,8 +2055,24 @@ followups = FollowUps(ROOT, desk.start, lambda **task: task_action({"action": "a
 sermon_design = SermonDesignBridge(ROOT, task_action, load_tasks, notify=lambda: notifier.refresh())
 thumbnail_design = ThumbnailDesignBridge(ROOT, sermon_design, channels, task_action, load_tasks, notify=lambda: notifier.refresh())
 scripts = Scripts(ROOT, task_action, load_tasks, lambda prompt: desk.start(prompt))
+phone_jobs = phone_mod.PhoneJobs(out_root=os.path.join(ROOT, "out"))   # t206: one phone.mp4 at a time, on its own thread
+
+
+def phone_state(d):
+    """The package panel's phone line: the ready copy (phone.mp4, or edit.mp4 when it is phone-ready), or being made."""
+    try:
+        got = phone_mod.state(d)
+    except OSError:
+        got = None
+    return got or ({"making": True} if phone_jobs.making(d) else None)
+
+
 packages = Packages(ROOT, thumbnail_design, task_action, approve_folder, load_tasks, lambda prompt: desk.start(prompt),
-                    lambda prefix: desk.progress_of(prefix))   # a job for it: its estimated %, or None when none runs
+                    lambda prefix: desk.progress_of(prefix),   # a job for it: its estimated %, or None when none runs
+                    valid=media_check.readable_nowait, phone=phone_state,   # never ffprobe inside a status request (A7)
+                    valid_exact=media_check.readable)                        # but Approve video really probes first
+watchdog = Watchdog(ROOT, EVENTS, lambda: {tid for tid, live in desk.working_on().items() if live.get("state") in ("working", "queued")},
+                    ended=lambda: {tid for r in list(desk.runs.values()) if r.done for tid in r.tasks})   # an app run for it ended (A4)
 
 
 def on_approved(name):
@@ -2337,7 +2457,11 @@ class Handler(BaseHTTPRequestHandler):
             if not prompt:
                 return self.send_json({"error": "empty message"}, 400)
             task = body.get("task") if isinstance(body.get("task"), str) and re.match(r"^t\d+$", body.get("task")) else None
-            run = desk.start(prompt, tasks=[task] if task else ())   # waits in line if the lead is busy
+            try:
+                model = model_choice(body.get("model"))            # t208: the picker's Opus 5.5 | Fable 5.1, optional
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
+            run = desk.start(prompt, tasks=[task] if task else (), model=model)   # waits in line if the lead is busy
             return self.send_json(run.summary(), 202)
         if path == "/api/tasks":
             code, payload = task_action(self.read_json())
@@ -2387,8 +2511,12 @@ class Handler(BaseHTTPRequestHandler):
             notifier.refresh()
             return self.send_json(result)
         if path == "/api/package":                         # a video's package: its steps, the owner's picks, READY → approved
+            body = self.read_json()
             try:
-                result = packages.action(self.read_json())
+                with phone_released(body.get("name") if body.get("action") == "final" else None) as phone:   # t206: before the lock
+                    if not phone.ok:
+                        return self.send_json(PHONE_STOPPING[1], PHONE_STOPPING[0])
+                    result = packages.action(body)
             except DesignError as e:
                 return self.send_json({"error": str(e)}, e.status)
             notifier.refresh()

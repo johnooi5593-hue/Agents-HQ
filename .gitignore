@@ -40,8 +40,14 @@ hq/sermon-pending-deliveries.json*
 .hq-known-hosts
 hq/run-times.json
 hq/.phone-videos/
+hq/.phone-work/
 hq/thumbnail-design/
 .cache/
 hq/.phone-previews/
 hq/meeting.json
 hq/sermon-cleanup-receipts/
+
+# installed video tools (2026-11-01): clones, venvs, models, node_modules
+tools/ext/
+tools/video-engines/node_modules/
+tools/video-engines/tests/**/out.mp4

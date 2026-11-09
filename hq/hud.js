@@ -772,6 +772,26 @@
   const PKG_PRESETS = [["video", "Video only"], ["caption", "Video + caption"], ["full", "Full set"]];
   // a step being made or remade: a spinner, what is happening, its % and a bar that fills (an estimate says "about")
   const pkgProg = (label, pct, estimate) => { const p = Math.max(1, Math.min(99, Math.round(pct || 0))); return `<div class="pk-prog"><div class="pk-prog-top"><span class="spin"></span><span>${label}</span><b>${estimate ? "about " : ""}${p}%</b></div><div class="up-bar"><i style="width:${p}%"></i></div></div>`; };
+  // t208: the owner's model pick, Opus 5.5 | Fable 5.1. CLAUDE.md: Fable only for the request it was asked for, so the pick
+  // lives in this window only (sessionStorage) and goes back to Opus 5.5 once a run is sent, unless "Keep" is on
+  const MODELS = [["opus", "Opus 5.5"], ["fable", "Fable 5.1"]];
+  function modelPick() { try { return sessionStorage.getItem("hq.model") === "fable" ? "fable" : "opus"; } catch (e) { return state.modelPick === "fable" ? "fable" : "opus"; } }
+  function keepFable() { try { return sessionStorage.getItem("hq.modelKeep") === "on"; } catch (e) { return !!state.keepFable; } }
+  function setModelPick(m, keep) {
+    m = m === "fable" ? "fable" : "opus"; state.modelPick = m;
+    if (keep != null) state.keepFable = !!keep;
+    try { sessionStorage.setItem("hq.model", m); if (keep != null) sessionStorage.setItem("hq.modelKeep", keep ? "on" : "off"); } catch (e) { /* private window: this page only */ }
+    $$(".model-seg button[data-model-pick]").forEach((x) => { const on = x.dataset.modelPick === m; x.classList.toggle("on", on); x.setAttribute("aria-pressed", String(on)); });
+    $$(".model-seg button[data-model-keep]").forEach((x) => { const on = keepFable(); x.hidden = m !== "fable"; x.classList.toggle("on", on); x.setAttribute("aria-pressed", String(on)); });
+    $$("[data-edit-footage]").forEach((x) => { if (x.dataset.editFootage) x.title = `Edit this video now (${m === "fable" ? "Fable 5.1" : "Opus 5.5"})`; });
+  }
+  const modelSeg = () => `<span class="model-seg" role="group" aria-label="Model for this request">${MODELS.map(([k, l]) => `<button type="button" data-model-pick="${k}" class="${modelPick() === k ? "on" : ""}" aria-pressed="${modelPick() === k}">${l}</button>`).join("")}<button type="button" data-model-keep="" class="${keepFable() ? "on" : ""}" aria-pressed="${keepFable()}" title="Keep Fable for the next requests too (this window only)" ${modelPick() === "fable" ? "" : "hidden"}>Keep</button></span>`;
+  // the pick goes with a run only when it is Fable: on Opus 5.5 (the default) the words "use Fable" / "fable: …" still switch one
+  // message. Once it is sent the picker goes back to Opus 5.5, unless Keep is on.
+  const withModel = (body) => { if (modelPick() !== "fable") return body; if (!keepFable()) setModelPick("opus"); return { ...body, model: "fable" }; };
+  const fableTag = '<span class="model-tag" title="This request runs on Fable 5.1">Fable 5.1</span>';
+  // t205: a "doing" task with no live run and no growing files for HQ_STALL_MIN minutes (the run died)
+  const stallPill = (min) => `<span class="stall-pill" title="Nothing has moved for ${min} min: no live run and no file growing. Run it again, or check its folder.">Stalled · no progress for ${min} min</span>`;
   // a step's tag: green when done; Thumbnail turns orange once Codex has delivered and the owner still has to pick one
   const pkgSteps = (pkg) => pkg.stages.map((s, i) => {
     const ts = Object.values(pkg.thumbs || { main: pkg.thumb }).filter(Boolean), busyT = ts.filter((x) => ["watching", "dispatching"].includes(x.status));
@@ -806,6 +826,9 @@
     const running = ts.find((t) => t.status === "doing" && !t.asks);
     if (pkg && pkg.ready) return pill("ready", "Ready to post");
     if (!pkg && ts.some((t) => t.asks)) return pill("needs", "Needs you · answer the lead");
+    const stall = (pkg && pkg.stalled) || ts.find((t) => t.stalled && t.status === "doing");   // t205: its run died
+    if (stall) return pill("stalled", `Stalled · no progress for ${stall.minutes != null ? stall.minutes : stall.stalled_min} min`);
+    if (pkg && pkg.editing && !pkg.editRunning && (pkg.broken || []).length) return pill("stalled", "No video yet · broken file - re-render");
     if (pkg && pkg.editing && !pkg.editRunning) return pill("working", "No video yet");   // nothing for the owner to do
     if (pkg) { const n = pkgNext(pkg); return /…$/.test(n) ? pill("working", "Working · " + esc(n.replace(/…$/, ""))) : pill("needs", "Needs you · " + esc(n)); }
     if (running) return pill("working", "Working" + (running.progress != null && running.progress < 100 ? ` · ${running.progress}%` : ""));
@@ -823,6 +846,7 @@
       <div class="hint">${n ? `Scripts first: the office transcribes the talk and shows you ${n} passages (plus 2 spares) with the exact words. You keep, swap or trim them, then press Make videos.` : "No scripts: the editor picks the passages itself and the first thing you see is the finished video."}</div>
       <div class="td-l" style="margin-top:10px">What does each video need?</div><div class="ep-opts">${PKG_PRESETS.map(([k, l]) => `<button class="btn sm ${k === "full" ? "primary" : ""}" data-edit-go="${esc(t.id)}:${k}" type="button">${l}</button>`).join("")}</div>
       <div class="hint">Video only: just the edit. Video + caption: 3 title + caption sets to pick from. Full set: then Codex thumbnails from the title you pick. You can change it later on the video's card.</div>
+      <div class="td-l" style="margin-top:10px">Model</div><div class="ep-opts">${modelSeg()}</div>
       <div class="td-end"><button class="btn sm" data-edit-footage="" type="button">Cancel</button></div></div>`;
   }
   function taskRow(t) {                                    // one board row; the section decides glyph and control
@@ -863,7 +887,7 @@
       if (!["approval", "post"].includes(t.kind) && !/(?:^|\s)out:/.test(t.note || "")) act += `<button class="btn primary sm" data-approve="${esc(t.id)}" type="button" title="Approve: this task is done">Approve</button>`; }
     else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = (t.scheduled ? `scheduled ${schedWhen(t.scheduled)} on ${t.scheduled.platforms.map((x) => PLAT_NAME[x] || x).join(", ")} · ` : "") + ((t.posted || []).length ? "posted to " + t.posted.map((x) => ({ facebook: "Facebook", instagram: "Instagram", youtube: "YouTube" })[x] || x).join(", ") + " · " : "") + (t.subtitle || timeAgo(t.done_at || t.updated)); act = canReedit(t) ? `<button class="btn sm" data-reedit="${esc(t.id)}" type="button" title="Make changes: a new version goes back to the team">Re-edit</button>` : '<span class="chev">›</span>'; }
     else if (t.status === "cancelled") { glyph = '<span class="cx-g">✕</span>'; meta = "cancelled " + timeAgo(t.updated); act = `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore</button>`; cls = "cancelled"; }
-    else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now">Edit</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
+    else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now (${modelPick() === "fable" ? "Fable 5.1" : "Opus 5.5"})">Edit${modelPick() === "fable" ? " · Fable" : ""}</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
     const title = t.date && !["done", "cancelled"].includes(t.status) && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
     // every task has its own ⋯: channel, move, cancel, delete (clicking the title of a task with a video opens its review instead)
     const manage = `<button class="btn sm mng ${state.openDetail === t.id ? "on" : ""}" data-manage="${esc(t.id)}" type="button" title="Chat and manage: channel, move, cancel, delete" aria-label="Chat and manage this task" aria-expanded="${state.openDetail === t.id}">⋯</button>`;
@@ -874,7 +898,8 @@
     const ready = t.final && !["done", "cancelled"].includes(t.status);      // its video, cover and caption are all there
     if (ready) cls += " final-ready";
     if (state.openDetail === t.id) act = act.replace(">Answer<", ">Close<");
-    const asks = t.asks ? `<button class="ask-pill" data-manage="${esc(t.id)}" type="button" title="Open the chat to answer">${(t.chat || []).slice(-1).some((m) => m.error) ? "Stopped · see why" : "Lead asks you"}</button>` : "";
+    const asks = (t.asks ? `<button class="ask-pill" data-manage="${esc(t.id)}" type="button" title="Open the chat to answer">${(t.chat || []).slice(-1).some((m) => m.error) ? "Stopped · see why" : "Lead asks you"}</button>` : "")
+      + (t.stalled && t.status === "doing" ? stallPill(t.stalled_min) : "");
     const nChat = (t.chat || []).length;
     const nOlder = ((state.older || {})[t.id] || []).length; if (nOlder) meta += ` · +${nOlder} older version${nOlder === 1 ? "" : "s"}`;
     return `<div class="trow ${cls}" data-task="${esc(t.id)}"><span class="g">${glyph}</span><div class="tt ia" data-open="${esc(t.id)}"><div class="title">${ready ? readyTag : ""}${esc(title)}</div><div class="meta">${asks}${chSwitch(t)}${tagPill(t.team)}<span>${esc(meta)}</span></div></div><div class="act">${act}${manage.replace("⋯", nChat ? `⋯<i class="chat-n">${nChat}</i>` : "⋯")}</div></div>${state.editPick === t.id ? editChooser(t) : ""}${state.openDetail === t.id ? taskDetail(t) : ""}`;
@@ -1546,7 +1571,7 @@
     try {
       const r = await getJSON(`/api/runs/${state.run.id}?after=${state.run.offset}`);
       // print "you: …" once per run: Claude can take a minute to start, and this poll repeats meanwhile
-      if (!state.run.said && r.prompt) { state.run.said = true; log("you", "you: " + r.prompt); $("#lead-text").textContent = "Lead · working: " + shortTask(r.prompt, 60); }
+      if (!state.run.said && r.prompt) { state.run.said = true; log("you", (r.model === "fable" ? "[Fable 5.1] " : "") + "you: " + r.prompt); $("#lead-text").innerHTML = (r.model === "fable" ? fableTag + " " : "") + esc("Lead · working: " + shortTask(r.prompt, 60)); }
       (r.events || []).forEach(handle); state.run.offset = (r.offset || 0) + (r.events || []).length;
       if (!r.done) return setTimeout(poll, 800);
       state.run.id = null; refresh();
@@ -1582,7 +1607,7 @@
     const studio = studios() && sermonDesignRoute(prompt);   // only where AI OFFICE runs the studio
     if (studio) { window.location.assign(studio); return null; }
     try {
-      const r = await postJSON("/api/run", task ? { prompt, task } : { prompt });
+      const r = await postJSON("/api/run", withModel(task ? { prompt, task } : { prompt }));
       $("#lead-text").textContent = (r.queued ? "Lead · next in line: " : "Lead · working: ") + shortTask(prompt, 60);
       if (r.queued) toast("chief", "Chief of staff", "Waiting in line: it starts by itself in a moment.", { soft: true });
       attach(r.id, false); renderTopbar(); return r.id;
@@ -2106,9 +2131,14 @@
     const step = (s, body, locked) => `<div class="pk-sec ${pkg.done[s] ? "ok" : ""} ${locked ? "locked" : ""}"><div class="pk-h"><span class="pk-n">${pkg.done[s] ? svg("check") : n(s)}</span><b>${PKG_STEPS[s]}</b></div>${locked ? `<div class="hint">${locked}</div>` : body}</div>`;
     let h = `<div class="rv-sec pk ${pkg.ready ? "is-ready" : ""}"><div class="rv-h">${pkg.ready ? readyTag + " Ready to post" : "Get it ready"} <span>${pkg.stages.filter((s) => pkg.done[s]).length} of ${pkg.stages.length} done</span></div>
       <div class="pk-presets" role="group" aria-label="What this video needs">${PKG_PRESETS.map(([k, l]) => `<button class="rv-chip ${pkg.preset === k ? "on" : ""}" data-pkg="preset" data-pkg-val="${k}" type="button">${pkg.preset === k ? svg("check") : ""}${l}</button>`).join("")}</div>`;
-    h += step("video", pkg.done.video ? '<div class="hint">Approved. Changes now go through a re-edit.</div>'
-      : pkg.editing ? (pkg.editRunning && pkg.editProgress != null ? pkgProg("Still editing: the video isn't finished yet", pkg.editProgress, false) : `<div class="hint"><b>${pkg.editRunning ? "Still editing: the video isn't finished yet." : "No finished video in this folder yet."}</b></div>`) + '<div class="hint">Approve video shows up here once the finished video is in. Nothing to check before that.</div>'
-      : '<div class="row pk-act"><button class="btn sm" data-rv-mode="changes" type="button">Ask for video changes</button><button class="btn sm primary" data-pkg="video-ok" type="button">Approve video</button></div>');
+    const stalled = pkg.stalled ? `<div class="hint">${stallPill(pkg.stalled.minutes)} The edit's run looks dead: open its task and press Run again.</div>` : "";
+    const broken = !pkg.editRunning && (pkg.broken || []).length ? `<div class="hint"><b>No video yet: ${esc(pkg.broken.join(", "))} is a ${esc(pkg.brokenHint || "broken file - re-render")}.</b> The player can't open it (no moov atom).</div>` : "";
+    // t206: the 1080p ≤ 30 MB phone copy (phone.mp4, or edit.mp4 itself when it is already phone-ready)
+    const ph = pkg.phone, phoneLine = !ph ? "" : ph.making ? '<div class="hint pk-phone"><span class="spin"></span> Making the phone copy (1080p, 30 MB at most)…</div>'
+      : `<div class="hint pk-phone">${svg("check")} Phone copy ready · ${esc(String(Math.round(ph.mb || 0)))} MB${ph.same ? " (edit.mp4 is already phone-sized)" : ""} · <a href="${esc(ph.url)}" download="${esc(ph.file)}" target="_blank" rel="noopener">Download</a></div>`;
+    h += step("video", pkg.done.video ? '<div class="hint">Approved. Changes now go through a re-edit.</div>' + phoneLine
+      : pkg.editing ? stalled + broken + (pkg.editRunning && pkg.editProgress != null ? pkgProg("Still editing: the video isn't finished yet", pkg.editProgress, false) : `<div class="hint"><b>${pkg.editRunning ? "Still editing: the video isn't finished yet." : "No finished video in this folder yet."}</b></div>`) + '<div class="hint">Approve video shows up here once the finished video is in. Nothing to check before that.</div>'
+      : phoneLine + '<div class="row pk-act"><button class="btn sm" data-rv-mode="changes" type="button">Ask for video changes</button><button class="btn sm primary" data-pkg="video-ok" type="button">Approve video</button></div>');
     if (has("caption")) {
       const caps = (pkg.captions.length ? `<div class="pub-caps">${pkg.captions.map((o, i) => `<button class="pub-cap ${i === pkg.caption ? "on" : ""} ${capOpen("pk", i) ? "full" : ""}" data-pkg="caption" data-pkg-val="${i}" type="button">${i === pkg.caption ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title)}</b><span>${esc(o.caption)}</span>${capMore("pk", i, o.caption)}</button>`).join("")}</div>` : '<div class="hint">No title + caption sets yet.</div>')
         + (pkg.captionsBusy ? pkgProg(pkg.captionsProgress ? "Social is writing 3 title + caption sets" : "Waiting for a free slot, then Social writes 3 sets", pkg.captionsProgress, true) + '<div class="hint">They show up here by themselves.</div>'
@@ -2481,7 +2511,7 @@
       if (d.move) { const [id, status] = d.move.split(":"); taskAction({ action: "move", id, status }); return; }
       if (d.editFootage) {                                   // Edit starts the edit at once (owner, 2026-11-02: "i say edit, then start the edit job"): the full set, changeable later on the video's card
         const id = d.editFootage; state.editPick = null;
-        taskAction({ action: "edit", id, package: "full" }, "Editing started: the Creative team is on it, in your saved style. Nothing posts until you approve.").then((r) => { if (r) setLead(true); });
+        taskAction(withModel({ action: "edit", id, package: "full" }), "Editing started: the Creative team is on it, in your saved style. Nothing posts until you approve.").then((r) => { if (r) setLead(true); });
         return;
       }
       if (d.editFootage != null) { state.editPick = null; renderBoard(); return; }
@@ -2489,7 +2519,7 @@
       if (d.editGo) {
         const [id, pkg] = d.editGo.split(":"); state.editPick = null;
         const videos = state.editVideos == null ? 3 : state.editVideos;
-        taskAction({ action: "edit", id, package: pkg, videos }, videos ? `Scripts first: the office is transcribing the talk and picking ${videos} passages for you to approve. Nothing is cut yet.` : `Editing started (${PKG_PRESETS.find((p) => p[0] === pkg)[1]}): the Creative team is on it. Nothing posts until you approve.`).then((r) => { if (r) setLead(true); });
+        taskAction(withModel({ action: "edit", id, package: pkg, videos }), videos ? `Scripts first: the office is transcribing the talk and picking ${videos} passages for you to approve. Nothing is cut yet.` : `Editing started (${PKG_PRESETS.find((p) => p[0] === pkg)[1]}): the Creative team is on it. Nothing posts until you approve.`).then((r) => { if (r) setLead(true); });
         return;
       }
       if (d.scriptPick) {                                    // the Scripts card: keep / spare / dropped
@@ -2504,7 +2534,9 @@
         return;
       }
       if (d.scriptText) { const s = (state.openScripts ||= new Set()); if (!s.delete(d.scriptText)) s.add(d.scriptText); renderBoard(); return; }
-      if (d.run) { taskAction({ action: "run", id: d.run }).then((r) => { if (r && r.run) { attach(r.run.id, false); toast("chief", "Chief of staff", r.run.queued ? "Waiting in line: it starts by itself when a slot is free (or its video's earlier job is done)." : "Started: the lead is on it."); } }); return; }
+      if (d.modelKeep != null) { setModelPick(modelPick(), !keepFable()); return; }   // t208: keep Fable for the next requests
+      if (d.modelPick) { setModelPick(d.modelPick); return; }   // t208: Opus 5.5 | Fable 5.1, for this window only
+      if (d.run) { taskAction(withModel({ action: "run", id: d.run })).then((r) => { if (r && r.run) { attach(r.run.id, false); toast("chief", "Chief of staff", r.run.queued ? "Waiting in line: it starts by itself when a slot is free (or its video's earlier job is done)." : "Started: the lead is on it."); } }); return; }
       if (d.board != null) { openPanel("tasks"); return; }
       if (d.cal != null) { openPanel("calendar"); return; }
       if (d.brief != null) { const t = teamByKey(state.panelTeam); pickAgent(t ? (headOf(t) || {}).name : null); focusAsk(); return; }
@@ -2521,7 +2553,7 @@
       if (f.dataset && f.dataset.sayForm) {                    // the task's chat: the owner's message goes to the lead with the task
         e.preventDefault(); const id = f.dataset.sayForm, box = $("#say-text"), text = box.value.trim(); if (!text) return;
         box.value = ""; box.disabled = true;
-        taskAction({ action: "say", id, text }).then((r) => { if (r && r.run) attach(r.run.id, true); const b = $("#say-text"); if (b) { b.disabled = false; b.focus(); } });
+        taskAction(withModel({ action: "say", id, text })).then((r) => { if (r && r.run) attach(r.run.id, true); const b = $("#say-text"); if (b) { b.disabled = false; b.focus(); } });
         return;
       }
       if (f.dataset && f.dataset.reeditForm) {                // Re-edit: a new version from the approved one, back to the team
@@ -2627,7 +2659,7 @@
   function init() {
     $("#user-name").textContent = "Owner"; $("#hud").dataset.view = "office";
     $("#ask-kbd").textContent = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl K";
-    initLife(); wire();
+    initLife(); setModelPick(modelPick()); wire();
     refresh().then(() => {
       pollNotifs();
       const requestedTask = new URLSearchParams(window.location.search).get("task");

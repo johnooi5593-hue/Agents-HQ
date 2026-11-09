@@ -1,0 +1,20 @@
+{
+  "modelId": "ultraface-rfb-640",
+  "file": "version-RFB-640.onnx",
+  "bytes": 1588012,
+  "sha256": "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
+  "repository": "https://github.com/onnx/models",
+  "commit": "4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177",
+  "path": "validated/vision/body_analysis/ultraface/models/version-RFB-640.onnx",
+  "license": "MIT",
+  "input": { "layout": "NCHW", "shape": [1, 3, 480, 640], "color": "RGB", "mean": 127, "scale": 128 },
+  "outputs": ["scores", "boxes"],
+  "preprocessing": "exif-rgb-black-alpha-bilinear-half-pixel-v1",
+  "postprocessing": "score-0.70-hard-nms-0.30-top-1000-max-100-xywh-v1",
+  "ortReady": {
+    "file": "version-RFB-640.ort-ready.onnx",
+    "bytes": 1577010,
+    "sha256": "a9e7cb5308de493844547e3ffdc4458f68fc81da9672f33f1074ed149db36578",
+    "madeBy": "tools/vision/onnx_strip_inputs.py (same weights, initializers out of the input list)"
+  }
+}

@@ -40,7 +40,12 @@ motion blur only while moving; swell / brighten before the exit (number +10 %); 
 | stagger | box grows 0 -> 1.04 -> 1.0 in 6 f, then the characters drop from -46 px, 0.6 -> 1.12 -> 1.0 in 5 f, 1-1.5 f apart |
 | wipe | the box wipes in from the left in 5 f with a light streak on its edge; each character pops 0.7 -> 1.1 -> 1.0 as it passes |
 | cut | a hard cut (the v1 card) |
-A line's follow-on cards use the same entrance 1.7x faster. The line's last card swells out: 1.05x and 1.18 brightness, then
+A line's follow-on cards use the same entrance 1.7x faster. With plan `"cards": 2` (2026-11-08; without it everything here
+is exactly as before): a card too short for its entrance gets a quicker one, so it has fully landed 4 frames before it goes
+(landing: rise 6 f, slide 7, slam 7, wipe 10, stagger 2 + 1-1.5 f per character + 5); cards break only between whole words
+(per-character timing is rebuilt into words: line `word_list`, else jieba); a particle (咯 哦 啦 呢 耶 啊) never stands
+alone but never joins across a comma or a pause; a card under 0.4 s (12 f, plan `min_card`) on screen joins its neighbour
+in the line. The approved 1114 plan has no flag and renders as approved. The line's last card swells out: 1.05x and 1.18 brightness, then
 0.9x, fading and blurring (8) in 4 f. Cards never overlap; one caption set at a time.
 
 **Key word** (`key`): when the word is spoken (never before its card has landed), a #FFE45C bar wipes in under it in 3 f, the
@@ -64,14 +69,22 @@ gets a bar on both parts.
 
 **Grade arc** (`grade`): eased between the points, g -1 cool and dim ... +1 warm, with a light vignette. The message decides
 it: cool through the problem, neutral at the turn, warm at the promise.
+Colour rule (owner, 2026-11-08, after skin went orange on the 1107 Children review, where the arc stacked on an already
+graded source): any built-in warm arc stays subtle, never orange; white balance neutral, skin natural, white walls white.
+So with plan `"cards": 2` the arc runs at **half strength** (g x 0.5; without the flag, full as before): at g +1 the gains are R x1.050 G x1.022 B x0.970 and saturation x1.035
+(full strength: R x1.10 G x1.045 B x0.94, saturation x1.07); at g -1 R x0.92 G x0.94 B x0.97, saturation x0.93 (full:
+R x0.85 G x0.89 B x0.95, x0.86). `"grade": "neutral"` = no shift (the light vignette only, the camera still moves);
+`"grade": "classic-arc"` = the approved 1114 strength on `grade_arc` (else the 1114 arc).
 
 **Light**: `flash` = a 4-frame white (one frame before the cut, the peak on it, two after), then a warm leak (0.9 s, strength 0.55); `leak` on a line = a soft leak (1.5 s, 0.38);
-`light` = a warm bloom that ramps to 0.16 over 3 s, plus floating light particles kept off the face, to the end.
+`light` = a warm bloom that ramps to the plan's `bloom` (0.16 by default) over 3 s, plus floating light particles (alpha
+0.18-0.42); with `"cards": 2` both at half (bloom 0.08, alpha 0.09-0.21) unless `"grade": "classic-arc"`; kept off
+the face, to the end. `"light": false` = none.
 
 **Accents**: `rings` two light rings open as the line lands; `orbs` two soft lights drift together; `halo` a soft gold glow
 behind the line.
 
 ## Rules
-Cards for every line, 2-6 characters, each line animated and its key word marked. About one big moment every 8 s in v2
+Cards for every line, 2-6 characters (a joined short card can hold more), each line animated and its key word marked. About one big moment every 8 s in v2
 (1114: 8 in 65 s; 3-4 a minute in classic), each with a why, at least 3 s apart. The words stay exactly as spoken. Never over the face. One caption set at a time (cards wait while big type is
 up).

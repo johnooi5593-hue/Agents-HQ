@@ -1,0 +1,1136 @@
+{
+ "recall": 0.87,
+ "covered": 20,
+ "hand_boxes": 23,
+ "recall_strict": 0.783,
+ "time_recall": 0.84,
+ "max_bloat": 5.1,
+ "wild": [],
+ "misses": [
+  {
+   "start": 28.2,
+   "end": 30.2,
+   "what": "girl in a mask",
+   "hit": 0.45
+  },
+  {
+   "start": 24.2,
+   "end": 26.2,
+   "what": "woman at the top left (v3)",
+   "hit": 0.3
+  },
+  {
+   "start": 30.2,
+   "end": 32.2,
+   "what": "woman at the left (v3)",
+   "hit": 0.0
+  }
+ ],
+ "big_on_frame": 20,
+ "largest_box_area": 0.767,
+ "faces": 252,
+ "extras": 62,
+ "overlap": 0.25,
+ "table": "FACES9",
+ "video_size": [
+  1080,
+  1920
+ ],
+ "pad": 0.35,
+ "min": 0.04,
+ "grow": 1.5,
+ "conf": 0.4,
+ "rows": [
+  {
+   "start": 0.0,
+   "end": 2.2,
+   "box": [
+    0.05,
+    0.08,
+    0.62,
+    0.42
+   ],
+   "what": "boy with the yurt hat",
+   "samples": 22,
+   "hit": 0.955,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 0.0,
+   "end": 2.2,
+   "box": [
+    0.74,
+    0.08,
+    1.0,
+    0.3
+   ],
+   "what": "boy top right",
+   "samples": 22,
+   "hit": 0.773,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 0.0,
+   "end": 2.25,
+   "box": [
+    0.86,
+    0.35,
+    1.0,
+    0.65
+   ],
+   "what": "girl at the right edge (brand check v2)",
+   "samples": 22,
+   "hit": 0.682,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 4.2,
+   "end": 6.2,
+   "box": [
+    0.25,
+    0.0,
+    0.75,
+    0.32
+   ],
+   "what": "teacher",
+   "samples": 20,
+   "hit": 1.0,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 6.2,
+   "end": 8.2,
+   "box": [
+    0.3,
+    0.02,
+    0.65,
+    0.24
+   ],
+   "what": "girl with a drink",
+   "samples": 20,
+   "hit": 1.0,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 10.2,
+   "end": 12.2,
+   "box": [
+    0.22,
+    0.03,
+    0.62,
+    0.35
+   ],
+   "what": "leader",
+   "samples": 20,
+   "hit": 1.0,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 12.2,
+   "end": 14.2,
+   "box": [
+    0.3,
+    0.05,
+    0.72,
+    0.32
+   ],
+   "what": "girl walking",
+   "samples": 20,
+   "hit": 1.0,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 14.2,
+   "end": 16.2,
+   "box": [
+    0.28,
+    0.05,
+    1.0,
+    0.47
+   ],
+   "what": "toddler (v3 brand check: mouth and the whole head)",
+   "samples": 20,
+   "hit": 1.0,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 22.2,
+   "end": 24.2,
+   "box": [
+    0.28,
+    0.28,
+    0.9,
+    0.52
+   ],
+   "what": "boy in blue",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 24.2,
+   "end": 26.2,
+   "box": [
+    0.1,
+    0.36,
+    0.5,
+    0.66
+   ],
+   "what": "little girl (v3 brand check: to her chin)",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": false
+  },
+  {
+   "start": 26.2,
+   "end": 28.2,
+   "box": [
+    0.22,
+    0.03,
+    0.78,
+    0.34
+   ],
+   "what": "boy in orange",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 28.2,
+   "end": 30.2,
+   "box": [
+    0.28,
+    0.15,
+    0.72,
+    0.42
+   ],
+   "what": "girl in a mask",
+   "samples": 20,
+   "hit": 0.45,
+   "covered": false,
+   "covered_strict": false
+  },
+  {
+   "start": 30.2,
+   "end": 32.2,
+   "box": [
+    0.42,
+    0.08,
+    0.88,
+    0.58
+   ],
+   "what": "grandma and child",
+   "samples": 20,
+   "hit": 0.55,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 32.2,
+   "end": 34.2,
+   "box": [
+    0.28,
+    0.02,
+    0.72,
+    0.32
+   ],
+   "what": "girl with the roof",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 34.2,
+   "end": 36.2,
+   "box": [
+    0.08,
+    0.0,
+    0.98,
+    0.5
+   ],
+   "what": "mum and baby",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 36.2,
+   "end": 38.0,
+   "box": [
+    0.28,
+    0.0,
+    0.92,
+    0.42
+   ],
+   "what": "boy finishing",
+   "samples": 18,
+   "hit": 0.944,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 38.0,
+   "end": 39.8,
+   "box": [
+    0.38,
+    0.18,
+    0.72,
+    0.34
+   ],
+   "what": "woman in a cap",
+   "samples": 18,
+   "hit": 0.944,
+   "covered": true,
+   "covered_strict": false
+  },
+  {
+   "start": 39.8,
+   "end": 41.8,
+   "box": [
+    0.32,
+    0.03,
+    0.82,
+    0.37
+   ],
+   "what": "boy with his yurt",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 41.8,
+   "end": 43.8,
+   "box": [
+    0.0,
+    0.12,
+    0.72,
+    0.36
+   ],
+   "what": "children close up",
+   "samples": 20,
+   "hit": 0.75,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 43.8,
+   "end": 52.2,
+   "box": [
+    0.0,
+    0.3,
+    1.0,
+    0.66
+   ],
+   "what": "group photo (whole picture band)",
+   "samples": 84,
+   "hit": 0.964,
+   "covered": true,
+   "covered_strict": true
+  },
+  {
+   "start": 24.2,
+   "end": 26.2,
+   "box": [
+    0.0,
+    0.0,
+    0.3,
+    0.12
+   ],
+   "what": "woman at the top left (v3)",
+   "samples": 20,
+   "hit": 0.3,
+   "covered": false,
+   "covered_strict": false
+  },
+  {
+   "start": 30.2,
+   "end": 32.2,
+   "box": [
+    0.0,
+    0.0,
+    0.38,
+    0.24
+   ],
+   "what": "woman at the left (v3)",
+   "samples": 20,
+   "hit": 0.0,
+   "covered": false,
+   "covered_strict": false
+  },
+  {
+   "start": 34.2,
+   "end": 36.2,
+   "box": [
+    0.4,
+    0.3,
+    1.0,
+    0.6
+   ],
+   "what": "baby (v3: the mum box stopped at y 0.5)",
+   "samples": 20,
+   "hit": 0.95,
+   "covered": true,
+   "covered_strict": true
+  }
+ ],
+ "extras_list": [
+  {
+   "start": 1.45,
+   "end": 1.85,
+   "box": [
+    0.5091,
+    0.5566,
+    0.6895,
+    0.7022
+   ],
+   "conf": 0.972,
+   "hits": 3
+  },
+  {
+   "start": 1.85,
+   "end": 2.15,
+   "box": [
+    0.4839,
+    0.5623,
+    0.6292,
+    0.6403
+   ],
+   "conf": 0.938,
+   "hits": 3
+  },
+  {
+   "start": 2.2,
+   "end": 3.15,
+   "box": [
+    0.0,
+    0.335,
+    0.1383,
+    0.4401
+   ],
+   "conf": 1.0,
+   "hits": 10
+  },
+  {
+   "start": 2.2,
+   "end": 2.55,
+   "box": [
+    0.1213,
+    0.385,
+    0.2917,
+    0.4799
+   ],
+   "conf": 0.994,
+   "hits": 4
+  },
+  {
+   "start": 2.2,
+   "end": 2.95,
+   "box": [
+    0.2832,
+    0.3872,
+    0.3973,
+    0.4624
+   ],
+   "conf": 1.0,
+   "hits": 8
+  },
+  {
+   "start": 2.2,
+   "end": 2.55,
+   "box": [
+    0.3243,
+    0.3097,
+    0.4593,
+    0.383
+   ],
+   "conf": 0.999,
+   "hits": 4
+  },
+  {
+   "start": 2.2,
+   "end": 2.45,
+   "box": [
+    0.4028,
+    0.3725,
+    0.534,
+    0.4499
+   ],
+   "conf": 0.762,
+   "hits": 3
+  },
+  {
+   "start": 2.45,
+   "end": 3.35,
+   "box": [
+    0.4217,
+    0.3528,
+    0.5903,
+    0.4506
+   ],
+   "conf": 0.884,
+   "hits": 8
+  },
+  {
+   "start": 2.45,
+   "end": 2.75,
+   "box": [
+    0.7675,
+    0.4173,
+    1.0,
+    0.6463
+   ],
+   "conf": 0.992,
+   "hits": 3
+  },
+  {
+   "start": 2.55,
+   "end": 3.15,
+   "box": [
+    0.1426,
+    0.3744,
+    0.3266,
+    0.4768
+   ],
+   "conf": 0.999,
+   "hits": 6
+  },
+  {
+   "start": 2.55,
+   "end": 3.15,
+   "box": [
+    0.3312,
+    0.2907,
+    0.4784,
+    0.3861
+   ],
+   "conf": 0.999,
+   "hits": 6
+  },
+  {
+   "start": 2.55,
+   "end": 3.35,
+   "box": [
+    0.6536,
+    0.3679,
+    0.8487,
+    0.5156
+   ],
+   "conf": 1.0,
+   "hits": 8
+  },
+  {
+   "start": 2.65,
+   "end": 3.15,
+   "box": [
+    0.4205,
+    0.375,
+    0.5517,
+    0.4554
+   ],
+   "conf": 0.658,
+   "hits": 4
+  },
+  {
+   "start": 2.95,
+   "end": 3.25,
+   "box": [
+    0.2425,
+    0.3817,
+    0.3851,
+    0.4505
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 3.35,
+   "end": 3.75,
+   "box": [
+    0.0,
+    0.3685,
+    0.1837,
+    0.4825
+   ],
+   "conf": 1.0,
+   "hits": 4
+  },
+  {
+   "start": 3.45,
+   "end": 3.85,
+   "box": [
+    0.8032,
+    0.3969,
+    1.0,
+    0.4929
+   ],
+   "conf": 0.987,
+   "hits": 4
+  },
+  {
+   "start": 3.55,
+   "end": 3.85,
+   "box": [
+    0.477,
+    0.3624,
+    0.7189,
+    0.5319
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 3.65,
+   "end": 3.95,
+   "box": [
+    0.8561,
+    0.2875,
+    1.0,
+    0.3796
+   ],
+   "conf": 0.997,
+   "hits": 3
+  },
+  {
+   "start": 3.75,
+   "end": 4.15,
+   "box": [
+    0.8003,
+    0.547,
+    1.0,
+    0.7672
+   ],
+   "conf": 0.999,
+   "hits": 4
+  },
+  {
+   "start": 3.85,
+   "end": 4.15,
+   "box": [
+    0.3703,
+    0.3627,
+    0.6201,
+    0.5376
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 3.85,
+   "end": 4.15,
+   "box": [
+    0.7329,
+    0.4006,
+    0.9488,
+    0.4973
+   ],
+   "conf": 0.983,
+   "hits": 3
+  },
+  {
+   "start": 5.35,
+   "end": 5.65,
+   "box": [
+    0.3038,
+    0.8624,
+    0.4604,
+    0.9609
+   ],
+   "conf": 0.463,
+   "hits": 3
+  },
+  {
+   "start": 7.45,
+   "end": 7.75,
+   "box": [
+    0.6801,
+    0.2379,
+    1.0,
+    0.7198
+   ],
+   "conf": 0.663,
+   "hits": 3
+  },
+  {
+   "start": 7.65,
+   "end": 8.15,
+   "box": [
+    0.0605,
+    0.4958,
+    0.3483,
+    0.6955
+   ],
+   "conf": 0.894,
+   "hits": 3
+  },
+  {
+   "start": 7.85,
+   "end": 8.15,
+   "box": [
+    0.8997,
+    0.0,
+    1.0,
+    0.2205
+   ],
+   "conf": 0.889,
+   "hits": 3
+  },
+  {
+   "start": 8.85,
+   "end": 9.35,
+   "box": [
+    0.2391,
+    0.7003,
+    0.6094,
+    0.835
+   ],
+   "conf": 0.853,
+   "hits": 3
+  },
+  {
+   "start": 12.25,
+   "end": 13.35,
+   "box": [
+    0.7892,
+    0.3978,
+    0.9409,
+    0.5073
+   ],
+   "conf": 1.0,
+   "hits": 10
+  },
+  {
+   "start": 12.95,
+   "end": 13.25,
+   "box": [
+    0.0,
+    0.2094,
+    0.252,
+    0.36
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 13.15,
+   "end": 13.55,
+   "box": [
+    0.863,
+    0.2932,
+    1.0,
+    0.3954
+   ],
+   "conf": 0.997,
+   "hits": 4
+  },
+  {
+   "start": 13.55,
+   "end": 13.85,
+   "box": [
+    0.8005,
+    0.2771,
+    0.978,
+    0.3876
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 13.85,
+   "end": 14.15,
+   "box": [
+    0.7755,
+    0.272,
+    0.9265,
+    0.3805
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 17.25,
+   "end": 18.05,
+   "box": [
+    0.7722,
+    0.0,
+    1.0,
+    1.0
+   ],
+   "conf": 0.663,
+   "hits": 6
+  },
+  {
+   "start": 18.2,
+   "end": 18.65,
+   "box": [
+    0.0,
+    0.2638,
+    0.731,
+    0.7103
+   ],
+   "conf": 0.694,
+   "hits": 4
+  },
+  {
+   "start": 20.2,
+   "end": 20.55,
+   "box": [
+    0.0,
+    0.6032,
+    0.1073,
+    0.7606
+   ],
+   "conf": 0.676,
+   "hits": 3
+  },
+  {
+   "start": 20.2,
+   "end": 20.45,
+   "box": [
+    0.0746,
+    0.4826,
+    0.1889,
+    0.5884
+   ],
+   "conf": 0.654,
+   "hits": 3
+  },
+  {
+   "start": 20.2,
+   "end": 20.45,
+   "box": [
+    0.0988,
+    0.4894,
+    0.2411,
+    0.5918
+   ],
+   "conf": 0.89,
+   "hits": 3
+  },
+  {
+   "start": 20.2,
+   "end": 20.45,
+   "box": [
+    0.4279,
+    0.4864,
+    0.5205,
+    0.5901
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 20.2,
+   "end": 20.65,
+   "box": [
+    0.5212,
+    0.5013,
+    0.7229,
+    0.7047
+   ],
+   "conf": 1.0,
+   "hits": 5
+  },
+  {
+   "start": 20.2,
+   "end": 20.45,
+   "box": [
+    0.5457,
+    0.3589,
+    0.6432,
+    0.4892
+   ],
+   "conf": 0.892,
+   "hits": 3
+  },
+  {
+   "start": 20.45,
+   "end": 20.75,
+   "box": [
+    0.0646,
+    0.5187,
+    0.1895,
+    0.6293
+   ],
+   "conf": 0.801,
+   "hits": 3
+  },
+  {
+   "start": 20.45,
+   "end": 20.75,
+   "box": [
+    0.0968,
+    0.5303,
+    0.2342,
+    0.639
+   ],
+   "conf": 0.838,
+   "hits": 3
+  },
+  {
+   "start": 20.45,
+   "end": 20.75,
+   "box": [
+    0.426,
+    0.5301,
+    0.5221,
+    0.626
+   ],
+   "conf": 1.0,
+   "hits": 3
+  },
+  {
+   "start": 20.45,
+   "end": 21.75,
+   "box": [
+    0.5336,
+    0.3972,
+    0.6424,
+    0.5645
+   ],
+   "conf": 0.895,
+   "hits": 13
+  },
+  {
+   "start": 20.55,
+   "end": 21.05,
+   "box": [
+    0.0,
+    0.6737,
+    0.0909,
+    0.8312
+   ],
+   "conf": 0.732,
+   "hits": 5
+  },
+  {
+   "start": 20.55,
+   "end": 20.85,
+   "box": [
+    0.1534,
+    0.4836,
+    0.2475,
+    0.5719
+   ],
+   "conf": 0.931,
+   "hits": 3
+  },
+  {
+   "start": 20.65,
+   "end": 21.75,
+   "box": [
+    0.4993,
+    0.5661,
+    0.7062,
+    0.7294
+   ],
+   "conf": 1.0,
+   "hits": 11
+  },
+  {
+   "start": 20.75,
+   "end": 22.15,
+   "box": [
+    0.0259,
+    0.5536,
+    0.192,
+    0.65
+   ],
+   "conf": 0.966,
+   "hits": 14
+  },
+  {
+   "start": 20.75,
+   "end": 22.15,
+   "box": [
+    0.0533,
+    0.5643,
+    0.2268,
+    0.6579
+   ],
+   "conf": 0.937,
+   "hits": 12
+  },
+  {
+   "start": 20.75,
+   "end": 21.15,
+   "box": [
+    0.4357,
+    0.5659,
+    0.5398,
+    0.6551
+   ],
+   "conf": 0.999,
+   "hits": 4
+  },
+  {
+   "start": 20.85,
+   "end": 21.65,
+   "box": [
+    0.1622,
+    0.5121,
+    0.2579,
+    0.5827
+   ],
+   "conf": 0.992,
+   "hits": 8
+  },
+  {
+   "start": 21.05,
+   "end": 22.15,
+   "box": [
+    0.3802,
+    0.575,
+    0.4775,
+    0.6373
+   ],
+   "conf": 0.961,
+   "hits": 11
+  },
+  {
+   "start": 21.15,
+   "end": 22.15,
+   "box": [
+    0.4501,
+    0.5782,
+    0.5399,
+    0.6561
+   ],
+   "conf": 0.998,
+   "hits": 10
+  },
+  {
+   "start": 21.65,
+   "end": 22.15,
+   "box": [
+    0.192,
+    0.5241,
+    0.2909,
+    0.5848
+   ],
+   "conf": 0.983,
+   "hits": 5
+  },
+  {
+   "start": 21.75,
+   "end": 22.15,
+   "box": [
+    0.0,
+    0.6228,
+    0.138,
+    0.7257
+   ],
+   "conf": 0.841,
+   "hits": 4
+  },
+  {
+   "start": 21.75,
+   "end": 22.15,
+   "box": [
+    0.4786,
+    0.5711,
+    0.6512,
+    0.7122
+   ],
+   "conf": 1.0,
+   "hits": 4
+  },
+  {
+   "start": 21.75,
+   "end": 22.05,
+   "box": [
+    0.5474,
+    0.4298,
+    0.6422,
+    0.541
+   ],
+   "conf": 0.794,
+   "hits": 3
+  },
+  {
+   "start": 22.2,
+   "end": 22.75,
+   "box": [
+    0.0,
+    0.3755,
+    0.2518,
+    0.6127
+   ],
+   "conf": 0.982,
+   "hits": 6
+  },
+  {
+   "start": 22.2,
+   "end": 22.55,
+   "box": [
+    0.0087,
+    0.3331,
+    0.2108,
+    0.4883
+   ],
+   "conf": 0.905,
+   "hits": 4
+  },
+  {
+   "start": 22.25,
+   "end": 22.65,
+   "box": [
+    0.0,
+    0.3533,
+    0.1529,
+    0.4808
+   ],
+   "conf": 0.618,
+   "hits": 3
+  },
+  {
+   "start": 28.2,
+   "end": 28.65,
+   "box": [
+    0.3573,
+    0.4573,
+    0.5731,
+    0.6318
+   ],
+   "conf": 0.975,
+   "hits": 5
+  },
+  {
+   "start": 30.2,
+   "end": 30.75,
+   "box": [
+    0.0,
+    0.2425,
+    0.2216,
+    0.3993
+   ],
+   "conf": 1.0,
+   "hits": 6
+  },
+  {
+   "start": 30.75,
+   "end": 32.15,
+   "box": [
+    0.0,
+    0.297,
+    0.2125,
+    0.4314
+   ],
+   "conf": 0.999,
+   "hits": 14
+  }
+ ]
+}

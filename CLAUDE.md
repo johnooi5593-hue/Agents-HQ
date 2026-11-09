@@ -55,6 +55,7 @@ The owner can run more than one brand (Channels & accounts in the app). The main
 
 ## Commands (`.claude/commands/`)
 `/brief <task>` route any task through the office · `/standup` every team's status · `/research <topic>` · `/campaign <launch>` · `/edit-clips` every clip in inbox · `/script <topic>` · `/whats-next` ideas from comments · `/post-copy <clip>` · `/stats` lessons from analytics · `/teach <rule>` · `/tasks` the board · `/hire <name>: <job>` add an agent · `/retro <work>` lessons from a project · `/coffee-chat` the weekly cross-team review · `/meeting <topic>` all-hands in the 6F Meeting Hall (also in the app's chat boxes)
+`/kids-review <footage folder>` a cute children / kids' event review, always 9:16 + 16:9 (skill `kids-review`, built on the 1107 Children review)
 
 ## Rules
 - One command per Bash call, no `&&` chains. Use only the commands the permission rules allow (`.claude/settings.json`).

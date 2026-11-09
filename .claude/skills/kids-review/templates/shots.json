@@ -1,0 +1,31 @@
+{
+ "note": "1107 Children review. src = clip number (DJI_..._0NNN_D.MP4), t = start in that clip (s), d = seconds, cx/cy = crop centre (fraction of the 16:9 frame), fit = whole 16:9 over blurred fill (group photos only). Crops checked on 3 frames each (shotsheet.jpg).",
+ "dur": 2.0,
+ "shots": [
+  {"src": "0673", "t": 0.9, "d": 2.2, "what": "two boys with paper yurts on their heads, V sign", "cx": 0.42},
+  {"src": "0636", "t": 1.6, "what": "children on the play mat around the blue table", "cx": 0.45},
+  {"src": "0637", "t": 3.3, "what": "teacher telling a story, girl listening", "cx": 0.47},
+  {"src": "0640", "t": 0.6, "what": "girl with a drink, children sitting on the mat", "cx": 0.5},
+  {"src": "0641", "t": 2.3, "what": "the paper yurt model close-up", "cx": 0.5},
+  {"src": "0649", "t": 1.6, "what": "leader holding up the puzzle board", "cx": 0.56},
+  {"src": "0645", "t": 1.6, "what": "girl walking with a piece in her hands", "cx": 0.45},
+  {"src": "0647", "t": 1.6, "what": "toddler pointing at the puzzle board", "cx": 0.5},
+  {"src": "0651", "t": 0.8, "what": "girl in pink pressing out pieces", "cx": 0.5},
+  {"src": "0650", "t": 2.2, "what": "boy in red popping out pieces", "cx": 0.62},
+  {"src": "0653", "t": 2.6, "what": "the whole room building", "cx": 0.55},
+  {"src": "0656", "t": 1.4, "what": "boy in blue building with a helper", "cx": 0.32},
+  {"src": "0657", "t": 1.2, "what": "little girl building with her mum", "cx": 0.5},
+  {"src": "0660", "t": 2.2, "what": "boy in orange makes a V sign", "cx": 0.55},
+  {"src": "0662", "t": 2.1, "what": "girl in a mask building with a helper", "cx": 0.38},
+  {"src": "0664", "t": 2.0, "what": "grandma helping a child", "cx": 0.45},
+  {"src": "0667", "t": 2.0, "what": "girl holding the yurt roof", "cx": 0.48},
+  {"src": "0668", "t": 3.0, "what": "mum with her baby, smiling", "cx": 0.45},
+  {"src": "0669", "t": 0.0, "d": 1.8, "what": "boy finishing his yurt", "cx": 0.38},
+  {"src": "0670", "t": 7.5, "d": 1.8, "what": "a finished yurt on the table", "cx": 0.5},
+  {"src": "0672", "t": 2.4, "what": "boy holding up his yurt, V sign", "cx": 0.45},
+  {"src": "0677", "t": 0.4, "what": "children showing their yurts close to the camera", "cx": 0.5},
+  {"src": "0674", "t": 0.2, "d": 2.6, "what": "group photo with yurts", "fit": true},
+  {"src": "0677", "t": 9.5, "d": 2.6, "what": "group photo raising yurts", "fit": true},
+  {"src": "0678", "t": 4.0, "d": 3.2, "what": "group waving", "fit": true}
+ ]
+}

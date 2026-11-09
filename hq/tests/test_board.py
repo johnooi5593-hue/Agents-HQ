@@ -22,9 +22,9 @@ class BoardTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         tree = ast.parse(SERVER.read_text(encoding="utf-8"))
-        names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action", "add_chat", "after_run", "leads_setting"}
+        names = {"normalize_task", "set_status", "clean_progress", "clean_date", "clean_time", "safe_join", "task_channel", "_task_action", "add_chat", "after_run", "leads_setting", "model_choice", "model_for"}
         body = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-        body += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF", "MAX_LEADS", "MAX_PARALLEL") for t in n.targets)]
+        body += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("STATUSES", "KINDS", "TASK_DEFAULTS", "OFFICE", "FOOTAGE", "DATE_RE", "TIME_RE", "SAFE_NAME", "CHAT_KEEP", "ASKS", "TASK_REF", "MAX_LEADS", "MAX_PARALLEL", "DEFAULT_MODEL", "FABLE_MODEL", "FABLE_ASK", "MODEL_CHOICES", "FABLE_NOTE", "OPUS_NOTE") for t in n.targets)]
         body += [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ("Gate", "Run", "RunTimes", "Desk", "Desks")]
         body += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "lane_of"]
         self.db = {"tasks": []}
@@ -37,8 +37,8 @@ class BoardTests(unittest.TestCase):
         self.started = []
 
         class FakeDesk:                                     # records what would go to the lead
-            def start(desk, prompt, tasks=()):
-                run = self.env["Run"](prompt, tasks)
+            def start(desk, prompt, tasks=(), model=None):
+                run = self.env["Run"](prompt, tasks, model)
                 self.started.append(run)
                 return run
         self.env["desk"] = FakeDesk()

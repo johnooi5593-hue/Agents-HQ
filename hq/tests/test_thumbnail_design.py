@@ -279,6 +279,8 @@ class ThumbnailTests(unittest.TestCase):
     def server_actions(self):
         tree = ast.parse((Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"))
         funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("approve_folder", "_approve_folder", "task_action", "_task_action")]
+        funcs += [n for n in tree.body if (isinstance(n, ast.ClassDef) and n.name == "phone_released")
+                  or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "PHONE_STOPPING" for t in n.targets))]   # t206
         handler = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Handler")
         funcs.append(next(n for n in handler.body if isinstance(n, ast.FunctionDef) and n.name == "do_POST"))
         env = {"os": os, "re": re, "shutil": shutil, "unquote": unquote, "urlparse": urlparse,
@@ -372,12 +374,20 @@ class ThumbnailTests(unittest.TestCase):
         final_task_id = result["delivery"]["taskId"]
         moving, allow_move, initial_source = threading.Event(), threading.Event(), threading.Event()
         original_move, original_source = shutil.move, self.bridge._source
+        original_rename = os.rename                         # _approve_folder moves with os.rename (code review A1, 2026-11-09)
         outcomes = {}
         def move(*args):
             moving.set()
             if not allow_move.wait(3):
                 raise RuntimeError("test coordination timeout")
             return original_move(*args)
+        def rename(*args):
+            if threading.current_thread().name != "final-approval":
+                return original_rename(*args)
+            moving.set()
+            if not allow_move.wait(3):
+                raise RuntimeError("test coordination timeout")
+            return original_rename(*args)
         def source(*args):
             value = original_source(*args)
             if threading.current_thread().name == "new-thumbnail-revision":
@@ -390,8 +400,9 @@ class ThumbnailTests(unittest.TestCase):
                 outcomes["revision"] = self.bridge.approve_video(self.body(title="new revision"))
             except DesignError as error:
                 outcomes["revision"] = error
-        with mock.patch("shutil.move", side_effect=move), mock.patch.object(self.bridge, "_source", side_effect=source):
-            a = threading.Thread(target=approve)
+        with mock.patch("shutil.move", side_effect=move), mock.patch("os.rename", side_effect=rename), \
+                mock.patch.object(self.bridge, "_source", side_effect=source):
+            a = threading.Thread(target=approve, name="final-approval")
             a.start()
             self.assertTrue(moving.wait(3))
             b = threading.Thread(target=revision, name="new-thumbnail-revision")

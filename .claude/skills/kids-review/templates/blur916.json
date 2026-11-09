@@ -1,0 +1,6 @@
+{
+ "note": "9:16 name blurs of ONE kids review, in 1080x1920 pixels of vo-video.mp4 (blur.py). Worked example: 1107 Children (v1 used an ffmpeg boxblur box 260x380 at 190,1280 for the teacher's badge, 10.15-12.25 s; here it is the same box for blur.py, stopped at the 12.2 s cut). Check EVERY shot: badges, lanyards, bottle name stickers, door charts, whiteboards, table name cards. The 9:16 crop hides some of what the 16:9 frame shows, so the two lists differ.",
+ "boxes": [
+  {"what": "teacher lanyard badge, leader shot", "t0": 10.15, "t1": 12.2, "keys": [[10.15, 190, 1280, 260, 380]]}
+ ]
+}
