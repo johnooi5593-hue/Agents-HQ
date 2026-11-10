@@ -1956,23 +1956,42 @@
     if (kind === "meta") body = { action: "meta", app_id: v("acc-app-id"), app_secret: v("acc-app-secret"), token: v("acc-token"), page: v("acc-page") };
     else if (kind === "youtube") body = { action: "youtube", client_json: v("acc-yt-json") };
     else if (kind === "tiktok") body = { action: "tiktok", client_key: v("acc-tt-key"), client_secret: v("acc-tt-secret") };
+    else if (kind === "elevenlabs") body = { action: "elevenlabs", api_key: v("acc-el-key") };
     else body = { action: "disconnect", which: kind.replace(/^off-/, "") };
     body.channel = rv.ch;
     rv.accBusy = kind; renderReview();
     try {
       const r = await postJSON("/api/accounts", body);
+      if (kind === "elevenlabs" && r.elevenlabs) toast("creative", "ElevenLabs connected", `${r.elevenlabs.voices || 0} voice(s) found${r.elevenlabs.own ? `, ${r.elevenlabs.own} of them your own` : ""}. Tell the chief of staff which voice to use for voice-overs.`);
       if (r.url) {
         window.open(r.url, "_blank");
         const who = kind === "tiktok" ? "tiktok" : "youtube";
         toast("social", who === "tiktok" ? "TikTok" : "YouTube", who === "tiktok" ? "Sign in to TikTok in the browser window and allow, then come back here." : "Sign in with Google in the browser window, then come back here.");
         let n = 0; const t = setInterval(async () => { n++; await loadAccounts(); if ((rv.acc && rv.acc[who] && rv.acc[who].connected) || n > 100 || !rv.open) clearInterval(t); }, 3000);
       } else {
-        if (r.accounts) rv.acc = r.accounts;
+        if (r.accounts) rv.acc = { ...r.accounts, elevenlabs: r.accounts.elevenlabs || (rv.acc || {}).elevenlabs };   // ElevenLabs is office-wide: keep its card
         if (kind === "meta") toast("social", "Connected", `Facebook Page ${r.page || ""}${r.instagram ? " and Instagram @" + r.instagram : " (no Instagram linked)"}` +
           (r.missing && r.missing.length ? `. Missing permission: ${r.missing.join(", ")}. Get the token again with these ticked, or posting will fail.` : ""));
       }
     } catch (e) { toast("social", "Accounts", e.message || "could not connect", { bad: true }); }
     rv.accBusy = ""; if (rv.open) renderReview();
+  }
+  function elevenSec() {                                    // ElevenLabs: one key for the whole office, used for voice-overs only
+    const el = (rv.acc || {}).elevenlabs || {}, busy = rv.accBusy === "elevenlabs" ? '<span class="spin"></span> ' : "";
+    const credits = el.limit ? ` · ${Number(el.used || 0).toLocaleString()} / ${Number(el.limit).toLocaleString()} credits used this month` : "";
+    const n = (x) => Number(x) || 0;
+    return `<div class="rv-sec acc"><div class="rv-h">ElevenLabs <span>voices for voice-overs · one key for every channel</span></div>
+        <div class="acc-line ${el.connected || el.env ? "ok" : ""}">${el.connected || el.env ? svg("check") : "○"} <b>ElevenLabs</b> ${el.connected ? `connected · ${n(el.voices)} voice(s)${n(el.own) ? `, ${n(el.own)} your own` : ""}${el.tier ? " · " + esc(el.tier) : ""}${credits}` : el.env ? "connected (key set on this computer)" : "not connected"}</div>
+        ${el.env ? '<div class="pub-warn">An ELEVENLABS_API_KEY set on this computer is used instead of the key pasted here.</div>' : ""}
+        <div class="pub-note">The editors use your ElevenLabs voices for voice-overs (e.g. a kids review's host voice) instead of the free voice. It uses your ElevenLabs credits. The key stays on this computer: the app never shows it again and agents never post with it.</div>
+        <input class="pub-in" id="acc-el-key" type="password" placeholder="ElevenLabs API key${el.connected ? " (leave empty to check the current key again)" : ""}" autocomplete="new-password">
+        <div class="acc-row"><button class="btn primary" data-acc="elevenlabs" type="button">${busy}${el.connected ? "Check / replace key" : "Connect ElevenLabs"}</button>${el.connected ? '<button class="btn" data-acc="off-elevenlabs" type="button">Disconnect</button>' : ""}</div>
+        <details class="acc-help"><summary>How to get the key (2 minutes, works on the phone)</summary><ol>
+          <li>Open <b>elevenlabs.io</b> and sign in → <b>Developers</b> (or your profile menu) → <b>API Keys</b> → <b>Create API key</b>, name it Agents HQ.</li>
+          <li>Turn on <b>restrict key</b> and allow only <b>Text to Speech</b>, <b>Voices: Read</b> and <b>User: Read</b> (that one shows your credits here). Leave the rest off. You can also set a monthly credit limit on the key.</li>
+          <li>Copy the key (it starts with <code>sk_</code>; ElevenLabs shows it once), paste it here and press Connect. Never paste it in a chat.</li>
+          <li>Disconnect only forgets the key on this computer: to switch it off for good, delete it at elevenlabs.io too.</li></ol></details>
+      </div>`;
   }
   function accountsCard() {
     const a = rv.acc || {}, fb = a.facebook || {}, ig = a.instagram || {}, yt = a.youtube || {}, tt = a.tiktok || {}, busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
@@ -2025,7 +2044,8 @@
           <li><b>Scopes</b>: make sure <code>user.info.basic</code> and <code>video.upload</code> are added. Leave Direct Post off for now.</li>
           <li>Submit the app for review if TikTok asks for it; while it waits, add your own TikTok account under <b>Sandbox</b> → Target users to test.</li>
           <li>Copy the <b>Client key</b> and <b>Client secret</b> here and press <b>Connect TikTok</b> on this computer. Sign in and allow.</li></ol></details>
-      </div>`}
+      </div>
+      ${elevenSec()}`}
       </div><div class="rv-actions"><button class="btn" data-rv-close type="button">Done</button></div></div>`;
   }
   function closeReview(fromHistory) {

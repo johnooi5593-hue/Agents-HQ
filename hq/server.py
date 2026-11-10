@@ -38,6 +38,7 @@ from status import CLIP_EXT, brain_entities, brain_notes, collect, files  # noqa
 import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
+import elevenlabs  # noqa: E402  (the owner's ElevenLabs key for the voice-over step; never shown or posted anywhere)
 import webpush  # noqa: E402  (phone notifications for the installed app)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
 from sermon_design import DesignError  # noqa: E402
@@ -655,10 +656,18 @@ def accounts_action(body, redirect):
             if not back:
                 return 409, {"error": "TikTok needs an https return address. Turn on phone access (Tailscale) for Agents HQ first, then connect again."}
             return 200, {"url": accounts.tiktok_begin(body.get("client_key"), body.get("client_secret"), back, ch)}
+        if act == "elevenlabs":                          # ElevenLabs: one API key for the whole office (voices, not posting)
+            r = elevenlabs.connect(body.get("api_key"))
+            return 200, {"elevenlabs": r, "accounts": {**accounts.summary(ch), "elevenlabs": r}}
+        if act == "disconnect" and body.get("which") == "elevenlabs":
+            r = elevenlabs.disconnect()
+            return 200, {"accounts": {**accounts.summary(ch), "elevenlabs": r}}
         if act == "disconnect" and body.get("which") in ("meta", "youtube", "tiktok"):
             accounts.disconnect(body["which"], ch)
             return 200, {"accounts": accounts.summary(ch)}
     except publish.PostError as e:
+        return 400, {"error": str(e)}
+    except elevenlabs.ElevenError as e:
         return 400, {"error": str(e)}
     return 400, {"error": "unknown action"}
 
@@ -2364,7 +2373,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/weather":                        # the weather in PJ: the office's sky, rain and lightning follow it
             return self.send_json(weather.current())
         if path == "/api/accounts":
-            return self.send_json({**accounts.summary(qs.get("channel", [""])[0]), "tiktokRedirect": tiktok_redirect() or ""})
+            return self.send_json({**accounts.summary(qs.get("channel", [""])[0]), "tiktokRedirect": tiktok_redirect() or "",
+                                   "elevenlabs": elevenlabs.summary()})
         if path == "/api/channels":
             return self.send_json(channels.payload())
         if path == "/api/publish":                         # the posting overview: also for work still waiting for the OK
