@@ -164,6 +164,16 @@ class ElevenLabsTest(unittest.TestCase):
         self.assertIn("credits are used up", str(cm.exception))
         self.assertFalse(os.path.exists(os.path.join(self.root, "a.mp3")))
 
+    def test_free_plan_library_voice_is_a_plan_problem_not_credits(self):
+        elevenlabs.save({"api_key": KEY}, self.root)
+        fake = Fake({"/v1/text-to-speech/": http_error(402, {"status": "payment_required",
+                     "message": "Free users cannot use library voices via the API."})})
+        with mock.patch.object(elevenlabs, "_open", fake), self.assertRaises(elevenlabs.ElevenError) as cm:
+            elevenlabs.speak("hi", "Voice0000000001", os.path.join(self.root, "a.mp3"), root=self.root)
+        self.assertIn("paid plan", str(cm.exception))
+        self.assertIn("Free users cannot use library voices", str(cm.exception))
+        self.assertNotIn("credits are used up", str(cm.exception))
+
 
 class ToolTest(unittest.TestCase):
     TOOL = Path(__file__).resolve().parents[2] / "tools" / "voice" / "eleven.py"

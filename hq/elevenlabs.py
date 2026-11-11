@@ -92,8 +92,12 @@ def _why(e):
         d = None
     status = str((d or {}).get("status", "")) if isinstance(d, dict) else ""
     msg = SECRET.sub("sk_…", ((d or {}).get("message", "") if isinstance(d, dict) else str(d or "")).strip())
-    if status in ("quota_exceeded", "insufficient_credits") or e.code == 402:
+    if status in ("quota_exceeded", "insufficient_credits"):
         return "Your ElevenLabs credits are used up for this month. Top up or wait for the reset, then try again."
+    if e.code == 402:   # payment_required, free_users_not_allowed, …: the plan, not the credits
+        why = CONTROL.sub("", msg)[:200] or status[:60] or "no reason given"
+        return ("ElevenLabs needs a paid plan for this (free plans can't use Voice Library voices outside the "
+                f"ElevenLabs app). ElevenLabs said: {why}")
     if status == "missing_permissions" or "permission" in msg.lower():
         return "The key is missing a permission. Edit it at elevenlabs.io → Developers → API Keys and allow Text to Speech and Voices: Read."
     if e.code == 401:
