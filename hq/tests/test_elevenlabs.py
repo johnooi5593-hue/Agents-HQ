@@ -164,6 +164,49 @@ class ElevenLabsTest(unittest.TestCase):
         self.assertIn("credits are used up", str(cm.exception))
         self.assertFalse(os.path.exists(os.path.join(self.root, "a.mp3")))
 
+    def test_credits_reads_used_and_left_and_never_writes_the_key_file(self):
+        elevenlabs.save({"api_key": KEY, "used": 5, "limit": 100000}, self.root)
+        before = open(elevenlabs.path(self.root), "rb").read()
+        with mock.patch.object(elevenlabs, "_open", Fake({"/v1/user/subscription": SUB})):
+            c = elevenlabs.credits(self.root)
+        self.assertEqual(c, {"tier": "creator", "used": 1200, "limit": 100000, "left": 98800})
+        self.assertEqual(open(elevenlabs.path(self.root), "rb").read(), before)   # parallel editors can't clobber it
+
+    def test_spent_exact_cost_partial_readings_and_estimates(self):
+        c = {"tier": "creator", "used": 1200, "limit": 100000, "left": 98800}
+        lagging = elevenlabs.spent(c, c, cost=54)                            # the counter hasn't caught up yet
+        self.assertEqual(lagging, {"used_now": 54, "left": 98746, "limit": 100000, "tier": "creator"})
+        self.assertEqual(elevenlabs.spent(c, {**c, "used": 1254, "left": 98746}),       # no cost known: the counter,
+                         {"used_now": 54, "left": 98746, "limit": 100000, "tier": "creator", "estimate": True})  # marked
+        self.assertEqual(elevenlabs.spent(None, None, cost=54), {"used_now": 54})       # no User: Read: the cost alone
+        self.assertEqual(elevenlabs.spent(c, None, cost=54)["left"], 98746)             # the after-reading failed
+        self.assertEqual(elevenlabs.spent(None, c, 9, exact=False)["estimate"], True)
+        self.assertIsNone(elevenlabs.spent(None, None))
+        self.assertEqual(elevenlabs.take_cost({"cost": 27}, "abc"), (27, True))
+        self.assertEqual(elevenlabs.take_cost({}, "哇好开心"), (4, False))             # no header: the length, estimated
+
+    def test_speak_reports_the_exact_cost_from_the_header(self):
+        elevenlabs.save({"api_key": KEY}, self.root)
+        r = Resp(json.dumps({"audio_base64": base64.b64encode(b"ID3fake").decode(), "alignment": {}}).encode())
+        r.headers = {"character-cost": "27"}
+        meta = {}
+        with mock.patch.object(elevenlabs, "_open", lambda req, timeout=None: r):
+            elevenlabs.speak("hi", "Voice0000000001", os.path.join(self.root, "a.mp3"), root=self.root, meta=meta)
+        self.assertEqual(meta, {"cost": 27})
+        meta = {}
+        r2 = Resp(json.dumps({"audio_base64": base64.b64encode(b"ID3fake").decode(), "alignment": {}}).encode())
+        with mock.patch.object(elevenlabs, "_open", lambda req, timeout=None: r2):   # no headers at all
+            elevenlabs.speak("hi", "Voice0000000001", os.path.join(self.root, "a.mp3"), root=self.root, meta=meta)
+        self.assertEqual(meta, {})
+
+    def test_credits_is_none_without_a_key_or_without_user_read(self):
+        with mock.patch.object(elevenlabs, "_open", Fake({})):
+            self.assertIsNone(elevenlabs.credits(self.root))                 # no key: no call at all
+        elevenlabs.save({"api_key": KEY}, self.root)
+        no = Fake({"/v1/user/subscription": http_error(401, {"status": "missing_permissions", "message": "needs user_read"})})
+        with mock.patch.object(elevenlabs, "_open", no):
+            self.assertIsNone(elevenlabs.credits(self.root))
+
     def test_free_plan_library_voice_is_a_plan_problem_not_credits(self):
         elevenlabs.save({"api_key": KEY}, self.root)
         fake = Fake({"/v1/text-to-speech/": http_error(402, {"status": "payment_required",
@@ -200,6 +243,30 @@ class ToolTest(unittest.TestCase):
         self.assertNotIn(KEY, out)
         self.assertTrue(json.loads(out)["connected"])
 
+    def test_say_prints_the_cost_and_credits_left(self):
+        def fake_speak(text, voice, out, model=None, settings=None, root=None, meta=None):
+            meta["cost"] = 4
+            return [["哇", 0.0, 0.3]]
+        readings = iter([{"tier": "starter", "used": 100, "limit": 40000, "left": 39900}] * 2)
+        with tempfile.TemporaryDirectory() as d:
+            elevenlabs.save({"api_key": KEY}, d)
+            with mock.patch.object(elevenlabs, "speak", fake_speak), \
+                    mock.patch.object(elevenlabs, "credits", lambda root=None: next(readings)):
+                code, out = self.run_tool(d, "say", "Voice0000000001", os.path.join(d, "a.mp3"), "哇")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["credits"], {"used_now": 4, "left": 39896, "limit": 40000, "tier": "starter"})
+
+    def test_a_charged_take_that_fails_is_still_counted(self):
+        def fake_speak(text, voice, out, model=None, settings=None, root=None, meta=None):
+            meta["cost"] = 7
+            raise elevenlabs.ElevenError("ElevenLabs sent no audio for this line.")
+        with tempfile.TemporaryDirectory() as d:
+            elevenlabs.save({"api_key": KEY}, d)
+            with mock.patch.object(elevenlabs, "speak", fake_speak), mock.patch.object(elevenlabs, "credits", lambda root=None: None):
+                code, out = self.run_tool(d, "say", "Voice0000000001", os.path.join(d, "a.mp3"), "哇")
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["credits"], {"used_now": 7})
+
 
 @unittest.skipUnless(__import__("shutil").which("ffmpeg"), "needs ffmpeg")
 class VoElevenTest(unittest.TestCase):
@@ -210,8 +277,9 @@ class VoElevenTest(unittest.TestCase):
         import vo
         calls = []
 
-        def fake_speak(text, voice_id, out, model=None, settings=None, root=None):
+        def fake_speak(text, voice_id, out, model=None, settings=None, root=None, meta=None):
             calls.append(text)
+            meta["cost"] = 3
             subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-f", "lavfi", "-i",
                             "sine=frequency=440:duration=0.6", "-filter_complex", "[0:a]atrim=0:0.2[s];[s][1:a]concat=n=2:v=0:a=1",
                             out], check=True)
@@ -226,14 +294,47 @@ class VoElevenTest(unittest.TestCase):
             open(os.path.join(old, "00.wav"), "wb").close()            # a 3B take left from an earlier run
             argv = ["vo.py", video, script, old, os.path.join(d, "out.mp4"), "--reuse", "--eleven", "Voice0000000001"]
             out = io.StringIO()
+            readings = iter([{"tier": "starter", "used": 100, "limit": 40000, "left": 39900},
+                             {"tier": "starter", "used": 110, "limit": 40000, "left": 39890}])
             with mock.patch.object(elevenlabs, "has_key", lambda root=None: True), mock.patch.object(elevenlabs, "speak", fake_speak), \
+                    mock.patch.object(elevenlabs, "credits", lambda root=None: next(readings)), \
                     mock.patch.object(sys, "argv", argv), mock.patch.object(sys, "stdout", out):
                 vo.main()
             lines = json.load(open(os.path.join(old, "lines.json"), encoding="utf-8"))
+        # the takes' own cost (2 x 3), not the lagging counter (10); left = before minus that cost
+        self.assertEqual(json.loads(out.getvalue())["credits"], {"used_now": 6, "left": 39890, "limit": 40000, "tier": "starter"})
         self.assertEqual(len(calls), 2)                                  # the old 3B line was spoken again, not reused
         self.assertIn("elevenlabs:Voice0000000001", out.getvalue())
         self.assertEqual([c[0] for c in lines[0]["chars"]], ["哇", "！", "好"])
         self.assertAlmostEqual(lines[0]["chars"][0][1], 0.03, places=2)  # trimmed 0.03 s before the first character
+
+    def test_a_stop_midway_reports_the_credits_spent_so_far(self):
+        import subprocess
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "skills" / "kids-review" / "scripts"))
+        import vo
+        n = []
+
+        def fake_speak(text, voice_id, out, model=None, settings=None, root=None, meta=None):
+            n.append(text)
+            if len(n) == 2:                                          # line 2: no header, then quota refused
+                raise elevenlabs.ElevenError("Your ElevenLabs credits are used up for this month.")
+            meta["cost"] = 5
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.6", out], check=True)
+            return [["哇", 0.0, 0.5]]
+        with tempfile.TemporaryDirectory() as d:
+            video = os.path.join(d, "v.mp4")
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=black:s=64x64:d=4", "-c:v", "libx264", video], check=True)
+            script = os.path.join(d, "lines.json")
+            with open(script, "w", encoding="utf-8") as f:
+                json.dump({"lines": [{"t": 0.2, "text": "哇"}, {"t": 2.0, "text": "好"}]}, f)
+            argv = ["vo.py", video, script, os.path.join(d, "vo"), os.path.join(d, "out.mp4"), "--eleven", "Voice0000000001"]
+            reading = {"tier": "starter", "used": 100, "limit": 40000, "left": 39900}
+            with mock.patch.object(elevenlabs, "has_key", lambda root=None: True), mock.patch.object(elevenlabs, "speak", fake_speak), \
+                    mock.patch.object(elevenlabs, "credits", lambda root=None: reading), mock.patch.object(sys, "argv", argv), \
+                    self.assertRaises(SystemExit) as cm:
+                vo.main()
+        self.assertIn("Credits: used 5, left 39895 of 40000.", str(cm.exception.code))
+        self.assertIn("Lines 1-1 are kept", str(cm.exception.code))
 
 
 class MakeplanCharsTest(unittest.TestCase):

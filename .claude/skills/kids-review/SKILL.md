@@ -70,6 +70,7 @@ worked example: replace its rows, keep its shape.
      (ids: `python tools/voice/eleven.py voices`; the owner's key is on the Accounts screen, never read `.hq-elevenlabs.json`).
      It uses the owner's credits: speak once, then re-run only changed lines. Its real character times go into lines.json
      and makeplan.py uses them for the cards. No key connected = the whole video falls back to 3B (say so in notes.md).
+     Tell the owner the credits it used and the credits left, from vo.py's "credits" output (owner, 2026-11-11).
    - 16:9: `ffmpeg -y -i "<W>/framed16.mp4" -i "<W>/vo/vo.wav" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k "<W>/vo-video16.mp4"`
 4. **Name blurs (EDIT), per size.** Look at EVERY shot at native resolution for readable names: lanyard badges, name
    stickers on water bottles and bags, door charts and lists, whiteboards, table name cards (1107 had 1 in 9:16 and 5 in

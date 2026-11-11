@@ -66,6 +66,11 @@ def main():
             warn.append("no ElevenLabs key connected (app -> Accounts -> ElevenLabs): the whole video uses host voice 3B")
             voice = dict(VOICE, **{k: v for k, v in (sc.get("voice") or {}).items() if k in VOICE})
     os.makedirs(vo, exist_ok=True)
+    before = elevenlabs.credits() if el_key else None    # owner 2026-11-11: report credits used and left every run
+    costs = []                                           # (credits, exact) per take: ElevenLabs' counter lags minutes
+
+    def run_cost():
+        return elevenlabs.spent(before, elevenlabs.credits(), sum(c for c, _ in costs), all(x for _, x in costs))
     clips, spoken = [], 0
     for i, ln in enumerate(sc["lines"]):
         t, text = float(ln["t"]), ln["text"]
@@ -76,12 +81,20 @@ def main():
             same = False                                 # --reuse never keeps a 3B take in an ElevenLabs video
         if not same and el_key:
             settings = {k: voice[k] for k in ("stability", "similarity_boost", "style", "speed") if k in voice}
+            meta = {}
             try:
                 chars = elevenlabs.speak(text, voice["id"], raw, model=voice.get("model") or elevenlabs.MODEL,
-                                         settings=settings or None)
+                                         settings=settings or None, meta=meta)
+                costs.append(elevenlabs.take_cost(meta, text))
             except elevenlabs.ElevenError as e:
+                if "cost" in meta:                       # charged, then failed ("no audio"): still counted
+                    costs.append(elevenlabs.take_cost(meta, text))
                 kept = f"Lines 1-{i} are kept; run again to go on." if i else "Nothing was spoken."
-                raise SystemExit(f"vo.py: ElevenLabs stopped at line {i + 1} ({text}): {e} {kept}")
+                c = run_cost() or {}
+                note = ", ".join(([f"used {c['used_now']}"] if "used_now" in c else []) +
+                                 ([f"left {c['left']} of {c['limit']}"] if "left" in c else []))
+                note += " (estimate)" if c.get("estimate") else ""
+                raise SystemExit(f"vo.py: ElevenLabs stopped at line {i + 1} ({text}): {e} {kept} Credits: {note or 'unknown'}.")
             with open(raw + ".chars.json", "w", encoding="utf-8") as f:   # the paid take's own times, before any trim
                 json.dump(chars, f, ensure_ascii=False)
             said = [c for c in chars if c[0].strip()]
@@ -127,8 +140,10 @@ def main():
     lines = [dict({"t": t, "d": round(d, 3), "text": x}, **({"chars": ch} if ch else {})) for t, _, d, x, ch in clips]
     json.dump(lines, open(os.path.join(vo, "lines.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     used = "elevenlabs:" + voice["id"] if el_key else voice["name"]
+    credits = run_cost() if el_key else None
     print(json.dumps({"out": out, "wav": wav, "voice": used, "spoken": spoken, "reused": len(clips) - spoken, "placed": n,
-                      "lines": [(t, round(d, 2), x) for t, _, d, x, _ in clips], "warnings": warn}, ensure_ascii=False))
+                      "credits": credits, "lines": [(t, round(d, 2), x) for t, _, d, x, _ in clips], "warnings": warn},
+                     ensure_ascii=False))
 
 
 if __name__ == "__main__":

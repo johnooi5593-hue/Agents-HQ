@@ -105,8 +105,9 @@ def _why(e):
     return f"ElevenLabs said {e.code}: {CONTROL.sub('', msg)[:200] or status[:60] or 'no reason given'}"
 
 
-def _call(route, api_key, method="GET", body=None, timeout=60):
-    """One request to api.elevenlabs.io with the key in the xi-api-key header (never in the address). A JSON object back."""
+def _call(route, api_key, method="GET", body=None, timeout=60, meta=None):
+    """One request to api.elevenlabs.io with the key in the xi-api-key header (never in the address). A JSON object back.
+    meta (a dict) gets "cost": ElevenLabs' character-cost header, the exact credits this call used."""
     data = json.dumps(body).encode("utf-8") if body is not None else None
     head = {"xi-api-key": api_key, "Accept": "application/json", "User-Agent": "AgentsHQ/1"}
     if data is not None:
@@ -115,6 +116,11 @@ def _call(route, api_key, method="GET", body=None, timeout=60):
         req = urllib.request.Request(API + route, data=data, method=method, headers=head)
         with _open(req, timeout=timeout) as r:
             out = r.read()
+            if meta is not None:
+                try:
+                    meta["cost"] = int(getattr(r, "headers", {}).get("character-cost"))
+                except (TypeError, ValueError):
+                    pass
     except urllib.error.HTTPError as e:
         raise ElevenError(_why(e)) from None
     except (OSError, ValueError, http.client.HTTPException) as e:   # ValueError: a bad header value; never shown with the key
@@ -191,9 +197,48 @@ def summary(root=None):
     return out
 
 
-def speak(text, voice_id, out_mp3, model=MODEL, settings=None, root=None):
+def credits(root=None):
+    """This month's credits right now: {"tier", "used", "limit", "left"}. Read only: it never writes the key file (several
+    editors run at once; the Accounts card's numbers refresh on Connect / Check). None when no key is connected or the key
+    may not read them (User: Read)."""
+    k = _key(root)
+    if not k:
+        return None
+    try:
+        s = _call("/v1/user/subscription", k, timeout=20)
+        used, limit = int(s.get("character_count") or 0), int(s.get("character_limit") or 0)
+    except (ElevenError, ValueError, TypeError):
+        return None
+    return {"tier": _clean(s.get("tier"), 40), "used": used, "limit": limit, "left": max(0, limit - used)}
+
+
+def spent(before, after, cost=None, exact=True):
+    """What a run cost, for the owner: {"used_now", "left", "limit", "tier"} as far as known ("estimate": true when a cost
+    is guessed), None when nothing is known. cost = the takes' own character-cost total. ElevenLabs' monthly counter
+    catches up minutes late, so "left" is approximate: it also takes this run's cost off the reading from before the run,
+    but not what other runs spent in the last minutes."""
+    if cost is None and before and after:
+        cost, exact = max(0, after["used"] - before["used"]), False
+    out = {} if cost is None else {"used_now": cost}
+    lefts = ([after["left"]] if after else []) + ([before["left"] - cost] if before and cost is not None else [])
+    if lefts:
+        out["left"] = max(0, min(lefts))
+    if before or after:
+        out.update(limit=(after or before)["limit"], tier=(after or before)["tier"])
+    if out and not exact:
+        out["estimate"] = True
+    return out or None
+
+
+def take_cost(meta, text):
+    """(credits, exact) for one take: ElevenLabs' character-cost header, else the text length as an estimate."""
+    c = (meta or {}).get("cost")
+    return (c, True) if isinstance(c, int) else (len(str(text)), False)
+
+
+def speak(text, voice_id, out_mp3, model=MODEL, settings=None, root=None, meta=None):
     """Speak one line into out_mp3 (44.1 kHz mp3) with the connected key. Returns the character times:
-    [[char, start, end], ...] in seconds from the start of the mp3."""
+    [[char, start, end], ...] in seconds from the start of the mp3. meta (a dict) gets "cost": the credits it used."""
     if not VOICE_OK.match(str(voice_id or "")):
         raise ElevenError(f"Not an ElevenLabs voice id: {_clean(voice_id, 60)!r}. List them with: python tools/voice/eleven.py voices")
     if not MODEL_OK.match(str(model or "")):
@@ -206,7 +251,7 @@ def speak(text, voice_id, out_mp3, model=MODEL, settings=None, root=None):
     if vs:                                               # none given = the voice's own saved settings
         body["voice_settings"] = vs
     r = _call(f"/v1/text-to-speech/{urllib.parse.quote(voice_id)}/with-timestamps?output_format=mp3_44100_128", k,
-              method="POST", body=body, timeout=120)
+              method="POST", body=body, timeout=120, meta=meta)
     try:
         audio = base64.b64decode(r.get("audio_base64") or "", validate=True)
     except ValueError:

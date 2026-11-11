@@ -2,10 +2,16 @@
 
 usage:
   python tools/voice/eleven.py status                     is a key connected (never prints the key)
-  python tools/voice/eleven.py voices [--all]              the voices to pick from (own clones first; --all adds labels)
+  python tools/voice/eleven.py credits                    this month's credits: used, limit, left
+  python tools/voice/eleven.py voices [--all]             the voices to pick from (own clones first; --all adds labels)
   python tools/voice/eleven.py say <voice id> <out.mp3> <text> [--model eleven_multilingual_v2] [--times times.json]
                                                            [--stability 0.4] [--style 0.3] [--speed 1.1]
-                                                           speak one line; --times writes the real character times
+                                                           speak one line; --times writes the real character times;
+                                                           "credits" in the output = what it cost and what is left
+                                                           ("left" is approximate: ElevenLabs' counter is minutes late;
+                                                           "estimate": true = ElevenLabs sent no exact cost)
+
+Owner (2026-11-11): every time something is generated, tell the owner the credits it used and the credits left.
 
 The key comes from .hq-elevenlabs.json (the owner pastes it in the app: user menu -> Accounts -> ElevenLabs) or the
 ELEVENLABS_API_KEY environment variable. Never read that file yourself and never print the key. Every line spoken uses
@@ -34,7 +40,7 @@ def opt(args, name, cast=str):
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0] not in ("status", "voices", "say"):
+    if not args or args[0] not in ("status", "credits", "voices", "say"):
         raise SystemExit(__doc__)
     cmd = args.pop(0)
     if cmd == "status":
@@ -44,6 +50,10 @@ def main():
         print(json.dumps({"error": "No ElevenLabs key connected. The owner adds it in the app: user menu -> Accounts -> ElevenLabs."}))
         sys.exit(2)
     try:
+        if cmd == "credits":
+            print(json.dumps(elevenlabs.credits() or {"error": "The key may not read credits (allow User: Read on it)."},
+                             ensure_ascii=False))
+            return
         if cmd == "voices":
             full = "--all" in args
             vs = elevenlabs.voices()
@@ -56,10 +66,20 @@ def main():
         if len(args) != 3:
             raise SystemExit(__doc__)
         voice, out, text = args
-        chars = elevenlabs.speak(text, voice, out, model=model, settings=settings or None)
+        before, meta = elevenlabs.credits(), {}
+        try:
+            chars = elevenlabs.speak(text, voice, out, model=model, settings=settings or None, meta=meta)
+        except elevenlabs.ElevenError as e:              # a charged take can still fail ("no audio"): count it
+            cost = elevenlabs.take_cost(meta, text) if "cost" in meta else (0, True)
+            print(json.dumps({"error": str(e), "credits": elevenlabs.spent(before, elevenlabs.credits(), *cost)},
+                             ensure_ascii=False))
+            sys.exit(1)
         if times:
-            json.dump(chars, open(times, "w", encoding="utf-8"), ensure_ascii=False)
-        print(json.dumps({"out": out, "chars": len(chars), "length": chars[-1][2] if chars else None, "times": times}, ensure_ascii=False))
+            with open(times, "w", encoding="utf-8") as f:
+                json.dump(chars, f, ensure_ascii=False)
+        print(json.dumps({"out": out, "chars": len(chars), "length": chars[-1][2] if chars else None, "times": times,
+                          "credits": elevenlabs.spent(before, elevenlabs.credits(), *elevenlabs.take_cost(meta, text))},
+                         ensure_ascii=False))
     except elevenlabs.ElevenError as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         sys.exit(1)
