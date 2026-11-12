@@ -13,17 +13,23 @@ office folder: on this computer only, never committed, never read by the agents 
     TikTok: a TikTok developer app (developers.tiktok.com) with Login Kit and the Content Posting API (video.upload). The
         owner pastes its Client key and Client secret, signs in once, and we keep the refresh token (365 days). A post
         goes to the account's TikTok drafts (inbox): the owner opens the TikTok notification, adds the caption and posts.
+    Buffer (owner, 2026-11-09): Instagram and TikTok through buffer.com instead, with one caption for both and the
+        owner's cover as the first frames of the video, so both show the same thumbnail (buffer_post.py). By hand from
+        the Buffer package next to the approved video, or from the Post button with a Buffer API key and a public media
+        host. Facebook and YouTube keep going out from here as before.
 
 Stdlib only. Every post writes approved/<name>/posted.json as it goes, so the app shows progress and links.
 """
 import json, math, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
+import buffer_post
 from channels import folder_channel
 
 GRAPH = "https://graph.facebook.com/v23.0"
 YT_SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly "
              "https://www.googleapis.com/auth/youtube")        # youtube: open a Short only once its thumbnail is on
-PLATFORMS = ("facebook", "instagram", "youtube", "tiktok")
+PLATFORMS = ("facebook", "instagram", "youtube", "tiktok", "buffer")      # buffer: Instagram + TikTok through buffer.com
+PLATFORM_NAMES = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube", "tiktok": "TikTok", "buffer": "Buffer"}
 TT_API = "https://open.tiktokapis.com/v2"
 TT_SCOPES = "user.info.basic,video.upload"                      # drafts: the video lands in the TikTok inbox, the owner posts it
 VIDEO_EXT = (".mp4", ".mov", ".m4v")
@@ -214,16 +220,83 @@ class Accounts:
         return self.section(self.load(), channel).get(kind) or {}
 
     def summary(self, channel=""):
-        """What the app may show: names only, never a token."""
-        a = self.section(self.load(), channel)
+        """What the app may show: names only, never a token or a key."""
+        full = self.load()
+        a = self.section(full, channel)
         m, y, t = a.get("meta") or {}, a.get("youtube") or {}, a.get("tiktok") or {}
+        b, md = a.get("buffer") or {}, a.get("media") or (full.get("media") or {} if channel else {})   # one media host serves every channel
+        chans = [c for c in (b.get("channels") or []) if isinstance(c, dict)]
+        name_of = lambda cid: next((c.get("name", "") for c in chans if c.get("id") == cid), "")
+        picked = {s: {"id": b.get(s) or "", "name": name_of(b.get(s))} for s in buffer_post.SERVICES}
         return {
             "facebook": {"connected": bool(m.get("page_token")), "name": m.get("page_name", "")},
             "instagram": {"connected": bool(m.get("page_token") and m.get("ig_id")), "name": ("@" + m["ig_username"]) if m.get("ig_username") else "",
                           "problem": "" if not m.get("page_token") or m.get("ig_id") else "no Instagram professional account is linked to this Facebook Page"},
             "youtube": {"connected": bool(y.get("refresh_token")), "name": y.get("channel", ""), "client": bool(y.get("client_id"))},
             "tiktok": {"connected": bool(t.get("refresh_token")), "name": t.get("name", ""), "client": bool(t.get("client_key")), "mode": "drafts"},
+            "buffer": {"connected": bool(b.get("api_key") and (b.get("instagram") or b.get("tiktok"))), "key": bool(b.get("api_key")),
+                       "name": " + ".join(f"{PLATFORM_NAMES[s]} {picked[s]['name']}" for s in buffer_post.SERVICES if picked[s]["id"]),
+                       "instagram": picked["instagram"], "tiktok": picked["tiktok"],
+                       "channels": [{k: c.get(k, "") for k in ("id", "name", "service", "problem")} for c in chans],
+                       "host": buffer_post.host_ready(md), "hostName": md.get("bucket", "") + (" · " + md["public_url"] if md.get("public_url") else ""),
+                       "hostChecked": md.get("checked_url", ""), "hostShared": bool(channel and not a.get("media") and md)},
         }
+
+    # ---------------------------------------------------------------- Buffer (Instagram + TikTok)
+    def connect_buffer(self, api_key, channel=""):
+        """Checks the key against Buffer, keeps it with the account's channels, and picks the first Instagram and TikTok
+        channel (an earlier pick that still exists is kept). An empty key means the saved one (to read the channels again)."""
+        api_key = str(api_key or "").strip() or (self.get("buffer", channel) or self.get("buffer")).get("api_key", "")
+        api = buffer_post.Buffer(api_key)
+        try:
+            chans = api.all_channels()
+        except buffer_post.BufferError as e:
+            raise PostError(str(e)) from None
+        if not chans:
+            raise PostError("this Buffer account has no channels yet: connect Instagram and TikTok in Buffer first, then connect again here")
+        with self.lock:
+            a = self.load()
+            old = self.slot(a, channel).get("buffer") or {}
+            row = {"api_key": api.key, "channels": chans, "at": int(time.time())}
+            for s in buffer_post.SERVICES:
+                keep = old.get(s) if any(c["id"] == old.get(s) and c["service"] == s for c in chans) else ""
+                row[s] = keep or next((c["id"] for c in chans if c["service"] == s and not c["problem"]), "")
+            self.slot(a, channel)["buffer"] = row
+            self.save(a)
+        return {"channels": chans, "instagram": row["instagram"], "tiktok": row["tiktok"]}
+
+    def buffer_channels(self, picks, channel=""):
+        """The owner's choice of Buffer channel for Instagram and for TikTok (an empty pick switches that one off)."""
+        with self.lock:
+            a = self.load()
+            b = self.slot(a, channel).get("buffer")
+            if not b or not b.get("api_key"):
+                raise PostError("connect Buffer first")
+            for s in buffer_post.SERVICES:
+                if s not in picks:
+                    continue
+                v = str(picks.get(s) or "")
+                if v and not any(c.get("id") == v and c.get("service") == s for c in b.get("channels") or []):
+                    raise PostError(f"that is not one of your Buffer {PLATFORM_NAMES[s]} channels")
+                b[s] = v
+            self.save(a)
+
+    def connect_host(self, cfg, channel=""):
+        """The public media host for Buffer: checked by uploading a small file and reading it back from the public address.
+        An empty field keeps what was saved before (so the secret need not be pasted again). Returns the public URL that worked."""
+        cfg = cfg or {}
+        old = self.get("media", channel) or self.get("media")
+        merged = {k: (str(cfg.get(k) or "").strip() or old.get(k, "")) for k in buffer_post.HOST_FIELDS + ("region", "prefix")}
+        try:
+            host = buffer_post.MediaHost(merged)
+            url = host.check()
+        except buffer_post.BufferError as e:
+            raise PostError(str(e)) from None
+        with self.lock:
+            a = self.load()
+            self.slot(a, channel)["media"] = dict(host.cfg, at=int(time.time()), checked_url=url)
+            self.save(a)
+        return url
 
     # ---------------------------------------------------------------- Meta
     def connect_meta(self, app_id, app_secret, user_token, page="", channel=""):
@@ -366,6 +439,7 @@ class Accounts:
         return j["access_token"]
 
     def disconnect(self, which, channel=""):
+        """which: meta (Facebook + Instagram), youtube, tiktok, buffer, or media (Buffer's media host)."""
         with self.lock:
             a = self.load()
             self.slot(a, channel).pop("meta" if which in ("meta", "facebook", "instagram") else which, None)
@@ -428,7 +502,9 @@ def split_title(text, fallback):
 
 def drafts(folder):
     """The caption options for the posting overview. Each option fills every platform at once: the owner picks one
-    (and the thumbnail) and Facebook, Instagram and YouTube all get it; they can still edit a platform's text."""
+    (and the thumbnail) and Facebook, Instagram and YouTube all get it; they can still edit a platform's text.
+    TikTok and Buffer get exactly Instagram's caption (owner, 2026-11-09: the same words on both), plus the option's
+    title for TikTok's title field; an older post.md's "## TikTok" section is no longer used."""
     try:
         with open(os.path.join(folder, "post.md"), encoding="utf-8") as f:
             s = sections(f.read())
@@ -458,15 +534,16 @@ def drafts(folder):
         yt_title, yt_body = split_title(yt_src, base_title) if yt_src else (base_title, base)
         ig = clean(pick(plat["instagram"], i) or "") or base
         fb = clean(pick(plat["facebook"], i) or "") or base or ig
-        tt = clean(pick(plat["tiktok"], i) or "") or base or ig
         desc = yt_body or base or ig
         if "#shorts" not in (yt_title + desc).lower():
             desc = (desc + "\n#Shorts").strip()
+        same = {"caption": ig[:buffer_post.IG_CAPTION], "title": base_title[:buffer_post.TIKTOK_TITLE]}   # Instagram's words, on TikTok too
         options.append({"title": yt_title, "caption": base or ig or fb,
                         "youtube": {"title": yt_title, "description": desc[:4900]},
-                        "instagram": {"caption": ig[:2200]}, "facebook": {"caption": fb}, "tiktok": {"caption": tt[:2200]}})
+                        "instagram": {"caption": ig[:buffer_post.IG_CAPTION]}, "facebook": {"caption": fb},
+                        "tiktok": dict(same), "buffer": dict(same)})
     first = options[0]
-    return {"options": options, "youtube": first["youtube"], "instagram": first["instagram"], "facebook": first["facebook"], "tiktok": first["tiktok"]}
+    return {"options": options, **{k: first[k] for k in ("youtube", "instagram", "facebook", "tiktok", "buffer")}}
 
 
 LINKED = re.compile(r"((?:approved|out)/[^\s`'\"()<>]+?\.(?:mp4|mov|m4v))", re.I)
@@ -548,7 +625,21 @@ def media(folder):
 
 # -------------------------------------------------------------------- posting
 SCHEDULE_MIN, SCHEDULE_MAX = 10 * 60, 28 * 86400              # Facebook wants 10 minutes ahead at least; four weeks is plenty
-NATIVE_SCHEDULE = ("facebook", "youtube")                     # these publish at the time by themselves; Instagram is posted by us
+NATIVE_SCHEDULE = ("facebook", "youtube", "buffer")           # these publish at the time by themselves; Instagram is posted by us
+
+
+def check_when(when):
+    """A scheduled time the owner picked, as an int: at least 10 minutes and at most 4 weeks ahead."""
+    try:
+        when = int(when)
+    except (TypeError, ValueError, OverflowError):
+        raise PostError("that is not a time") from None
+    ahead = when - time.time()
+    if ahead < SCHEDULE_MIN:
+        raise PostError("pick a time at least 10 minutes from now")
+    if ahead > SCHEDULE_MAX:
+        raise PostError("pick a time within the next 4 weeks")
+    return when
 
 
 class Publisher:
@@ -556,20 +647,26 @@ class Publisher:
     (the computer may sleep); Instagram has no scheduling in its API, so the job waits in posted.json and the scheduler
     here posts it when it is due (as soon as Agents HQ runs again if the computer was off)."""
 
-    def __init__(self, root, accounts, on_schedule=None, on_finish=None):
+    def __init__(self, root, accounts, on_schedule=None, on_finish=None, on_move=None):
         self.root, self.accounts, self.lock, self.busy = root, accounts, threading.Lock(), set()
         self.gate = threading.Lock()                               # a post starting vs. the check for interrupted posts
         self.on_schedule, self.on_finish = on_schedule, on_finish     # the board: a dated "post" task, done when all went out
+        self.on_move = on_move                                      # the board: that task's new date when the post's time changed
+        self.covers = buffer_post.CoverPackages()                   # approved/<name>/buffer/: the video with the cover as frame 1
 
     def record_path(self, folder):
         return os.path.join(folder, "posted.json")
 
     def record(self, folder):
-        try:
-            with open(self.record_path(folder), encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {}
+        for i in range(5):                                      # Windows: a reader can meet the writer's replace for a moment
+            try:
+                with open(self.record_path(folder), encoding="utf-8") as f:
+                    return json.load(f)
+            except PermissionError:
+                time.sleep(0.05 * (i + 1))
+            except (OSError, ValueError):
+                return {}
+        return {}
 
     def note(self, folder, platform, **kw):
         with self.lock:
@@ -578,8 +675,18 @@ class Publisher:
                 r[platform] = kw.get("value")
             else:
                 r[platform] = {**r.get(platform, {}), **kw, "at": int(time.time())}
-            with open(self.record_path(folder), "w", encoding="utf-8") as f:
+            path = self.record_path(folder)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(r, f, indent=1, ensure_ascii=False)
+            for i in range(5):                                  # whole file or nothing; a reader holding it gets a moment
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    time.sleep(0.05 * (i + 1))
+            else:
+                shutil.copyfile(tmp, path)
 
     def reporter(self, folder, p):
         """progress() for one platform's post: written to posted.json at most once a second, or when the step changes."""
@@ -593,16 +700,32 @@ class Publisher:
             self.note(folder, p, progress=pct, step=step)
         return report
 
-    def payload(self, folder):
+    def payload(self, folder, video_name="", cover_name=""):
+        """What the posting screen shows. video_name / cover_name: the owner's current pick, for the Buffer package's state."""
         f = media_files(folder)
+        try:
+            video, cover, _ = self.resolve(folder, video_name, cover_name)
+        except PostError:
+            video, cover, _ = self.resolve(folder)
         return {"accounts": self.accounts.summary(folder_channel(folder)), "channel": folder_channel(folder), "drafts": drafts(folder), "posted": self.record(folder),
                 "videos": f["video"], "covers": f["image"], "linked": sorted(f["abs"]), "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
-                "busy": folder in self.busy}
+                "busy": folder in self.busy, "buffer": self.buffer_state(folder, video, cover)}
 
-    def start(self, folder, chosen, video_name="", cover_name="", when=None, cover_ig_name=""):
-        """chosen: {platform: {text fields}}; video_name / cover_name: the files the owner picked in the folder;
-        cover_ig_name: Instagram's own cover (3:4), when it has one; when: a unix time to publish at, or None for now.
-        Works in the background; returns the platforms started."""
+    def buffer_state(self, folder, video, cover):
+        """The Buffer package for this video + cover pick, with where its files are (relative to the office folder)."""
+        if not video:
+            return {"state": "none", "files": {}, "dash": buffer_post.DASH}
+        pkg_folder = os.path.dirname(os.path.abspath(video))
+        root = office_root(folder)
+        st = self.covers.state(pkg_folder, video, cover)
+        st["base"] = os.path.relpath(pkg_folder, root).replace(os.sep, "/") if root else ""
+        st["dash"] = buffer_post.DASH
+        parts = os.path.abspath(folder).replace(os.sep, "/").split("/")
+        st["approved"] = "approved" in parts[-3:-1]           # approved/<name> or approved/<name>/<topic>: the package can be made
+        return st
+
+    def resolve(self, folder, video_name="", cover_name="", cover_ig_name=""):
+        """The files one post uses: (video, cover, Instagram's cover), absolute. Names are the owner's picks in the folder."""
         video, cover = media(folder)
         files = media_files(folder)
         if video_name:
@@ -613,8 +736,6 @@ class Publisher:
             if cover_name not in files["image"]:
                 raise PostError("that thumbnail is not in this folder")
             cover = os.path.join(folder, cover_name)
-        if not video:
-            raise PostError("no video in this folder")
         # Instagram: the 3:4 Codex cover next to the 9:16 one (owner, 2026-10-28), unless the owner picked another picture
         cover_ig = cover
         if cover_ig_name:
@@ -623,17 +744,38 @@ class Publisher:
             cover_ig = os.path.join(folder, cover_ig_name)
         elif os.path.isfile(os.path.join(folder, COVER_IG)) and (not cover_name or cover_name == "cover-codex.png"):
             cover_ig = os.path.join(folder, COVER_IG)
+        return video, cover, cover_ig
+
+    def buffer_make(self, folder, video_name="", cover_name="", caption=None, title=None):
+        """The posting screen asks for the Buffer package of the current pick (made in the background), with its texts."""
+        video, cover, _ = self.resolve(folder, video_name, cover_name)
+        if not video:
+            raise PostError("no video in this folder")
+        if not cover:
+            raise PostError("pick your thumbnail first: the Buffer video starts with it")
+        self.covers.start(os.path.dirname(os.path.abspath(video)), video, cover, caption, title)
+        return self.buffer_state(folder, video, cover)
+
+    def buffer_done(self, folder, video_name="", cover_name="", caption=None, title=None):
+        """The owner posted it in Buffer by hand: the board counts it as posted."""
+        video, cover, _ = self.resolve(folder, video_name, cover_name)
+        if video:
+            self.covers.texts(os.path.dirname(os.path.abspath(video)), caption, title)
+        rel = lambda p: os.path.basename(p) if p else ""
+        self.note(folder, "buffer", state="posted", manual=True, link=buffer_post.DASH, error="", warning="", when=0, job=None,
+                  video=rel(video), cover=rel(cover), posts={})
+        self.check_finished(folder)
+
+    def start(self, folder, chosen, video_name="", cover_name="", when=None, cover_ig_name=""):
+        """chosen: {platform: {text fields}}; video_name / cover_name: the files the owner picked in the folder;
+        cover_ig_name: Instagram's own cover (3:4), when it has one; when: a unix time to publish at, or None for now.
+        Works in the background; returns the platforms started."""
+        video, cover, cover_ig = self.resolve(folder, video_name, cover_name, cover_ig_name)
+        if not video:
+            raise PostError("no video in this folder")
         cover_of = lambda p: cover_ig if p == "instagram" else cover
         if when is not None:
-            try:
-                when = int(when)
-            except (TypeError, ValueError):
-                raise PostError("that is not a time") from None
-            ahead = when - time.time()
-            if ahead < SCHEDULE_MIN:
-                raise PostError("pick a time at least 10 minutes from now")
-            if ahead > SCHEDULE_MAX:
-                raise PostError("pick a time within the next 4 weeks")
+            when = check_when(when)
         channel = folder_channel(folder)
         summary = self.accounts.summary(channel)
         todo = [p for p in PLATFORMS if p in chosen and summary[p]["connected"]]
@@ -645,6 +787,23 @@ class Publisher:
         again = [p for p in todo if (done.get(p) or {}).get("state") in ("posted", "scheduled") and not chosen[p].get("again")]
         if again:
             raise PostError(f"already posted or scheduled to {', '.join(again)}")
+        # Buffer posts Instagram and TikTok itself: one video never goes to the same place twice (direct and through Buffer)
+        b = self.accounts.get("buffer", channel) or {}
+        live = ("posted", "scheduled", "waiting", "posting", "uploading")
+        covered = [p for p in buffer_post.SERVICES if b.get(p)]
+        both = lambda ps: " and ".join(PLATFORM_NAMES[p] for p in ps)
+        if "buffer" in todo:
+            twice = [p for p in covered if p in todo]
+            if twice:
+                raise PostError(f"{both(twice)} is ticked twice: directly and through Buffer. Untick one of them.")
+            twice = [p for p in covered if (done.get(p) or {}).get("state") in live]
+            if twice:
+                raise PostError(f"{both(twice)} already went out or is scheduled directly, and Buffer would post it again. "
+                                "Cancel the direct one first, or post the other platform by hand in Buffer.")
+        elif (done.get("buffer") or {}).get("state") in live:
+            twice = [p for p in covered if p in todo and not chosen[p].get("again")]
+            if twice:
+                raise PostError(f"{both(twice)} is already in Buffer for this video. Posting it directly too would put it up twice.")
         with self.gate:
             if folder in self.busy:
                 raise PostError("still posting this one")
@@ -691,7 +850,7 @@ class Publisher:
     def send(self, p, video, cover, text, when, channel):
         """One platform, with the owner's thumbnail as a JPEG every platform takes (the picked file stays as it is)."""
         progress(1, "preparing your thumbnail")
-        jpg = cover_jpeg(cover, reel=p == "instagram")
+        jpg = cover_jpeg(cover, reel=p == "instagram") if p != "buffer" else None   # Buffer bakes the picked file itself
         try:
             return getattr(self, "post_" + p)(video, jpg or cover, text, when, channel)
         finally:
@@ -715,13 +874,180 @@ class Publisher:
                           f"{time.strftime('%H:%M', time.localtime(at))} (try {n + 2} of {len(IG_LATER) + 1}); keep the computer on.")
 
     def cancel(self, folder, platform):
-        """Cancel a scheduled post that is still waiting here (Instagram). Facebook and YouTube already hold theirs."""
+        """Cancel a scheduled post: one still waiting here (Instagram), or the Buffer posts (deleted in Buffer too).
+        Facebook and YouTube already hold theirs."""
+        if platform == "buffer":
+            return self.buffer_cancel(folder)
         r = self.record(folder).get(platform) or {}
         if r.get("state") != "scheduled" or not r.get("job"):
-            raise PostError("only a scheduled Instagram post waiting in Agents HQ can be cancelled here; "
+            raise PostError("only a scheduled Instagram or Buffer post can be cancelled here; "
                             "cancel Facebook in Meta Business Suite and YouTube in YouTube Studio")
         self.note(folder, platform, state="cancelled", job=None)
         self.check_finished(folder)
+
+    # A Buffer post scheduled from here stays in step with Buffer: a change or a cancel here is made in Buffer too,
+    # and a change made in Buffer (a new time, a deleted post) shows here at the next status check.
+    def buffer_scheduled(self, folder):
+        """The Buffer record and API client for a Buffer post scheduled from Agents HQ, or PostError."""
+        r = self.record(folder).get("buffer") or {}
+        if r.get("state") != "scheduled" or r.get("manual") or not r.get("posts"):
+            raise PostError("only a Buffer post scheduled from Agents HQ can be changed here; "
+                            "one you made in Buffer yourself is changed in Buffer")
+        b = self.accounts.get("buffer", folder_channel(folder))
+        if not b.get("api_key"):
+            raise PostError("Buffer is not connected any more (user menu → Accounts → Buffer)")
+        return r, buffer_post.Buffer(b["api_key"])
+
+    @staticmethod
+    def buffer_open(p):
+        """A Buffer post that is still waiting to go out."""
+        return bool(p.get("id")) and p.get("status") not in ("sent", "error", "deleted")
+
+    @staticmethod
+    def buffer_take(p, q):
+        """Buffer's answer about one post into our copy of it. A post that went out never turns into anything else."""
+        link = q.get("externalLink") or p.get("link") or ""
+        if p.get("status") == "sent":
+            p["link"] = link
+            return
+        status = "sent" if q.get("sentAt") and q.get("status") != "error" else q.get("status") or p.get("status")
+        p.update(status=status, link=link, error=((q.get("error") or {}).get("message") or "") if isinstance(q.get("error"), dict) else "")
+        due = buffer_post.from_iso(q.get("dueAt"))
+        if due:
+            p["due"] = due
+
+    def buffer_fresh(self, api, posts):
+        """Ask Buffer how each waiting post stands right now, before changing or cancelling it: one that went out since
+        the last check is left alone."""
+        for p in posts.values():
+            if not self.buffer_open(p):
+                continue
+            try:
+                q = api.post(p["id"])
+            except buffer_post.BufferError as e:
+                raise PostError(f"Buffer did not answer, so nothing was changed: {e}") from None
+            if q:
+                self.buffer_take(p, q)
+            else:
+                p.update(status="deleted", link="")
+
+    def claim(self, folder):
+        """This folder is being worked on: no second post, change, cancel or status check on it meanwhile."""
+        with self.gate:
+            if folder in self.busy:
+                raise PostError("still posting this one")
+            self.busy.add(folder)
+
+    def buffer_change(self, folder, when=None, caption=None, title=None):
+        """New time, caption or TikTok title for the scheduled Buffer posts: changed in Buffer first, then here."""
+        if when is None and caption is None and title is None:
+            raise PostError("nothing to change")
+        when = check_when(when) if when is not None else None
+        if caption is not None and len(caption) > buffer_post.IG_CAPTION:
+            raise PostError(f"the caption is longer than Instagram's {buffer_post.IG_CAPTION} characters")
+        self.claim(folder)
+        try:
+            r, api = self.buffer_scheduled(folder)
+            posts = {s: dict(p) for s, p in r["posts"].items()}
+            self.buffer_fresh(api, posts)
+            changed, errors, notes = [], [], []
+            for service, p in posts.items():
+                if not self.buffer_open(p):
+                    if p.get("status") == "sent":
+                        notes.append(f"{PLATFORM_NAMES[service]} had already gone out, so it stays as it is.")
+                    continue
+                if service != "tiktok" and when is None and caption is None:
+                    continue                                    # only the TikTok title changes: nothing to tell Instagram
+                try:
+                    q = api.edit_post(p["id"], service, when=when, text=caption, title=title if service == "tiktok" else None)
+                    p.update(status=q.get("status") or p.get("status"), due=buffer_post.from_iso(q.get("dueAt")) or when or p.get("due"))
+                    changed.append(service)
+                    if q.get("titleKept"):
+                        title = None                            # title.txt keeps the title Buffer still has
+                        notes.append("Buffer did not take the new TikTok title: change it in Buffer.")
+                except buffer_post.BufferError as e:
+                    errors.append(f"{PLATFORM_NAMES[service]}: {e}")
+            if not changed:
+                self.note(folder, "buffer", **self.buffer_outcome(r, posts))
+                raise PostError("; ".join(errors + notes) or "Buffer has already sent or removed these posts, so there is nothing left to change")
+            if errors:
+                notes.insert(0, f"Changed in Buffer for {' and '.join(PLATFORM_NAMES[s] for s in changed)} only ({'; '.join(errors)}). "
+                                "Change the other one in Buffer if it still needs it.")
+            out = self.buffer_outcome(r, posts)
+            upd = dict(out, warning=" ".join(notes + ([out["mix"]] if out["mix"] else [])))
+            if when and not errors:
+                upd["when"] = when
+            self.note(folder, "buffer", **upd)
+            if caption is not None or title is not None:      # caption.txt / title.txt next to the posted video match Buffer
+                self.covers.texts(self.package_folder(folder, r.get("video")), caption, title)
+        finally:
+            self.busy.discard(folder)
+        if upd.get("when"):
+            self.moved(folder, when)
+        if out["state"] in ("posted", "failed", "cancelled"):
+            self.check_finished(folder)
+
+    def buffer_cancel(self, folder):
+        """Delete the scheduled Buffer posts, so they never go out. A post Buffer already sent stays sent."""
+        self.claim(folder)
+        try:
+            r, api = self.buffer_scheduled(folder)
+            posts = {s: dict(p) for s, p in r["posts"].items()}
+            self.buffer_fresh(api, posts)
+            errors = []
+            for service, p in posts.items():
+                if not self.buffer_open(p):
+                    continue
+                try:
+                    api.delete_post(p["id"])
+                    p.update(status="deleted", link="")
+                except buffer_post.BufferError as e:
+                    errors.append(f"{PLATFORM_NAMES[service]}: {e}")
+            if errors and not any(p.get("status") == "deleted" for p in posts.values()):
+                raise PostError("; ".join(errors))
+            out = self.buffer_outcome(r, posts)
+            warn = [f"Buffer did not delete one of them ({'; '.join(errors)}): delete it in Buffer."] if errors else []
+            self.note(folder, "buffer", **out, checked=int(time.time()), warning=" ".join(warn + ([out["mix"]] if out["mix"] else [])))
+        finally:
+            self.busy.discard(folder)
+        self.check_finished(folder)
+
+    @staticmethod
+    def buffer_outcome(e, posts):
+        """The Buffer row's state, posts, link and error from its posts' statuses in Buffer; mix: what to say when the
+        two posts no longer go together (one deleted, one sent or still waiting)."""
+        names = lambda ss: " and ".join(PLATFORM_NAMES[s] for s in ss)
+        gone = [s for s, p in posts.items() if p.get("status") == "deleted"]
+        live = {s: p.get("status") for s, p in posts.items() if p.get("status") != "deleted"}
+        state = ("cancelled" if not live else "posted" if all(v == "sent" for v in live.values())
+                 else "failed" if any(v == "error" for v in live.values()) else e.get("state"))
+        link = posts.get("instagram", {}).get("link") or posts.get("tiktok", {}).get("link") or e.get("link") or buffer_post.DASH
+        error = "; ".join(f"{PLATFORM_NAMES[s]}: {p['error']}" for s, p in posts.items() if p.get("error"))
+        mix = ""
+        if gone and live:
+            sent = [s for s, v in live.items() if v == "sent"]
+            mix = (f"{names(gone)} was deleted in Buffer and won't go out; " +
+                   (f"{names(sent)} went out." if len(sent) == len(live) else f"{names([s for s in live if s not in sent])} still goes out."))
+        return {"state": state, "posts": posts, "link": link, "error": error, "mix": mix}
+
+    def package_folder(self, folder, video):
+        """The folder of the posted video (its buffer/ package sits next to it), only ever inside this approved folder."""
+        base = os.path.realpath(folder)
+        if video:
+            for top in (folder, office_root(folder)):
+                path = os.path.realpath(os.path.join(top, video)) if top else ""
+                if path and os.path.isfile(path) and os.path.commonpath([base, path]) == base:
+                    return os.path.dirname(path)
+        return folder
+
+    def moved(self, folder, when):
+        """The post's time changed: its dated task on the board moves with it."""
+        task = self.record(folder).get("_task")
+        if task and self.on_move:
+            try:
+                self.on_move(folder, task, when)
+            except Exception:                                  # the board is a nice-to-have
+                pass
 
     def check_finished(self, folder):
         r = self.record(folder)
@@ -751,10 +1077,20 @@ class Publisher:
         for folder in self.folders():
             if folder in self.busy:
                 continue
+            try:
+                self.claim(folder)                              # a Change or Cancel on this folder waits, and the other way round
+            except PostError:
+                continue
+            try:
+                self.refresh_buffer(folder, self.record(folder), now)   # Buffer publishes by itself: ask it how the posts went
+            except Exception as e:
+                print("buffer status:", e)
+            finally:
+                self.busy.discard(folder)
             r = self.record(folder)
             for p in PLATFORMS:
                 e = r.get(p) or {}
-                if e.get("state") != "scheduled" or not e.get("when") or e["when"] > now:
+                if p == "buffer" or e.get("state") != "scheduled" or not e.get("when") or e["when"] > now:
                     continue
                 if not e.get("job"):                            # the platform published it by itself
                     self.note(folder, p, state="posted")
@@ -789,7 +1125,7 @@ class Publisher:
                 r = self.record(folder)
                 stuck = [p for p in PLATFORMS if (r.get(p) or {}).get("state") in ("waiting", "posting", "uploading")]
                 for p in stuck:
-                    name = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube", "tiktok": "TikTok"}[p]
+                    name = PLATFORM_NAMES[p]
                     self.note(folder, p, state="failed", error=f"Agents HQ stopped while this was posting, so it never finished. It may still have "
                                                                f"gone out: check {name} first, and if it isn't there, tick it and post again.")
             if stuck:
@@ -1000,6 +1336,106 @@ class Publisher:
                 raise PostError("TikTok could not take the video: " + str(d.get("fail_reason") or "no reason given"))
             time.sleep(5)
         return "", {"warning": "TikTok is still processing the video. It should appear in your TikTok inbox soon; check the TikTok app."}
+
+    # Buffer: the video with the cover as frame 1 → the public media host → one Instagram Reel + one TikTok post in Buffer
+    BUFFER_EVERY = 10 * 60                                     # ask Buffer about a video's posts at most this often
+
+    def post_buffer(self, video, cover, text, when=None, channel=""):
+        b = self.accounts.get("buffer", channel)
+        if not b.get("api_key"):
+            raise PostError("Buffer is not connected (user menu → Accounts → Buffer)")
+        targets = [(s, b.get(s)) for s in buffer_post.SERVICES if b.get(s)]
+        if not targets:
+            raise PostError("pick your Instagram and TikTok channels under Accounts → Buffer first")
+        host_cfg = self.accounts.get("media", channel) or self.accounts.get("media")
+        if not buffer_post.host_ready(host_cfg):
+            raise PostError("Buffer needs a public address for the video: set up the media host under Accounts → Buffer, "
+                            "or post this one by hand in Buffer with the package below")
+        if not cover:
+            raise PostError("pick your thumbnail first: the Buffer video starts with it")
+        folder = os.path.dirname(os.path.abspath(video))
+        step = "making the Buffer video with your cover as frame 1"
+        progress(2, step)
+        try:
+            st = self.covers.ensure(folder, video, cover, text.get("caption"), text.get("title"), progress=lambda pct: progress(2 + 0.38 * pct, step))
+            host = buffer_post.MediaHost(host_cfg)
+            key = host.key(os.path.basename(folder) + ".mp4")
+            progress(41, "uploading the video to your media host")
+            url = host.put(self.covers.final(folder), key, "video/mp4", progress=lambda pct: progress(pct, "uploading the video to your media host"), lo=41, hi=80)
+            progress(81, "checking the public address")
+            host.fetch_public(url, 4096)
+        except buffer_post.BufferError as e:
+            raise PostError(str(e)) from None
+        api = buffer_post.Buffer(b["api_key"])
+        thumb_ms = int((st.get("hold") or 0.1) * 1000 / 2)    # the middle of the cover flash, as Buffer's thumbnail frame
+        made, errors = {}, []
+        for i, (service, cid) in enumerate(targets):
+            progress(84 + 6 * i, f"creating the {PLATFORM_NAMES[service]} post in Buffer")
+            try:
+                p = api.create_post(cid, service, text.get("caption", ""), url, when, text.get("title", ""), thumb_ms)
+                made[service] = {"id": p.get("id"), "status": p.get("status") or ("scheduled" if when else "sending"), "link": p.get("externalLink") or ""}
+            except buffer_post.BufferError as e:
+                errors.append(f"{PLATFORM_NAMES[service]}: {e}")
+        if not made:
+            raise PostError("; ".join(errors))
+        extra = {"posts": made, "media": {"key": key, "url": url}, "checked": 0}
+        if errors:
+            extra["warning"] = (f"Buffer has the {' and '.join(PLATFORM_NAMES[s] for s in made)} post; the other failed ({'; '.join(errors)}). "
+                                "Make that one in Buffer by hand with the same video and caption.")
+        return buffer_post.DASH, extra
+
+    BUFFER_FAR = 30 * 60                                       # ...and every half hour while its time is still over an hour off
+
+    def refresh_buffer(self, folder, r, now):
+        """Buffer posts and publishes on its own schedule: once in a while ask it how each post went, keep the links,
+        and pick up what the owner changed in Buffer itself (a new time, a deleted post). run_due holds the folder."""
+        e = r.get("buffer") or {}
+        posts = e.get("posts") or {}
+        if e.get("state") not in ("scheduled", "posted") or not posts or e.get("manual"):
+            return
+        out_since = (e.get("when") or e.get("at") or now) + 86400       # a sent post without a link: stop asking after a day
+        finished = lambda p: p.get("status") in ("error", "deleted") or (p.get("status") == "sent" and (p.get("link") or now > out_since))
+        if all(finished(p) for p in posts.values()):
+            return
+        far = e.get("state") == "scheduled" and e.get("when") and e["when"] > now + 3600
+        if now - (e.get("checked") or 0) < (self.BUFFER_FAR if far else self.BUFFER_EVERY):
+            return
+        b = self.accounts.get("buffer", folder_channel(folder))
+        if not b.get("api_key"):
+            return
+        api = buffer_post.Buffer(b["api_key"])
+        posts = {s: dict(p) for s, p in posts.items()}
+        for service, p in posts.items():
+            if not p.get("id") or finished(p):
+                continue
+            try:
+                q = api.post(p["id"])
+            except buffer_post.BufferError as ex:
+                self.note(folder, "buffer", checked=now, warning=f"Buffer did not answer about the {PLATFORM_NAMES[service]} post: {str(ex)[:200]}")
+                return
+            if q:
+                self.buffer_take(p, q)
+            elif p.get("status") != "sent":                     # the owner deleted it in Buffer (a sent post stays sent)
+                p.update(status="deleted", link="")
+        out = self.buffer_outcome(e, posts)
+        upd = dict(out, checked=now)
+        dues = {s: p["due"] for s, p in posts.items() if self.buffer_open(p) and p.get("due")}
+        times = set(dues.values())
+        say = lambda t: time.strftime("%a %d %b %H:%M", time.localtime(t))
+        if out["state"] == "cancelled":
+            upd["warning"] = "Deleted in Buffer, so it won't go out."
+        elif len(times) > 1:                                    # moved in Buffer, one post only
+            upd["warning"] = ("Instagram and TikTok are at different times in Buffer: " +
+                              ", ".join(f"{PLATFORM_NAMES[s]} {say(t)}" for s, t in dues.items()) + ". " + out["mix"]).strip()
+        else:
+            upd["warning"] = out["mix"] or ("" if out["state"] == "posted" else e.get("warning", ""))
+            if len(times) == 1 and e.get("when") and abs(min(times) - e["when"]) > 60:   # moved in Buffer
+                upd["when"] = min(times)
+        self.note(folder, "buffer", **upd)
+        if upd.get("when"):
+            self.moved(folder, upd["when"])
+        if out["state"] in ("posted", "failed", "cancelled"):
+            self.check_finished(folder)
 
     # YouTube Short: resumable upload (vertical and short is what makes it a Short), then the cover as thumbnail
     def post_youtube(self, video, cover, text, when=None, channel=""):

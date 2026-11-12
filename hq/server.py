@@ -61,12 +61,29 @@ LOCAL_TRUST = os.environ.get("HQ_LOCAL_TRUST", "") not in ("", "0", "false")   #
 MAX_UPLOAD = int(os.environ.get("HQ_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 SESSION_DAYS = 30
 CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
+CHILD_HIDDEN = {"CLAUDECODE", "HQ_PASSWORD", "HQ_SECRET", "HQ_UPDATE_NOTE"}   # never in an agent's environment
+MAX_JSON = 8 * 1024 * 1024                              # the largest JSON body a POST may send (uploads use PUT)
+
+
+def claude_argv():
+    """How to start Claude Code without a shell in between. On Windows `claude` is an npm .cmd shim that cmd.exe runs,
+    and cmd.exe re-parses every argument: a prompt holding a quote and `&` (the owner's chat, a task title an agent set,
+    a file name) could run a second command. The shim only starts bin/claude.exe next to it: start that directly.
+    Anything else (a path in CLAUDE_BIN, macOS, Linux) is used as it is."""
+    found = shutil.which(CLAUDE) or CLAUDE
+    if found.lower().endswith((".cmd", ".bat")):
+        exe = os.path.join(os.path.dirname(found), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+        if os.path.isfile(exe):
+            return [exe]
+    return [found]
+
+
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,120}$")
 UPLOAD_DIRS = {"clips": "inbox", "radar": os.path.join("inbox", "radar"), "stats": os.path.join("inbox", "stats"),
                "messages": os.path.join("inbox", "messages")}
 UPLOAD_EXT = {"clips": CLIP_EXT, "radar": {".txt", ".md", ".csv", ".json"}, "stats": {".csv"},
               "messages": {".txt", ".md", ".eml", ".json", ".csv", ".html"}}
-FALLBACK_TEAM_ORDER = ["Research", "Scripts", "Social", "Creative", "Analytics", "Shop", "Dev", "Inbox"]
+FALLBACK_TEAM_ORDER = ["Research", "Scripts", "Social", "Creative", "Analytics", "Shop", "Dev", "Inbox", "Design", "Security"]
 EVENTS = os.path.join(HERE, "events.jsonl")
 TASKS = os.path.join(HERE, "tasks.json")
 TEAMS_FILE = os.path.join(HERE, "teams.json")
@@ -467,7 +484,7 @@ accounts = publish.Accounts(ROOT)
 def post_scheduled(folder, when, platforms):
     """A scheduled post becomes a dated "post" task on the board, so it shows in the Calendar."""
     t = time.localtime(int(when))
-    names = {"facebook": "Facebook", "instagram": "Instagram", "youtube": "YouTube", "tiktok": "TikTok"}
+    names = dict(publish.PLATFORM_NAMES, buffer="Buffer (Instagram + TikTok)")
     code, r = task_action({"action": "add", "title": "Post: " + os.path.relpath(folder, os.path.join(ROOT, "approved")).replace(os.sep, " / "),
                            "team": "Social", "kind": "post", "status": "todo", "date": time.strftime("%Y-%m-%d", t),
                            "time": time.strftime("%H:%M", t), "note": ", ".join(names.get(p, p) for p in platforms)})
@@ -478,7 +495,18 @@ def post_finished(folder, task_id, states):
     task_action({"action": "move", "id": task_id, "status": "done"})
 
 
-publisher = publish.Publisher(ROOT, accounts, on_schedule=post_scheduled, on_finish=post_finished)
+def post_moved(folder, task_id, when):
+    """The scheduled post got a new time (changed here or in Buffer): its dated task on the board moves with it."""
+    t = time.localtime(int(when))
+    with TASK_LOCK:
+        db = load_tasks()
+        task = next((x for x in db["tasks"] if x.get("id") == task_id), None)
+        if task:
+            task.update(date=time.strftime("%Y-%m-%d", t), time=time.strftime("%H:%M", t), updated=now_iso())
+            save_tasks(db)
+
+
+publisher = publish.Publisher(ROOT, accounts, on_schedule=post_scheduled, on_finish=post_finished, on_move=post_moved)
 BRAIN_LOCK = threading.Lock()
 
 
@@ -656,13 +684,22 @@ def accounts_action(body, redirect):
             if not back:
                 return 409, {"error": "TikTok needs an https return address. Turn on phone access (Tailscale) for Agents HQ first, then connect again."}
             return 200, {"url": accounts.tiktok_begin(body.get("client_key"), body.get("client_secret"), back, ch)}
+        if act == "buffer":                              # Buffer: an API key from publish.buffer.com → Settings → API
+            r = accounts.connect_buffer(body.get("api_key"), ch)
+            return 200, {**r, "accounts": accounts.summary(ch)}
+        if act == "buffer-channels":                     # which Buffer channel is Instagram, which is TikTok
+            accounts.buffer_channels({k: body.get(k) for k in ("instagram", "tiktok") if k in body}, ch)
+            return 200, {"accounts": accounts.summary(ch)}
+        if act == "media":                               # the public media host Buffer fetches the video from (S3-compatible)
+            url = accounts.connect_host({k: body.get(k) for k in ("endpoint", "bucket", "access_key", "secret_key", "public_url", "region", "prefix")}, ch)
+            return 200, {"url": "", "checked": url, "accounts": accounts.summary(ch)}
         if act == "elevenlabs":                          # ElevenLabs: one API key for the whole office (voices, not posting)
             r = elevenlabs.connect(body.get("api_key"))
             return 200, {"elevenlabs": r, "accounts": {**accounts.summary(ch), "elevenlabs": r}}
         if act == "disconnect" and body.get("which") == "elevenlabs":
             r = elevenlabs.disconnect()
             return 200, {"accounts": {**accounts.summary(ch), "elevenlabs": r}}
-        if act == "disconnect" and body.get("which") in ("meta", "youtube", "tiktok"):
+        if act == "disconnect" and body.get("which") in ("meta", "youtube", "tiktok", "buffer", "media"):
             accounts.disconnect(body["which"], ch)
             return 200, {"accounts": accounts.summary(ch)}
     except publish.PostError as e:
@@ -1838,7 +1875,7 @@ class Desk:
                 prompt += " / " + FABLE_NOTE                 # the lead passes Fable on to its sub-agents, as with "use Fable"
             elif run.model == "opus" and FABLE_ASK.search(prompt):
                 prompt += " / " + OPUS_NOTE                  # the picker said Opus 5.5: the words "use Fable" don't switch the sub-agents
-            cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model]
+            cmd = [*claude_argv(), "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model]
             cmd += ["--append-system-prompt", COPY_NOTE]       # prompts go in their own block: the app gives each one a Copy button
             allowed = allow_list()
             if allowed:
@@ -1846,7 +1883,7 @@ class Desk:
             for d in extra_dirs():                         # readable folders outside the office, such as the D: drive
                 cmd += ["--add-dir", d]
             cmd += ["--resume", self.session_id] if self.resumable else ["--session-id", self.session_id]
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+            env = {k: v for k, v in os.environ.items() if k not in CHILD_HIDDEN}
             try:
                 p = run.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=env)
             except OSError as e:
@@ -2097,6 +2134,13 @@ def on_approved(name):
             covers_back.copy_back(ROOT, name, key, channels.get(key))
         except Exception as e:
             sys.stderr.write(f"covers back for {name}: {e}\n")
+        if not name.startswith(("thumbnail-final-", "sermon-studio-")):
+            try:                                          # the Buffer package (cover as frame 1) starts right away, so it is ready when the owner opens Post
+                publisher.buffer_make(os.path.join(ROOT, "approved", name))
+            except publish.PostError as e:                # e.g. no cover yet: the posting screen asks again once there is one
+                sys.stderr.write(f"buffer package for {name}: {e}\n")
+            except Exception as e:
+                sys.stderr.write(f"buffer package for {name}: {e}\n")
     threading.Thread(target=work, daemon=True).start()
 
 
@@ -2150,6 +2194,15 @@ class Handler(BaseHTTPRequestHandler):
         if args and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
+    def end_headers(self):
+        """Every reply: no MIME sniffing; a page may not be framed by another site (a hidden HQ under a decoy page)."""
+        sent = b"".join(getattr(self, "_headers_buffer", None) or []).lower()
+        if b"x-content-type-options:" not in sent:
+            self.send_header("X-Content-Type-Options", "nosniff")
+        if b"content-type: text/html" in sent and b"x-frame-options:" not in sent:
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+        super().end_headers()
+
     # helpers
     def send_json(self, obj, code=200, extra=()):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -2199,6 +2252,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def guard(self, page=False):
         """True when the request may go on; otherwise the refusal has been sent."""
+        if not PASSWORD and self.relayed():           # no password: this computer's own windows only, never a proxied phone
+            self.send_json({"error": "Agents HQ has no password (HQ_PASSWORD), so it answers this computer's own windows only. "
+                                     "Turn on phone access with a password, then try again."}, 403)
+            return False
         if self.authed():
             return True
         if page:
@@ -2207,17 +2264,46 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "login required"}, 401)
         return False
 
+    def same_site(self):
+        """True when a POST or PUT comes from the office's own pages (or a tool on this computer, which sends no Origin);
+        otherwise a 403 has been sent. A page on another site in the owner's browser can send a request to localhost
+        without reading the answer: browsers mark it with Sec-Fetch-Site: cross-site and an Origin that is not ours."""
+        h = self.headers
+        origin = (h.get("Origin") or "").strip()
+        expected = (h.get("X-Forwarded-Host") or h.get("Host") or "").strip().lower()
+        scheme = (h.get("X-Forwarded-Proto") or "http").strip().lower()
+        bad = (h.get("Sec-Fetch-Site") or "").lower() == "cross-site"
+        if origin and not bad:
+            p = urlparse(origin)
+            bad = origin == "null" or p.scheme != scheme or p.netloc.lower() != expected or p.path not in ("", "/") \
+                or bool(p.query or p.fragment or p.username or p.password)
+        if bad:
+            self.send_json({"error": "This request came from another website. Open Agents HQ at its own address and try again."}, 403)
+        return not bad
+
     def read_json(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if n < 0 or n > MAX_JSON:                       # never read a huge body into memory; the caller answers 400
+            return {}
         try:
             obj = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return {}
         return obj if isinstance(obj, dict) else {}
 
-    def send_file(self, path):
+    PLAIN_TYPES = ("text/html", "application/xhtml+xml", "image/svg+xml", "text/xml", "application/xml", "text/javascript",
+                   "application/javascript", "application/x-javascript")
+
+    def send_file(self, path, plain_markup=False):
+        """plain_markup: a file an agent made (out/, approved/) is shown as text when it is HTML, SVG, XML or script, so it
+        can never run as a page of the office."""
         size = os.path.getsize(path)
         ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        if plain_markup and ctype in self.PLAIN_TYPES:
+            ctype = "text/plain; charset=utf-8"
         start, end = 0, size - 1
         rng = self.headers.get("Range")
         m = re.match(r"bytes=(\d*)-(\d*)$", rng or "")
@@ -2267,8 +2353,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def send_static(self, full):
-        return self.send_file(full) if full and os.path.isfile(full) else self.send_json({"error": "not found"}, 404)
+    def send_static(self, full, plain_markup=False):
+        return self.send_file(full, plain_markup) if full and os.path.isfile(full) else self.send_json({"error": "not found"}, 404)
 
     def send_app_file(self, full):
         """The office's own scripts and styles: gzipped (about a quarter of the size, so a phone over Tailscale gets them
@@ -2381,7 +2467,7 @@ class Handler(BaseHTTPRequestHandler):
             d = approved_dir(qs.get("folder", [""])[0], ("approved", "out"))
             if not d:
                 return self.send_json({"error": "no such work folder"}, 404)
-            pl = publisher.payload(d)
+            pl = publisher.payload(d, qs.get("video", [""])[0], qs.get("cover", [""])[0])
             return self.send_json({**pl, "channel_name": channels.name(pl["channel"])})
         if path == "/api/brain/notes":
             return self.send_json({"notes": brain_notes()})
@@ -2404,7 +2490,7 @@ class Handler(BaseHTTPRequestHandler):
                 small = thumbnail_preview(full, f"{os.path.abspath(full)}|{st.st_size}|{st.st_mtime_ns}")
                 if small:
                     return thumbnail_send_preview(self, small)
-            return self.send_static(full)
+            return self.send_static(full, plain_markup=True)
         if path in STATIC:
             return self.send_app_file(os.path.join(HERE, path.lstrip("/")))
         m = re.match(r"^/vendor/(.+)$", path)
@@ -2414,6 +2500,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = unquote(urlparse(self.path).path)
+        if not self.same_site():
+            return
         if path == "/login":
             ip = self.client_ip()
             wait = throttle.wait(ip)
@@ -2501,9 +2589,27 @@ class Handler(BaseHTTPRequestHandler):
             if not d:
                 return self.send_json({"error": "only approved work can be posted"}, 404)
             try:
-                if body.get("cancel") in publish.PLATFORMS:      # cancel a scheduled Instagram post still waiting here
+                if body.get("cancel") in publish.PLATFORMS:      # cancel a scheduled Instagram post here, or Buffer's (deleted in Buffer)
                     publisher.cancel(d, body["cancel"])
+                    notifier.refresh()
                     return self.send_json(publisher.payload(d))
+                if body.get("buffer") == "change":               # a scheduled Buffer post: new time / caption / title, in Buffer too
+                    caption, title = body.get("caption"), body.get("title")
+                    publisher.buffer_change(d, body.get("when") or None, caption if isinstance(caption, str) else None,
+                                            title if isinstance(title, str) else None)
+                    notifier.refresh()
+                    return self.send_json(publisher.payload(d, str(body.get("video") or ""), str(body.get("cover") or "")))
+                if body.get("buffer") in ("make", "done"):       # the Buffer package (cover as frame 1), or "I posted it in Buffer"
+                    video, cover = str(body.get("video") or ""), str(body.get("cover") or "")
+                    caption, title = body.get("caption"), body.get("title")
+                    caption = caption if isinstance(caption, str) else None
+                    title = title if isinstance(title, str) else None
+                    if body["buffer"] == "make":
+                        publisher.buffer_make(d, video, cover, caption, title)
+                    else:
+                        publisher.buffer_done(d, video, cover, caption, title)
+                    notifier.refresh()
+                    return self.send_json(publisher.payload(d, video, cover))
                 chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
                 started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""), body.get("when") or None,
                                           str(body.get("coverIg") or ""))
@@ -2546,6 +2652,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = unquote(urlparse(self.path).path)
+        if not self.same_site():
+            return
         if not self.guard():
             return
         if thumbnail_design.handle(self) or sermon_design.handle(self):
@@ -2678,7 +2786,10 @@ def restart_office(force=False):
     busy = busy_now()
     if busy and not force:
         return 409, {"error": "HQ is busy: " + " and ".join(busy) + ". Restarting now stops them.", "busy": busy}
-    print("Agents HQ: restarting at the owner's request" + (" (stopping: " + ", ".join(busy) + ")" if busy else ""), flush=True)
+    try:                                                   # a launcher without a console has no stdout: never let the log line stop the restart
+        print("Agents HQ: restarting at the owner's request" + (" (stopping: " + ", ".join(busy) + ")" if busy else ""), flush=True)
+    except (OSError, ValueError, AttributeError):
+        pass
     RESTART.set()
     threading.Timer(0.5, HTTPD[0].shutdown).start()       # after this reply has gone out
     return 200, {"ok": True, "stopped": busy}
@@ -2953,7 +3064,7 @@ def meeting_payload():
             {"label": "scheduled\nto go out", "value": sum(1 for v in P["videos"] if v["state"] == "scheduled")},
             {"label": "videos in\nthe pipeline", "value": P["pipeline"]},
         ]
-        c["videos"], c["designs"] = P["videos"][:6], P["designs"][:6]
+        c["videos"], c["designs"] = P["videos"][:12], P["designs"][:6]   # 12: the hall has 10 TVs, each its own video
     days = [sum(per[c["key"]]["days"][k] for c in chans) for k in range(7)]
     numbers = [
         {"label": "posts out\nthis week", "value": sum(days), "spark": days},
@@ -2967,7 +3078,7 @@ def meeting_payload():
     review = latest_review()
     lines = [("✅ " + a)[:60] for a in (review or {}).get("actions", [])[:5]]
     return {"schedule": cfg["schedule"], "minutes": cfg["minutes"], "reviewOn": cfg["review"], "reviewAt": cfg["review_at"],
-            "next": " · ".join(cfg["schedule"]), "numbers": numbers, "channels": chans, "videos": mixed("videos", 6), "designs": mixed("designs", 6),
+            "next": " · ".join(cfg["schedule"]), "numbers": numbers, "channels": chans, "videos": mixed("videos", 12), "designs": mixed("designs", 6),
             "review": review, "lines": lines, "live": dict(MEETING_LIVE) if MEETING_LIVE["until"] > now else None}
 
 
@@ -2988,7 +3099,7 @@ def start_meeting_review(when, topic=""):
               "any CSVs in inbox/stats/, and the newest work/social, work/analytics and work/design files. Then write " + out + " in exactly this layout: "
               "'# All-hands · <date>', '## Numbers' (3-5 bullets with real figures from the files, never invented), '## What worked' (3 bullets), "
               "This meeting is about NLRCC (the main channel) only: skip other channels' work (folders whose channel.txt holds a key such as pong-gospel, and their board tasks). "
-              "one '## Improve · <Team>' section for each team that has something to fix (Creative, Design, Social, Scripts, Research, Analytics, Shop, Inbox, Dev: 1-3 bullets each, "
+              "one '## Improve · <Team>' section for each team that has something to fix (Creative, Design, Social, Scripts, Research, Analytics, Shop, Inbox, Dev, Security: 1-3 bullets each, "
               "each a concrete fix tied to a real video, post or task), and '## Top 3 actions' (numbered, the three most useful things for this week, with who does them). "
               "Short sentences, plain words. Propose changes; don't make them, don't start other jobs, don't edit skills or agents, and nothing is posted or sent. ")
     if topic:

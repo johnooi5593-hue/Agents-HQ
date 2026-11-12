@@ -339,3 +339,40 @@ Only Apply changes the current project's date/names and checked original photo a
 Suggested flow: sync and check the six-service roster; prepare 1/2/6 artwork groups; open each group, supply titles/references and generate four separate choices; select one design; check the group's service information/photos; create service pictures; review/download in Claude HQ. Existing approved artwork can still use the direct-master service workflow without creating new art concepts.
 
 - **2026-10-27.6:** User selected manual weekly roster sync. Added exact speaker-column mapping, current-week preview, candidate photo confirmation, original-byte checks, scoped explicit apply and source provenance. Retains prior useful rules and final user OK; Pulse remains paused. Prior bytes and checks: `.studio/intake/post-covers-and-independent-sermons-20261027/duty-guide-change.json`.
+# Large saved-design delivery and delivery-only retry (2026-10-29)
+
+HQ still limits copied deliverables to 400 MiB. A source package with duplicated image-container SVG/HTML, bundled fonts and ZIP can exceed that while all four finished pictures are valid. When necessary, the bridge delivers every verified final PNG/JPG and small project/quality metadata first. Other source files remain on the design engine and are recorded separately in the delivery index for checksum-verified download; they are not silently deleted or described as copied. Source inspection remains bounded to 150 files, 2 GiB total and 512 MiB per source entry; copied files remain capped at 200 MiB each. Required PNGs are checksum checked and decoded within bounded pixel dimensions.
+
+The authenticated existing project POST route accepts a delivery-only action:
+
+```json
+{"deliveryAction":"retry","expectedRevision":27,"projectRevision":27,"jobId":"exact-succeeded-job-id"}
+```
+
+Use `/api/sermon-design/projects/:id`. `expectedRevision` is the current saved project revision; `projectRevision` is the explicit frozen completed-export revision. A supplied job ID must match that project/revision and report succeeded. Unknown, running, failed or cancelled jobs cannot borrow an older export. No generate, export, model, provider or paid-image action is invoked. Mixed generation fields are rejected. Success returns `delivery.status: "delivered"`, the actual HQ task ID, frozen revision and any source-retention warnings. Retries reuse an existing verified delivery/task instead of duplicating it. Purged projects and cancelled or removed HQ review tasks are not resurrected.
+
+When image generation succeeded but HQ collection failed, GET job status remains generation-successful and includes a separate `delivery.status: "failed"` with an error and retryability. The owner can retry collection without paying for or regenerating four images. Capabilities served by this HQ advertise `deliveryRetry: true`, `deliveryRetryVersion: 1` and `deliveryPicturesFirst: true` after the normal HQ backend restart. A page refresh alone does not load changed Python code.
+
+## Confirmed delivery state and exact job revisions (2026-11-05)
+
+`GET /api/sermon-design/jobs/:id` collects only a job that actually reports `succeeded`, using that job's confirmed positive integer `projectRevision`. If a newer draft or another generation exists for the same project, HQ fetches the exact historical revision; it does not collect the newer artwork on behalf of the older job. Running, queued, failed and cancelled jobs never collect a preceding export.
+
+Once the PNGs, hashes, saved review task and delivery index are verified, status polling returns an explicit acknowledgement:
+
+```json
+{"delivery":{"status":"delivered","projectId":"saved-project-id","projectRevision":39,"taskId":"actual-hq-task-id","retryable":false,"warnings":[]}}
+```
+
+The top-level `hqTaskId` identifies this delivered version. `project.hqTaskId` is assigned only when the returned current project is that same revision; an unrelated later draft is kept as a draft. A collection error includes the confirmed job revision when available. Generic connection/identity errors do not invent a revision from the current draft. Clients must retain the last verified job binding rather than replace it with absent/unknown fields.
+
+A successful explicit refresh or delivery-only retry reconciles an earlier `delivery-error` or expired background-watch record. It never reruns generation or resumes failed/cancelled production. A notification callback failure after the delivery is committed is recorded in `bridge.notification_error` and cannot turn the verified saved delivery into failure. Review tasks still require the owner's OK. Cancelled, removed or permanently purged deliveries are not recreated.
+
+Focused isolated checks:
+
+```powershell
+python -m unittest discover -s hq/tests -p test_sermon_delivery_retry.py
+python -m unittest discover -s hq/tests -p 'test_sermon_*.py'
+```
+
+These fixtures cover exact revision isolation across two jobs on one project, idempotent acknowledgements, unconfirmed metadata, delivery-only I/O failures, post-commit notification errors, watch reconciliation, cancellation/purge protection and all four finished images retained when duplicate source packages exceed the copy budget. They do not invoke image generation, export, providers, publishing or production runtime repair.
+

@@ -1,6 +1,6 @@
 # Org chart
 
-35 agents in 9 teams around the Brain, led by the chief of staff (your Claude Code session, with its instructions in `CLAUDE.md`). Each agent is one file in `.claude/agents/`. Everyone runs on Opus 5.5; Fable only when the owner asks for it. Team heads plan, merge and review; workers do one job each.
+39 agents in 10 teams around the Brain, led by the chief of staff (your Claude Code session, with its instructions in `CLAUDE.md`). Each agent is one file in `.claude/agents/`. Everyone runs on Opus 5.5; Fable only when the owner asks for it. Team heads plan, merge and review; workers do one job each.
 
 | # | Agent | Team | Role | Job |
 |---|---|---|---|---|
@@ -40,6 +40,10 @@
 | 33 | `codex-graphic-designer` | Design | worker | Prepares Codex video thumbnails and post covers (9:16 YouTube + Facebook, 3:4 Instagram): style, title rows, feeling, reference |
 | 34 | `sermon-designer` | Design | worker | Sermon title artwork in Sermon Design Studio: Sermon Title 16:9, XHS Sermon Recap, service editions |
 | 35 | `poster-designer` | Design | worker | Event, announcement, service-time, seasonal and social posters in every size, on the Codex engine |
+| 36 | `security-lead` | Security | head | Head of Security: plans every review, merges the workers' findings into one ranked report with a verdict (SAFE, FIX FIRST, STOP) |
+| 37 | `security-auditor` | Security | worker | Reviews a code or config change for vulnerabilities only (injection, traversal, missing login or cross-site checks, leaked secrets): SAFE or FIX |
+| 38 | `access-guardian` | Security | worker | Checks who can reach what: settings.json allow/deny rules, each agent's tools, secrets on disk, ports, phone access and the login |
+| 39 | `threat-scout` | Security | worker | Reads messages, comments, links and footage names first and flags phishing, scams and prompt injection before other teams act on them |
 
 ## How a request moves
 

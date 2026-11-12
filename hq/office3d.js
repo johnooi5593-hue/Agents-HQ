@@ -44,13 +44,14 @@
   // along the glass front (z = CZ); the core between the rooms has the spiral stairs and the bank of lifts.
   const FLOOR_H = 15, FLOORS = 8, ROOF = FLOORS - 1, HALL = 6;   // lobby, 5 team floors (the top one holds Design), the Meeting Hall, roof
   const WX = 60, DZ = 16;                        // half the building's width and depth
+  const DOOR = { w: 4.4, h: 7.6 };               // the main door in the lobby's glass front: half its width, its height
   const ROOM_X = 30, CZ = 13.5;                  // the rooms' centre offset; the corridor line along the front
   const STAIR = { x: -6, z: -6, r: 3, hole: 4.2 };   // the spiral stairs (and the opening in each floor above them)
   const LIFTS = [0, 5, 10].map((x) => ({ x, z: -10, r: 2.2 }));   // three glass lifts, lobby to the Meeting Hall
   const LIFT_HALL_Z = -4.5, LIFT_TOP = HALL;      // the lift lobby in front of their doors on every floor; the highest stop
   const BRAIN = new THREE.Vector3(0, 0, 50);     // the fountain in the plaza
-  const FLOOR_PLAN = { research: [1, 0], analytics: [1, 1], dev: [2, 0], inbox: [2, 1], scripts: [3, 0], shop: [3, 1], creative: [4, 0], social: [4, 1], design: [5, 0] };
-  const FLOOR_NAMES = ['Ground · Lobby & canteen', '1F', '2F', '3F', '4F', '5F · Design', '6F · Meeting Hall', 'Roof · Terrace & game room'];
+  const FLOOR_PLAN = { research: [1, 0], analytics: [1, 1], dev: [2, 0], inbox: [2, 1], scripts: [3, 0], shop: [3, 1], creative: [4, 0], social: [4, 1], design: [5, 0], security: [5, 1] };
+  const FLOOR_NAMES = ['Ground · Lobby & canteen', '1F', '2F', '3F', '4F', '5F · Design & Security', '6F · Meeting Hall', 'Roof · Terrace & game room'];
   const FLOOR_SHORT = ['G', '1F', '2F', '3F', '4F', '5F', '6F', 'R'];
   // Phones (the same query as hud.css): a lower pixel ratio, half-resolution bloom (dropped if the frame rate sags),
   // fewer particles, portrait framing that fits the ring of rooms by width, double-tap on a room. Desktop is untouched.
@@ -71,6 +72,7 @@
     { key: 'shop', name: 'Shop', color: '#d74961', color_light: '#f1bfc8', color_wall: '#762835', accent: '#f6275b', tagline: 'listings · orders · support', lead: 'shop-manager' },
     { key: 'dev', name: 'Dev', color: '#48b467', color_light: '#bfe5ca', color_wall: '#286339', accent: '#28ad5e', tagline: 'ships the code', lead: 'engineering-lead' },
     { key: 'inbox', name: 'Inbox', color: '#d69155', color_light: '#f1d8c4', color_wall: '#76502f', accent: '#f69a4f', tagline: 'email · brand deals · quotes', lead: 'inbox-manager' },
+    { key: 'security', name: 'Security', color: '#3f9fbf', color_light: '#c3dfe9', color_wall: '#1f5566', accent: '#1aa3d6', tagline: 'audits · access · threats', lead: 'security-lead' },
   ];
 
   // Character looks taken from the video where the spec names them; everyone else gets a hashed variation.
@@ -109,6 +111,10 @@
     'inbox-manager': { hair: 0x926546, style: 'short', shirt: 0x3fbf6a },
     'customer-support': { hair: 0xeed787, style: 'bob', shirt: 0x75bdd8, phones: 0xe6e6e6 },
     'proposal-writer': { hair: 0x2a2a2e, style: 'short', shirt: 0xea8a38 },
+    'security-lead': { hair: 0x2a2a2e, style: 'short', shirt: 0x1f5566, glasses: true },
+    'security-auditor': { hair: 0x795e55, style: 'bun', shirt: 0x3f9fbf },
+    'access-guardian': { hair: 0xeed787, style: 'short', shirt: 0x465364, phones: 0x1aa3d6 },
+    'threat-scout': { hair: 0xb33a2a, style: 'cap', hat: 0x1f5566, shirt: 0xe8e8e8 },
   };
 
   // ------------------------------------------------------------------ small helpers
@@ -423,7 +429,7 @@
     dofPass.uniforms.px.value.set(1 / (w * pr), 1 / (h * pr));
     if (state.phone) bloomPass.setSize(Math.round(w * pr * 0.5), Math.round(h * pr * 0.5));   // half-resolution bloom on a phone
     bloomPass.enabled = !state.lowFx;
-    dofPass.enabled = !state.lowFx && !state.phone && state.cinema;           // phones keep the grade, skip the depth of field
+    dofPass.enabled = false;                                                  // depth of field off: it looked odd (owner, 2026-11-04); the pass stays for the fx API
     gradePass.enabled = state.cinema;
     camera.aspect = w / h; camera.updateProjectionMatrix();
     // The overview frames the tower from the plaza: its full height with a little of the plaza below; a portrait screen
@@ -718,6 +724,7 @@
       case 'social': return head ? ['chart', 'text'] : ['text'];
       case 'inbox': return head ? ['text', 'text'] : ['text'];
       case 'scripts': return head ? ['text', 'code'] : ['text'];
+      case 'security': return head ? ['code', 'text'] : ['code'];
       default: return head ? ['code', 'chart'] : ['code'];
     }
   }
@@ -959,8 +966,10 @@
         GL.box(2 * WX, 0.22, 0.06, 0, top + inner - 0.6, -DZ + 0.02, [0x4285f4, 0xea4335, 0xfbbc05, 0x34a853][f % 4]);   // a stripe in one of the brand colours
         GL.box(2 * WX, 0.07, 0.08, 0, top + inner - 0.22, -DZ + 0.06, 0xeef6ff);            // an LED cove where the wall meets the ceiling
         GL.box(2 * WX, 0.05, 0.06, 0, top + 0.1, -DZ + 0.05, 0xffe2b0);                     // and a warm LED skirting along the floor
-        const gf = new THREE.Mesh(new THREE.BoxGeometry(2 * WX, inner, 0.08), glassMat); gf.position.set(0, top + inner / 2, DZ + 0.3); gf.renderOrder = 3; g.add(gf);
-        for (let x = -WX; x <= WX + 0.1; x += 10) M.box(0.28, inner, 0.32, x, top + inner / 2, DZ + 0.3, 0x1c2130);   // mullions
+        // the glass front; the lobby's has the main door's opening in the middle (the sliding doors are in buildEntrance)
+        const panes = f ? [[2 * WX, inner, 0, top + inner / 2]] : [[WX - DOOR.w, inner, -(WX + DOOR.w) / 2, top + inner / 2], [WX - DOOR.w, inner, (WX + DOOR.w) / 2, top + inner / 2], [2 * DOOR.w, inner - DOOR.h, 0, top + DOOR.h + (inner - DOOR.h) / 2]];
+        for (const [w, h, x, y] of panes) { const gf = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.08), glassMat); gf.position.set(x, y, DZ + 0.3); gf.renderOrder = 3; g.add(gf); }
+        for (let x = -WX; x <= WX + 0.1; x += 10) if (f || Math.abs(x) > DOOR.w) M.box(0.28, inner, 0.32, x, top + inner / 2, DZ + 0.3, 0x1c2130);   // mullions
         for (const sx of [-1, 1]) { glassBox(g, 0.08, inner, 2 * DZ, sx * WX, top + inner / 2, 0, false); M.box(0.32, inner, 0.32, sx * WX, top + inner / 2, -DZ, 0x1c2130); }
       } else {
         for (const [w, d, x, z] of [[2 * WX, 0.08, 0, DZ - 0.1], [2 * WX, 0.08, 0, -DZ + 0.1], [0.08, 2 * DZ, -WX + 0.1, 0], [0.08, 2 * DZ, WX - 0.1, 0]]) {
@@ -1201,13 +1210,14 @@
   }
   function tvPick(D, i) {                                                     // which channel and video a TV shows
     const chs = hallChannels(D), [, , , side, slot] = HALL_TVS[i];
-    if (chs.length < 2) { const vs = D.videos || []; return { c: chs[0] || {}, k: 0, v: vs[i % Math.max(1, vs.length)] }; }   // more TVs than videos: they repeat
-    const k = side % chs.length, c = chs[k];
-    const vids = c.videos || [];
-    return { c, k, v: vids[slot] || vids[slot % Math.max(1, vids.length)] };   // fewer videos than TVs: they repeat
+    // owner (2026-11-11): never the same post on two TVs; a TV with no video of its own shows a design instead
+    if (chs.length < 2) { const vs = D.videos || [], ds = D.designs || []; return { c: chs[0] || {}, k: 0, v: vs[i], d: vs[i] ? null : ds[i - vs.length] }; }
+    const k = side % chs.length, c = chs[k], vids = c.videos || [], ds = c.designs || [];
+    const mine = HALL_TVS.filter((tv) => tv[3] % chs.length === k).map((tv) => tv[4]).sort((a, b) => a - b), n = mine.indexOf(slot);
+    return { c, k, v: vids[n], d: vids[n] ? null : ds[n - vids.length] };   // this channel's TVs take its videos in order, no repeats
   }
   function drawTV(i, t) {
-    const H = state.hall, D = H.data || {}, { c: C, k, v } = tvPick(D, i), mesh = H.tvs[i], W = 288, Hh = 512;
+    const H = state.hall, D = H.data || {}, { c: C, k, v, d } = tvPick(D, i), mesh = H.tvs[i], W = 288, Hh = 512;
     let c = mesh.material.map.image;
     if (c.width !== W) { c = document.createElement('canvas'); c.width = W; c.height = Hh; mesh.material.map = new THREE.CanvasTexture(c); mesh.material.needsUpdate = true; }
     const g = c.getContext('2d'), col = CH_COLORS[k % 4];
@@ -1217,7 +1227,8 @@
       if (playing) { const r = Math.max(W / vid.videoWidth, Hh / vid.videoHeight); const w = vid.videoWidth * r, h = vid.videoHeight * r; g.drawImage(vid, (W - w) / 2, (Hh - h) / 2, w, h); }
       else { const im = hallImg(v.cover); if (im) coverFit(g, im, 0, 0, W, Hh); }
       g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(0, Hh - 52, W, 52); g.fillStyle = '#fff'; g.font = '600 17px Inter, "PingFang SC", "Microsoft YaHei", sans-serif'; g.fillText(shorten(v.title || v.name, 15), 10, Hh - 26);
-    } else { g.fillStyle = '#3a4152'; g.font = '600 20px Inter, sans-serif'; g.fillText('No video yet', 82, Hh / 2); }
+    } else if (d) { const im = hallImg(typeof d === 'string' ? d : d.url); if (im) coverFit(g, im, 0, 0, W, Hh); }   // a design, not a repeat
+    else { g.fillStyle = '#3a4152'; g.font = '600 20px Inter, sans-serif'; g.fillText('No video yet', 82, Hh / 2); }
     g.fillStyle = col; g.fillRect(0, 0, W, 30); g.fillStyle = '#fff'; g.font = '800 16px Inter, system-ui, sans-serif'; g.fillText(C.name || '', 10, 16);   // the channel on top
     mesh.material.map.needsUpdate = true;
   }
@@ -1392,18 +1403,331 @@
     // trees, benches, street lamps, two parked cars
     for (const [x, z, k] of [[-52, DZ + 14, 1.5], [52, DZ + 14, 1.5], [-46, DZ + 50, 1.7], [46, DZ + 52, 1.6], [-64, DZ + 34, 1.3], [64, DZ + 30, 1.3]]) tree(M, x, 0.15, z, k);
     for (const [x, z] of [[-30, DZ + 20], [30, DZ + 20], [-30, DZ + 52], [30, DZ + 52]]) { M.box(4, 0.25, 1.1, x, 1.0, z, 0xc8925a); M.box(0.25, 0.9, 1.0, x - 1.7, 0.45, z, 0x3a3d42); M.box(0.25, 0.9, 1.0, x + 1.7, 0.45, z, 0x3a3d42); }
-    for (const [x, z] of [[-40, DZ + 64], [-12, DZ + 64], [12, DZ + 64], [40, DZ + 64], [-60, DZ + 8], [60, DZ + 8]]) { M.cyl(0.15, 9, x, 4.6, z, 0x23262e); GL.ball(0.45, x, 9.2, z, 0xfff0d0); addGlowSprite(x, 9.2, z, 0xffe2b8, 4.5, 0.5); }
-    const car = (x, z, rot, c) => {
-      const o = new THREE.Matrix4().makeRotationY(rot).setPosition(x, 0, z), at = { parent: o };
-      M.box(4.6, 0.9, 9.2, 0, 1.0, 0, c, at); M.box(3.8, 0.8, 3.6, 0, 1.8, -0.4, mix(c, 0x111111, 0.55), at);
-      for (const [wx, wz] of [[-2.3, 3], [2.3, 3], [-2.3, -3], [2.3, -3]]) M.cyl(0.75, 0.6, wx, 0.75, wz, 0x15151a, Object.assign({ rz: Math.PI / 2 }, at));
-      for (const wx of [-1.5, 1.5]) GL.box(0.8, 0.25, 0.1, wx, 1.15, 4.62, 0xfff6e0, at);
-      for (const wx of [-1.6, 1.6]) GL.box(0.8, 0.22, 0.1, wx, 1.15, -4.62, 0xff4d5e, at);
-    };
-    car(-36, DZ + 42, 1.35, 0xf2c230); car(36, DZ + 44, -1.75, 0xd8323a);
+    for (const [x, z] of [[-44, DZ + 64], [-25, DZ + 64], [25, DZ + 64], [44, DZ + 64], [-60, DZ + 13], [60, DZ + 13]]) { M.cyl(0.15, 9, x, 4.6, z, 0x23262e); GL.ball(0.45, x, 9.2, z, 0xfff0d0); addGlowSprite(x, 9.2, z, 0xffe2b8, 4.5, 0.5); }
+    buildCarPark(M, GL); buildEntrance(M, GL);
     scene.add(M.mesh()); scene.add(GL.mesh());
+    buildPeople();
     buildCampus();
   }
+
+  // The car park: a luxury lot on each side of the plaza (dark granite, lit aisle edges and bay lines, an EV charger in
+  // every bay, LED lamp posts, a hedge round the back), almost every bay taken by a supercar, a coupe or a big SUV; a
+  // covered gate with a valet stand; two cars at the drop-off in the plaza. A driveway loops through both lots, past the
+  // main door under its canopy and behind the tower, and a few cars drive it (they stop at the door, for the car ahead
+  // and for anyone crossing).
+  const LOTS = [-1, 1].map((s) => ({ s, x: s * 99, z0: -36, z1: 50 }));
+  const inLot = (x, z) => Math.abs(x) > 76 && Math.abs(x) < 124 && z > -46 && z < 60;
+  const CAR_COLORS = [0x0b0c10, 0x0b0c10, 0xf4f5f7, 0xf4f5f7, 0xb8bcc4, 0x2a2d34, 0x6b6f78, 0xc9a45c, 0xc8102e, 0x0f4d3a, 0x14306b, 0xf28c00, 0xe8d9b5];
+  const DRIVE_Z = DZ + 6.5, CANOPY = { x: 16, z0: DZ + 0.6, z1: DZ + 11, y: 9.4 };   // the drive past the main door, its canopy
+  function track(pts, loop) {                                                    // a polyline with its lengths, sampled by distance
+    const R = { pts, loop, cum: [0] };
+    for (let i = 1; i < pts.length; i++) R.cum.push(R.cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    R.len = R.cum[R.cum.length - 1]; return R;
+  }
+  function along(R, u, out) {                                                    // the point at distance u, and the way forward
+    let k = 1; while (k < R.cum.length - 1 && R.cum[k] < u) k++;
+    const a = R.pts[k - 1], b = R.pts[k], seg = (R.cum[k] - R.cum[k - 1]) || 1, f = clamp((u - R.cum[k - 1]) / seg, 0, 1);
+    out.x = a[0] + (b[0] - a[0]) * f; out.z = a[1] + (b[1] - a[1]) * f; out.dx = (b[0] - a[0]) / seg; out.dz = (b[1] - a[1]) / seg; return out;
+  }
+  const DRIVE = track([[100.5, -38.2], [100.5, 50], [95, 57], [81, 55], [77, 46], [77, 30], [71, DRIVE_Z], [-71, DRIVE_Z], [-77, 30], [-77, 46], [-81, 55], [-95, 57], [-100.5, 50], [-100.5, -38.2], [100.5, -38.2]], true);
+  function luxCar(B, GL, x, z, rot, c, kind) {
+    const o = new THREE.Matrix4().makeRotationY(rot).setPosition(x, 0.15, z), at = { parent: o };
+    const dark = 0x0d1016, glass = 0x141a24, side = Object.assign({ rz: Math.PI / 2 }, at);
+    if (kind === 'suv') {                                                        // tall and square: body, sills, glasshouse, roof
+      B.box(4.4, 1.5, 9.4, 0, 1.55, 0, c, at); B.box(4.5, 0.35, 9.5, 0, 0.75, 0, dark, at);
+      B.box(4.0, 1.25, 5.8, 0, 2.9, -0.6, glass, at); B.box(4.05, 0.14, 5.4, 0, 3.58, -0.7, c, at);
+    } else {                                                                     // low: body, glasshouse, roof; a wing on a supercar
+      B.box(4.3, 0.9, 9.4, 0, 1.05, 0, c, at); B.box(4.4, 0.25, 9.5, 0, 0.6, 0, dark, at);
+      B.box(3.5, 0.8, 4.2, 0, 1.9, -0.5, glass, at); B.box(3.3, 0.12, 2.6, 0, 2.32, -0.7, c, at);
+      if (kind === 'super') { B.box(4.0, 0.1, 0.8, 0, 2.05, -4.3, dark, at); for (const wx of [-1.2, 1.2]) B.box(0.12, 0.5, 0.3, wx, 1.75, -4.3, dark, at); }
+    }
+    for (const [wx, wz] of [[-2.2, 2.9], [2.2, 2.9], [-2.2, -2.9], [2.2, -2.9]]) { B.cyl(0.74, 0.6, wx, 0.74, wz, 0x121214, side); B.cyl(0.44, 0.64, wx, 0.74, wz, 0xd5dae0, side); }
+    const fy = kind === 'suv' ? 1.9 : 1.2;
+    for (const wx of [-1.5, 1.5]) GL.box(1.1, 0.12, 0.08, wx, fy, 4.72, 0xeaf6ff, at);   // LED headlight blades
+    GL.box(3.8, 0.12, 0.08, 0, fy, -4.72, 0xff2a3d, at);                              // one tail-light bar across the back
+  }
+  const CARS = [];
+  function buildCarPark(M, GL) {
+    const shiny = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 90, specular: 0x8a8f99 }), B = new Merger(shiny), r = rng(611), BAY = 6.6;
+    const pick = () => CAR_COLORS[Math.floor(r() * CAR_COLORS.length)], kind = () => { const v = r(); return v < 0.3 ? 'suv' : v < 0.65 ? 'super' : 'coupe'; };
+    const glassRoof = new THREE.MeshPhongMaterial({ color: 0xcfe4f2, transparent: true, opacity: 0.4, shininess: 100, specular: 0xffffff, depthWrite: false, side: THREE.DoubleSide });
+    for (const L of LOTS) {
+      const { s, x } = L, len = L.z1 - L.z0, zc = (L.z0 + L.z1) / 2, bays = Math.floor(len / BAY);
+      M.box(40, 0.3, len + 12, x, 0, zc - 2, 0x2a2e35); M.box(10, 0.32, len + 8, x, 0, zc, 0x202329);   // granite, the aisle darker
+      M.box(1.4, 1.6, len + 12, x + s * 20.3, 0.8, zc - 2, 0x2f5a35); M.box(41.4, 1.6, 1.4, x, 0.8, L.z0 - 6.4, 0x2f5a35);   // the hedge
+      for (const k of [-1, 1]) GL.box(0.18, 0.04, len + 4, x + k * 5.2, 0.18, zc, 0x7fe6ff);                 // lit aisle edges
+      for (const row of [-1, 1]) {                                               // two rows of bays, noses to the aisle
+        const bx = x + row * 11.5;
+        for (let k = 0; k <= bays; k++) GL.box(12, 0.03, 0.16, bx, 0.17, L.z0 + k * BAY, 0xe9edf2);
+        for (let k = 0; k < bays; k++) {
+          const bz = L.z0 + (k + 0.5) * BAY;
+          M.box(0.5, 1.6, 0.5, bx + row * 6.6, 0.95, bz, 0xf2f4f6); GL.box(0.3, 0.3, 0.3, bx + row * 6.3, 1.4, bz, 0x5dff9d);   // EV charger
+          if (r() < 0.1) continue;                                               // a free bay now and then
+          luxCar(B, GL, bx, bz, -row * Math.PI / 2, pick(), kind());
+        }
+      }
+      const lx = x - s * 4.8;                                                    // lamp posts on the aisle's edge, clear of the cars
+      for (let zz = L.z0 + 8; zz < L.z1; zz += 21) { M.cyl(0.18, 10, lx, 5.15, zz, 0x1d2027); GL.box(4.5, 0.18, 0.5, lx + s * 1.6, 10.2, zz, 0xf4f8ff); addGlowSprite(lx + s * 1.6, 10, zz, 0xe8f2ff, 5, 0.45); }
+      // the covered gate: a glass roof on four posts over the aisle's mouth, and the valet stand under its outer side
+      const gz = L.z1 + 4;
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(18, 0.25, 9), glassRoof); roof.position.set(x, 6.6, gz); scene.add(roof);
+      for (const ex of [-9, 9]) for (const ez of [-4.5, 4.5]) M.cyl(0.22, 6.6, x + ex, 3.3, gz + ez, 0x2a2d33);
+      M.box(18.4, 0.45, 0.4, x, 6.6, gz - 4.5, 0x2a2d33); M.box(18.4, 0.45, 0.4, x, 6.6, gz + 4.5, 0x2a2d33);
+      GL.box(17, 0.06, 0.12, x, 6.4, gz + 4.5, 0xf5c84b);
+      M.box(2.6, 2.4, 1.8, x + s * 7.4, 1.35, gz - 2.6, 0x16181d); GL.box(2.2, 0.45, 0.06, x + s * 7.4, 2.3, gz - 1.68, 0xf5c84b);   // the valet stand
+    }
+    luxCar(B, GL, -38, DZ + 44, 1.35, 0x0b0c10, 'suv'); luxCar(B, GL, 38, DZ + 46, -1.75, 0xc9a45c, 'super');   // parked at the plaza
+    scene.add(B.mesh());
+    // the driveway outside the lots: dark granite, a gold line down the middle
+    for (let i = 1; i < DRIVE.pts.length; i++) {
+      const a = DRIVE.pts[i - 1], b = DRIVE.pts[i], len = Math.hypot(b[0] - a[0], b[1] - a[1]), ry = Math.atan2(b[0] - a[0], b[1] - a[1]), mx = (a[0] + b[0]) / 2, mz = (a[1] + b[1]) / 2;
+      if (inLot(a[0], a[1]) && inLot(b[0], b[1]) && Math.abs(a[0] - b[0]) < 1) continue;   // the lots' aisles are already paved
+      M.box(5.8, 0.34, len + 5.8, mx, 0, mz, 0x30343c, { ry }); GL.box(0.12, 0.03, len, mx, 0.18, mz, 0xc9a45c, { ry });
+    }
+    // the cars driving it: each its own mesh, spaced round the loop
+    const n = PHONE_AT_BOOT ? 4 : 9;
+    for (let i = 0; i < n; i++) {
+      const CB = new Merger(shiny), CG = new Merger(new THREE.MeshBasicMaterial({ vertexColors: true })), g = new THREE.Group();
+      luxCar(CB, CG, 0, 0, 0, pick(), kind()); g.add(CB.mesh()); g.add(CG.mesh()); g.position.y = 0.02; scene.add(g);
+      CARS.push({ g, u: (i + r() * 0.4) / n * DRIVE.len, v: 0, wait: 0, dropped: false, yaw: null, at: {} });
+    }
+  }
+  function updateCars(dt) {
+    if (!CARS.length || !dt) return;
+    const L = DRIVE.len, order = CARS.slice().sort((a, b) => a.u - b.u);
+    order.forEach((c, i) => {
+      const next = order[(i + 1) % order.length], gap = order.length > 1 ? ((next.u - c.u) % L + L) % L : L;
+      const p = along(DRIVE, c.u, c.at);
+      let want = inLot(p.x, p.z) ? 5.5 : 11;
+      if (Math.abs(p.z - DRIVE_Z) < 0.5 && Math.abs(p.x) < 30) want = Math.min(want, 4 + Math.abs(p.x) * 0.3);   // easing in to the door
+      if (Math.abs(p.z - DRIVE_Z) < 0.5 && Math.abs(p.x) < 0.8 && !c.dropped) { c.dropped = true; c.wait = 3.2; }   // the drop-off
+      if (Math.abs(p.x) > 30) c.dropped = false;
+      if (c.wait > 0) { c.wait -= dt; want = 0; }
+      if (gap < 14) want = 0; else if (gap < 22) want = Math.min(want, next.v);
+      for (const q of PEOPLE.list) {                                             // anyone in the way: stop
+        if (q.hidden) continue;
+        const rx = q.x - p.x, rz = q.z - p.z, fwd = rx * p.dx + rz * p.dz;
+        if (fwd > 0 && fwd < 10 && Math.abs(rx * p.dz - rz * p.dx) < 2.8) { want = fwd < 6 ? 0 : Math.min(want, 2); if (!want) break; }   // creep, then stop close
+      }
+      c.v += clamp(want - c.v, -dt * 16, dt * 5);
+      c.u = (c.u + c.v * dt) % L;
+      const yaw = Math.atan2(p.dx, p.dz);
+      if (c.yaw == null) c.yaw = yaw; else { let d = yaw - c.yaw; d = Math.atan2(Math.sin(d), Math.cos(d)); c.yaw += d * Math.min(1, dt * 4); }
+      c.g.position.set(p.x, 0.02, p.z); c.g.rotation.y = c.yaw;
+    });
+  }
+
+  // The entrance. At the street: a black granite wall across the front of the plaza with JO HQ standing on it in lit
+  // gold letters, a strip of water and uplights. At the tower: the main door, a pair of automatic sliding glass doors in
+  // a steel portal (a gold LED line and JO HQ on the header, a sensor light that turns green), opening as anyone comes
+  // near; over it and the drive, a glass canopy on two steel columns with downlights: cover from the rain.
+  const ENTRANCE_Z = DZ + 64;
+  const DOORS = { open: 0, hold: 0, panels: [], sensor: null, glow: null };
+  function buildEntrance(M, GL) {
+    const z = ENTRANCE_Z;
+    M.box(37, 3.2, 2.2, 0, 1.6, z, 0x15171c); M.box(38, 0.3, 2.8, 0, 3.35, z, 0x2a2d33);
+    const tex = canvasTex(1024, 256, (g, w, h) => {
+      g.clearRect(0, 0, w, h); g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = '700 200px Georgia, "Times New Roman", serif';
+      try { g.letterSpacing = '28px'; } catch (e) { /* older canvas: no spacing */ }
+      const gr = g.createLinearGradient(0, 30, 0, h - 30); gr.addColorStop(0, '#fff3c4'); gr.addColorStop(0.5, '#f5c84b'); gr.addColorStop(1, '#b8862b');
+      g.shadowColor = 'rgba(245,200,75,0.85)'; g.shadowBlur = 26; g.fillStyle = gr; g.fillText('JO HQ', w / 2 + 14, h / 2 + 8);
+      g.shadowBlur = 0; g.lineWidth = 3; g.strokeStyle = 'rgba(90,60,10,0.6)'; g.strokeText('JO HQ', w / 2 + 14, h / 2 + 8);
+    });
+    for (const face of [0, Math.PI]) {
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(32, 8), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+      p.position.set(0, 7.5, z + (face ? -0.05 : 0.05)); p.rotation.y = face; scene.add(p);
+    }
+    const water = new THREE.Mesh(new THREE.BoxGeometry(37, 0.12, 3), new THREE.MeshPhongMaterial({ color: 0x1d4f80, emissive: 0x0b2a5a, shininess: 90, specular: 0xcfe9ff }));
+    water.position.set(0, 0.2, z + 2.8); scene.add(water);
+    for (let k = -4; k <= 4; k++) { GL.ball(0.22, k * 4, 0.3, z + 1.25, 0xfff0c8); if (k % 2 === 0) addGlowSprite(k * 4, 1.6, z + 1.4, 0xffd98a, 4, 0.35); }
+
+    // the main door: the portal, the threshold, the two sliding leaves
+    const F = WALK_Y, W2 = DOOR.w, H = DOOR.h, zf = DZ + 0.75, steel = 0x2a2d33;
+    M.box(2 * W2 + 2.4, 0.3, 3.2, 0, 0.3, DZ + 1.8, 0x15171c);                                   // the black granite step
+    for (const sx of [-1, 1]) M.box(0.7, H + 1.4, 1.1, sx * (W2 + 0.35), F + (H + 1.4) / 2, zf, steel);   // the jambs
+    M.box(2 * W2 + 1.4, 1.4, 1.2, 0, F + H + 0.7, zf, steel);                                    // the header
+    GL.box(2 * W2, 0.08, 0.1, 0, F + H + 0.04, zf + 0.62, 0xf5c84b);                              // its gold LED line
+    const plate = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 1.1), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+    plate.position.set(0, F + H + 0.72, zf + 0.62); scene.add(plate);
+    DOORS.sensor = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: 0x4aa8ff }));
+    DOORS.sensor.position.set(W2 - 0.4, F + H + 0.3, zf + 0.62); scene.add(DOORS.sensor);
+    const leafMat = new THREE.MeshPhongMaterial({ color: 0xa8d4f0, transparent: true, opacity: 0.32, shininess: 100, specular: 0xffffff, depthWrite: false });
+    const edgeMat = new THREE.MeshLambertMaterial({ color: 0xb9c0c8 });
+    for (const sx of [-1, 1]) {
+      const leaf = new THREE.Group();
+      leaf.add(new THREE.Mesh(new THREE.BoxGeometry(W2, H, 0.1), leafMat));
+      for (const [w, h, x, y] of [[0.14, H, sx * -(W2 / 2 - 0.07), 0], [W2, 0.14, 0, H / 2 - 0.07], [W2, 0.14, 0, -H / 2 + 0.07]]) {
+        const e = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.14), edgeMat); e.position.set(x, y, 0); leaf.add(e);
+      }
+      const band = new THREE.Mesh(new THREE.BoxGeometry(W2 * 0.8, 0.5, 0.12), new THREE.MeshBasicMaterial({ color: 0xe9e2cf, transparent: true, opacity: 0.55 }));   // a frosted band at eye height
+      band.position.y = 0.4; leaf.add(band);
+      leaf.position.set(sx * W2 / 2, F + H / 2, DZ + 0.55); leaf.renderOrder = 4; scene.add(leaf);
+      DOORS.panels.push({ leaf, sx });
+    }
+    DOORS.glow = addGlowSprite(0, F + 3.5, DZ + 1.2, 0xffe2b8, 9, 0);              // the lobby's warm light spilling out
+
+    // the canopy over the door and the drive: a glass roof in a steel frame, two columns, downlights
+    const C = CANOPY, cw = 2 * C.x, cd = C.z1 - C.z0, cz = (C.z0 + C.z1) / 2;
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(cw, 0.25, cd), new THREE.MeshPhongMaterial({ color: 0xcfe4f2, transparent: true, opacity: 0.4, shininess: 100, specular: 0xffffff, depthWrite: false, side: THREE.DoubleSide }));
+    roof.position.set(0, C.y, cz); scene.add(roof);
+    M.box(cw + 0.6, 0.8, 0.5, 0, C.y, C.z1, steel); for (const sx of [-1, 1]) M.box(0.5, 0.8, cd, sx * (C.x + 0.05), C.y, cz, steel);
+    for (let x = -C.x + 4; x < C.x; x += 4) M.box(0.18, 0.3, cd, x, C.y - 0.2, cz, steel);           // fins under the glass
+    for (const sx of [-1, 1]) M.cyl(0.38, C.y, sx * (C.x - 0.5), C.y / 2, C.z1 - 0.4, steel);
+    GL.box(cw, 0.07, 0.12, 0, C.y - 0.42, C.z1 + 0.26, 0xf5c84b);
+    for (let x = -C.x + 2; x < C.x; x += 4) { GL.ball(0.18, x, C.y - 0.38, cz, 0xfff0d0); if ((x + 2) % 8 === 0) addGlowSprite(x, C.y - 0.6, cz, 0xffe2b8, 3.5, 0.35); }
+  }
+  function updateDoors(dt) {
+    if (!DOORS.panels.length) return;
+    let near = false;
+    for (const p of PEOPLE.list) { if ((!p.hidden || p.inside < 0.9) && Math.abs(p.x) < DOOR.w + 1 && p.z < DZ + 5) { near = true; break; } }   // someone at the door
+    if (!near && W.on && W.floor === 0 && W.ch && W.ch.group && Math.hypot(W.ch.group.position.x, W.ch.group.position.z - DZ) < 8) near = true;
+    DOORS.hold = near ? 1.2 : Math.max(0, DOORS.hold - dt);
+    const want = DOORS.hold > 0 ? 1 : 0;
+    DOORS.open += (want - DOORS.open) * Math.min(1, dt * (want ? 4.5 : 2.5));
+    for (const { leaf, sx } of DOORS.panels) leaf.position.x = sx * (DOOR.w / 2 + DOOR.w * 0.94 * DOORS.open);
+    DOORS.sensor.material.color.setHex(want ? 0x5dff9d : 0x4aa8ff);
+    DOORS.glow.material.opacity = 0.32 * DOORS.open;
+  }
+
+  // People outside: staff and visitors walking round the fountain and the plaza, in and out of the main door (to the
+  // fountain and to the car parks), down the car park aisles, and a few by the JO HQ sign. Instanced bodies (torso,
+  // head, legs, arms), legs and arms swinging. When it rains: about half open an umbrella, a quarter put a raincoat on
+  // (hood up), the rest run for cover under the door canopy or a car park gate, and walk back when it stops.
+  const PEOPLE = { list: [], parts: null, spots: [], wet: false, wetFor: 0 };
+  const FOUNTAIN_R = 24.5;
+  function detour(x, z, tx, tz) {                                                // waypoints round the fountain if the line crosses it
+    const ax = tx - x, az = tz - z, l2 = ax * ax + az * az || 1, f = clamp(((BRAIN.x - x) * ax + (BRAIN.z - z) * az) / l2, 0, 1);
+    if (Math.hypot(x + ax * f - BRAIN.x, z + az * f - BRAIN.z) > FOUNTAIN_R) return [[tx, tz]];
+    const a0 = Math.atan2(z - BRAIN.z, x - BRAIN.x), a1 = Math.atan2(tz - BRAIN.z, tx - BRAIN.x);
+    let d = a1 - a0; d = Math.atan2(Math.sin(d), Math.cos(d));
+    const out = [], n = Math.max(1, Math.ceil(Math.abs(d) / 0.35));
+    for (let k = 0; k <= n; k++) { const a = a0 + d * k / n; out.push([BRAIN.x + Math.cos(a) * 28, BRAIN.z + Math.sin(a) * 28]); }
+    out.push([tx, tz]); return out;
+  }
+  function buildPeople() {
+    const r = rng(4242), A0 = -Math.PI / 2 + 0.75, A1 = 1.5 * Math.PI - 0.75;   // round the fountain over the top, clear of the drive
+    const arc = (cx, cz, rad, n) => Array.from({ length: n + 1 }, (_, i) => { const a = A0 + (A1 - A0) * i / n; return [cx + Math.cos(a) * rad, cz + Math.sin(a) * rad]; });
+    const IN = DZ - 1;                                                           // just inside the door: where they go in
+    const routes = [
+      Object.assign(track(arc(BRAIN.x, BRAIN.z, 26.5, 36)), { w: 2.4 }),
+      Object.assign(track([[-68, 30], [-68, 76], [68, 76], [68, 30]]), { w: 2.4 }),
+      ...LOTS.map((L) => Object.assign(track([[0, IN], [L.s * 2, DZ + 2], [L.s * 72, DZ + 2], [L.s * 72, 61], [L.x - L.s * 3.5, 61], [L.x - L.s * 3.5, L.z0 + 2]]), { w: 1.2, door: true })),
+      ...LOTS.map((L) => Object.assign(track([[0, IN], [0, DZ + 3], [L.s * 14, DZ + 10], [L.s * 26, BRAIN.z - 10]]), { w: 1.2, door: true })),
+      ...LOTS.map((L) => Object.assign(track([[L.x - L.s * 3.5, L.z0], [L.x - L.s * 3.5, L.z1]]), { w: 1 })),
+    ];
+    const share = [0.28, 0.24, 0.07, 0.07, 0.03, 0.03, 0.14, 0.14], n = PHONE_AT_BOOT ? 22 : 56;   // a few use the door, so it opens and shuts
+    const gear = () => { const v = r(); return v < 0.45 ? 'umb' : v < 0.7 ? 'coat' : 'run'; };
+    for (let i = 0; i < n; i++) {
+      let v = r(), k = 0; while (k < share.length - 1 && (v -= share[k]) > 0) k++;
+      PEOPLE.list.push({ R: routes[k], u: r() * routes[k].len, dir: r() < 0.5 ? 1 : -1, speed: 3 + r() * 1.8, off: (r() - 0.5) * routes[k].w, ph: r() * 6, x: 0, z: 0, yaw: 0, gear: gear(), mode: 'route', um: 0, inside: 0 });
+    }
+    for (let i = 0; i < 5; i++) { const x = -10 + i * 5 + (r() - 0.5), z = ENTRANCE_Z + 7 + r() * 2; PEOPLE.list.push({ R: null, home: [x, z], x, z, yaw: Math.PI + (r() - 0.5) * 0.6, speed: 0, ph: 0, gear: 'run', mode: 'route', um: 0, inside: 0 }); }   // at the sign
+    // the dry spots: under the door canopy beside the door (clear of the drive), under each car park gate beside the valet
+    for (const sx of [-1, 1]) for (let x = 7; x <= 15; x += 1.6) for (const z of [DZ + 1.6, DZ + 3]) PEOPLE.spots.push({ x: sx * x, z, yaw: 0, by: null });
+    for (const L of LOTS) for (let k = 0; k < 4; k++) for (const dz of [-1.5, 0.5]) PEOPLE.spots.push({ x: L.x + L.s * (4.8 + k * 1.3), z: L.z1 + 4 + dz + 2.2, yaw: 0, by: null });
+    // the same chibi figure as the agents inside (makeCharacter): each piece is one instanced mesh, its geometry moved so
+    // its pivot (neck, shoulder, hip, knee) is the origin, as in makeCharacter
+    const N = PEOPLE.list.length, lam = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    const inst = (geo, per, mat) => { const m = new THREE.InstancedMesh(geo, mat || lam, N * per); m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); m.frustumCulled = false; scene.add(m); return m; };
+    const at = (g, x, y, z) => new THREE.BufferGeometry().copy(g).translate(x, y, z);
+    const torso = inst(at(rbox(1.15, 1.25, 0.72, 0.22), 0, 1.62, 0), 1), head = inst(at(rbox(1.15, 1.05, 1.1, 0.3), 0, 0.6, 0), 1), eyes = inst(at(rbox(0.12, 0.14, 0.05, 0.02), 0, 0, 0), 2);
+    const hairTop = inst(at(rbox(1.2, 0.48, 1.14, 0.26), 0, 0.93, -0.03), 1), hairBack = inst(at(rbox(1.24, 0.9, 0.95, 0.25), 0, 0.6, -0.22), 1);
+    const arms = inst(at(rbox(0.3, 1.05, 0.3, 0.14), 0, -0.5, 0), 2), hands = inst(new THREE.SphereGeometry(0.17, 10, 8).translate(0, -1.05, 0), 2);
+    const thighs = inst(at(rbox(0.42, 0.56, 0.42, 0.12), 0, -0.28, 0), 2), shins = inst(at(rbox(0.4, 0.5, 0.4, 0.12), 0, -0.25, 0), 2), shoes = inst(at(rbox(0.46, 0.22, 0.62, 0.1), 0, -0.44, 0.08), 2);
+    const brolly = inst(new THREE.ConeGeometry(1.45, 0.6, 10, 1, true), 1, new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide })), shaft = inst(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 6), 1);
+    const shirts = [0xe8e8e8, 0x465364, 0x54c9a6, 0x2f4f7f, 0x8a2f3a, 0xc9a45c, 0x3d6b52, 0xd9d2c3, 0xe07a3f, 0x8569db], pants = [0x2b3350, 0x2b3350, 0x1b1e26, 0x3a3d42, 0xc8b89a];
+    const umbs = [0x111318, 0x111318, 0x1d3b6e, 0xc8102e, 0xf5c84b, 0xe9edf2, 0x0f4d3a], coats = [0xf2c230, 0xf2c230, 0xd8323a, 0x1d3b6e, 0x3d6b52, 0xcfe3ea];
+    const c = new THREE.Color(), pick = (a) => a[Math.floor(r() * a.length)];
+    PEOPLE.list.forEach((p, i) => {
+      p.shirt = pick(shirts); p.skin = pick(SKINS); p.coat = pick(coats); p.style = pick(STYLES);
+      p.hair = p.style === 'beanie' || p.style === 'cap' ? pick([0x2a2a2e, 0xd63a3a, 0x3fbf6a, 0xf2f2f2]) : pick(HAIRS);
+      const pa = pick(pants);
+      torso.setColorAt(i, c.setHex(p.shirt)); head.setColorAt(i, c.setHex(p.skin)); hairTop.setColorAt(i, c.setHex(p.hair)); hairBack.setColorAt(i, c.setHex(p.hair));
+      brolly.setColorAt(i, c.setHex(pick(umbs))); shaft.setColorAt(i, c.setHex(0x2a2d33));
+      for (const j of [0, 1]) {
+        eyes.setColorAt(i * 2 + j, c.setHex(0x2a2228)); arms.setColorAt(i * 2 + j, c.setHex(p.shirt)); hands.setColorAt(i * 2 + j, c.setHex(p.skin));
+        thighs.setColorAt(i * 2 + j, c.setHex(pa)); shins.setColorAt(i * 2 + j, c.setHex(pa)); shoes.setColorAt(i * 2 + j, c.setHex(0xe4e4e4));
+      }
+    });
+    PEOPLE.parts = { torso, head, eyes, hairTop, hairBack, arms, hands, thighs, shins, shoes, brolly, shaft };
+    updatePeople(0);
+  }
+  const _pb = new THREE.Matrix4(), _pl = new THREE.Matrix4(), _pr = new THREE.Matrix4(), _pq = new THREE.Quaternion(), _py = new THREE.Vector3(0, 1, 0), _pc = new THREE.Color(), _pt = {};
+  function updatePeople(dt) {
+    const P = PEOPLE.parts; if (!P) return;
+    // rain: on after a moment of it, off a few seconds after it stops
+    const raining = dt > 0 && SKY.cur ? SKY.cur[4] > 0.15 : PEOPLE.wet;
+    PEOPLE.wetFor = raining === PEOPLE.wet ? 0 : PEOPLE.wetFor + dt;
+    if (PEOPLE.wetFor > (raining ? 0.8 : 3)) { PEOPLE.wet = raining; PEOPLE.wetFor = 0; }
+    const wet = PEOPLE.wet;
+    const put = (mesh, i, local) => mesh.setMatrixAt(i, _pr.multiplyMatrices(_pb, local));   // a piece at its pivot
+    const face = (p, want, k) => { let d = want - p.yaw; d = Math.atan2(Math.sin(d), Math.cos(d)); p.yaw += d * Math.min(1, dt * k); };
+    let recolor = false;
+    PEOPLE.list.forEach((p, i) => {
+      // the rain plan: runners take a dry spot; when it stops they walk back
+      if (wet && p.gear === 'run' && p.mode === 'route' && !p.hidden) {
+        let best = null, bd = 1e9;
+        for (const s of PEOPLE.spots) { if (s.by) continue; const d = Math.hypot(s.x - p.x, s.z - p.z); if (d < bd) { bd = d; best = s; } }
+        if (best) { best.by = p; p.spot = best; p.mode = 'toCover'; p.goal = detour(p.x, p.z, best.x, best.z); }
+      } else if (!wet && (p.mode === 'toCover' || p.mode === 'cover')) {
+        if (p.spot) p.spot.by = null; p.spot = null; p.mode = 'back';
+        const h = p.R ? along(p.R, p.u, _pt) : { x: p.home[0], z: p.home[1] };
+        p.goal = detour(p.x, p.z, h.x + (p.R ? -h.dz * p.off : 0), h.z + (p.R ? h.dx * p.off : 0));
+      }
+      let moving = 0;
+      if (p.hidden) {                                                            // inside the lobby for a while
+        p.inside -= dt; if (p.inside <= 0) { p.hidden = false; p.dir = 1; }
+      } else if (p.mode === 'toCover' || p.mode === 'back') {                    // straight to the goal (round the fountain)
+        const g = p.goal[0], dx = g[0] - p.x, dz = g[1] - p.z, d = Math.hypot(dx, dz), sp = p.mode === 'toCover' ? 8.5 : p.speed;
+        if (d < 0.3) { p.goal.shift(); if (!p.goal.length) p.mode = p.mode === 'toCover' ? 'cover' : 'route'; }
+        else { const st = Math.min(d, sp * dt); p.x += dx / d * st; p.z += dz / d * st; face(p, Math.atan2(dx, dz), 10); moving = sp; }
+      } else if (p.mode === 'cover') {
+        face(p, p.spot.yaw, 3);
+      } else if (p.R) {                                                          // along the route: round a loop, or there and back
+        const R = p.R, sp = p.speed * (wet && p.gear === 'umb' ? 0.85 : wet && p.gear === 'run' ? 2 : 1);
+        p.u += p.dir * sp * dt;
+        if (R.loop) p.u = ((p.u % R.len) + R.len) % R.len;
+        else if (p.u > R.len) { p.u = R.len; p.dir = -1; }
+        else if (p.u < 0) { p.u = 0; if (R.door) { p.hidden = true; p.inside = 6 + Math.random() * 12; } else p.dir = 1; }   // in through the door
+        const q = along(R, p.u, _pt), dx = q.dx * p.dir, dz = q.dz * p.dir, off = R.door ? p.off * Math.min(1, p.u / 4) : p.off;
+        p.x = q.x - q.dz * off; p.z = q.z + q.dx * off;
+        face(p, Math.atan2(dx, dz), 8); moving = sp;
+      } else face(p, Math.PI, 2);
+      if (moving) p.ph += dt * moving * 1.7;
+      const run = moving > 6, amp = moving ? (run ? 0.9 : 0.5) : 0, sw = Math.sin(p.ph) * amp, bob = moving ? Math.abs(Math.cos(p.ph)) * (run ? 0.2 : 0.07) : 0;
+      const y0 = Math.abs(p.x) < WX && p.z < DZ + 0.5 ? WALK_Y : inLot(p.x, p.z) || Math.abs(p.x) < 75 && p.z > DZ && p.z < DZ + 66 ? 0.15 : -0.05;
+      // the umbrella opens (and folds) over half a second; the raincoat and hood go on with the rain
+      p.um += ((wet && p.gear === 'umb' && !p.hidden ? 1 : 0) - p.um) * Math.min(1, dt * 4);
+      const coat = wet && p.gear === 'coat';
+      if (coat !== !!p.coatOn) {
+        p.coatOn = coat; recolor = true;
+        const top = coat ? p.coat : p.shirt, hood = coat ? p.coat : p.hair;          // the raincoat, its hood over the hair
+        P.torso.setColorAt(i, _pc.setHex(top)); P.hairTop.setColorAt(i, _pc.setHex(hood)); P.hairBack.setColorAt(i, _pc.setHex(hood));
+        for (const j of [0, 1]) P.arms.setColorAt(i * 2 + j, _pc.setHex(top));
+      }
+      const k = p.hidden ? 0 : CHAR_SCALE;                                       // the agents' size
+      _pb.compose(_v.set(p.x, y0 + bob, p.z), _pq.setFromAxisAngle(_py, p.yaw), _s.set(k, k, k));
+      if (run) _pb.multiply(_pr.makeRotationX(0.18));                             // a runner leans in
+      _pl.identity(); put(P.torso, i, _pl);
+      _pl.makeTranslation(0, 2.3, 0); put(P.head, i, _pl); put(P.hairTop, i, _pl);
+      const back = coat || p.style === 'bob' || p.style === 'long';               // longer hair, or the hood
+      _pl.makeTranslation(0, 2.3, 0); if (!back) _pl.scale(_s.set(0.0001, 0.0001, 0.0001)); put(P.hairBack, i, _pl);
+      for (const j of [0, 1]) {
+        const sd = j ? 1 : -1, hip = j ? -sw : sw, knee = Math.max(0, j ? Math.sin(p.ph) : -Math.sin(p.ph)) * amp * 1.2;
+        _pl.makeTranslation(sd * 0.22, 2.9, 0.55); put(P.eyes, i * 2 + j, _pl);
+        _pl.makeTranslation(sd * 0.27, 1.05, 0).multiply(_pr.makeRotationX(hip)); put(P.thighs, i * 2 + j, _pl);
+        _pl.multiply(_pr.makeTranslation(0, -0.55, 0)).multiply(_pr.makeRotationX(knee)); put(P.shins, i * 2 + j, _pl); put(P.shoes, i * 2 + j, _pl);
+        const arm = j && p.um > 0.05 ? -2.55 * Math.min(1, p.um * 2) : j && run && !coat && wet ? -2.9 : (j ? sw : -sw) * 0.7;   // the umbrella hand up; a runner shields their head
+        _pl.makeTranslation(sd * 0.73, 2.12, 0).multiply(_pr.makeRotationX(arm)); put(P.arms, i * 2 + j, _pl); put(P.hands, i * 2 + j, _pl);
+      }
+      const o = Math.max(0.0001, p.um), sh = o > 0.01 ? 1 : 0.0001;                // the umbrella over the head, the shaft down to the raised hand
+      put(P.brolly, i, _pl.compose(_p.set(0.73, 4.25, 0.45), _q.identity(), _s.set(o, k ? 0.4 + 0.6 * o : 0.0001, o)));
+      put(P.shaft, i, _pl.compose(_p.set(0.73, 3.5, 0.55), _q.identity(), _s.set(sh, sh, sh)));
+    });
+    for (const m of Object.values(P)) m.instanceMatrix.needsUpdate = true;
+    if (recolor) for (const m of [P.torso, P.hairTop, P.hairBack, P.arms]) m.instanceColor.needsUpdate = true;
+  }
+  function updateOutside(dt) { updatePeople(dt); updateCars(dt); updateDoors(dt); }
 
   // The ring campus round the tower: a white four-storey ring of curved glass (floor canopies, a solar roof), an orchard
   // and a pond in the courtyard, parkland, trees and low hills outside. By day the glass reflects the sky; at night its
@@ -1447,7 +1771,7 @@
       M.ball(1.9 * k, x, 3.4 * k, z, [0x4f9a3e, 0x5aa646, 0x3f8a3a, 0x67b04c][Math.floor(r() * 4)], { sy: 1.6 * k });
     };
     const POND = { x: -96, z: -62, r: 17 };
-    const free = (x, z) => !(z > -DZ - 6 && Math.abs(x) < WX + 26 && z < DZ + 82) && Math.hypot(x - POND.x, z - POND.z) > POND.r + 4;
+    const free = (x, z) => !(z > -DZ - 6 && Math.abs(x) < WX + 26 && z < DZ + 82) && !inLot(x, z) && Math.hypot(x - POND.x, z - POND.z) > POND.r + 4;
     // the orchard: rows round the courtyard, between the inner path and the ring
     for (let rad = 96; rad <= RING.r0 - 12; rad += 7) {
       const n = Math.floor(2 * Math.PI * rad / (PHONE_AT_BOOT ? 13 : 8.5));
@@ -1543,6 +1867,30 @@
         const rad0 = 10 + r() * 5; prism(rad0, rad0 * 0.55, h, 8, x, 0, z, mat, r()); put(new THREE.ConeGeometry(rad0 * 0.55, 30, 8), metal, x, h + 15, z); top(x, h + 30, z);
       }
     }
+    // the district: mid-rise offices on podiums round the campus, behind and beside it (never between the camera and the
+    // tower); a crown, a plant deck or a helipad on the roof. One merged mesh per glass colour.
+    const parts = mats.map(() => []);
+    const block = (k, w, h, d, x, y, z, ry) => { const g = uvScale(new THREE.BoxGeometry(w, h, d).toNonIndexed(), Math.max(w, d) / TILE, h / TILE); g.rotateY(ry); g.translate(x, y + h / 2, z); parts[k].push(g); };
+    for (let i = 0, tries = 0; i < (PHONE_AT_BOOT ? 26 : 64) && tries < 600; tries++) {
+      const a = -Math.PI - 0.15 + r() * (Math.PI + 0.3), rad = 174 + r() * 150, x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+      if (spots.some((q) => Math.hypot(q[0] - x, q[1] - z) < 30)) continue;
+      spots.push([x, z]); i++;
+      const k = Math.floor(r() * 3), w = 14 + r() * 12, d = 12 + r() * 10, h = 34 + Math.pow(r(), 1.4) * 80, ry = Math.atan2(x, z) + (r() - 0.5) * 0.3, v = r();
+      block(k, w + 8, 10, d + 8, x, 0, z, ry); block(k, w, h, d, x, 10, z, ry);
+      if (v < 0.35) { block(k, w * 0.7, 16, d * 0.7, x, 10 + h, z, ry); top(x, 26 + h, z); }
+      else if (v < 0.6) put(new THREE.CylinderGeometry(Math.min(w, d) * 0.32, Math.min(w, d) * 0.32, 1.2, 20), metal, x, 10.6 + h, z);   // a helipad
+      else put(new THREE.BoxGeometry(w * 0.5, 5, d * 0.4), metal, x, 12.5 + h, z, ry);                                                       // plant on the roof
+    }
+    parts.forEach((list, k) => {
+      if (!list.length) return;
+      const n = list.reduce((s, g) => s + g.attributes.position.count, 0), geo = new THREE.BufferGeometry();
+      for (const [name, size] of [['position', 3], ['normal', 3], ['uv', 2]]) {
+        const arr = new Float32Array(n * size); let o = 0;
+        for (const g of list) { arr.set(g.attributes[name].array, o); o += g.attributes[name].array.length; }
+        geo.setAttribute(name, new THREE.BufferAttribute(arr, size));
+      }
+      list.forEach((g) => g.dispose()); geo.computeBoundingSphere(); sky.add(new THREE.Mesh(geo, mats[k]));
+    });
     // red aviation lights on the tops (seen at night)
     sky.scale.y = SQUASH; scene.add(sky);
     const land = new THREE.Mesh(new THREE.RingGeometry(370, 1100, 64, 1), new THREE.MeshLambertMaterial({ color: 0x8fae78 }));   // the land beyond the park
@@ -1753,7 +2101,7 @@
     idea: ['Idea I keep thinking about: {t} 💭', 'What if we made: {t}? 💡', 'Been dreaming up: {t} ✨', 'Idea board pick: {t} 📌'],
     rule: ['Remember: {t}!', 'Friendly reminder: {t} 📏', 'Brand rule check: {t} ✅', 'Little reminder: {t} 😊'],
   };
-  const WORK = { research: 'brief', scripts: 'script', social: 'post', creative: 'edit', analytics: 'report', shop: 'listing', dev: 'build', inbox: 'reply' };
+  const WORK = { research: 'brief', scripts: 'script', social: 'post', creative: 'edit', analytics: 'report', shop: 'listing', dev: 'build', inbox: 'reply', security: 'audit' };
   function pickFresh(pool) {                                                   // a random line not used in the last few picks of that pool
     const arr = LINES[pool], seen = LIFE.recent[pool] || (LIFE.recent[pool] = []);
     let i = Math.floor(Math.random() * arr.length);
@@ -2873,6 +3221,7 @@
     if (state.phone && !state.lowFx && !FX) watchFrameRate(now);
     if (host.clientWidth !== state.size.w || host.clientHeight !== state.size.h) resize();
     if (W.on) walkUpdate(dt, t);                                              // walk mode: you, the camera behind you
+    updateOutside(dt);                                                        // the people, the cars and the door outside
     updateCamera(now); controls.update();
     const run = runningMap();
     // the Brain
@@ -2956,7 +3305,7 @@
   const SKY_LOOKS = {                                                          // bg, haze, ambient, key light, rain 0-1
     night: { clear: [0x13151f, 0.0006, 0.36, 0.5, 0], cloudy: [0x1a1d26, 0.0012, 0.34, 0.42, 0], fog: [0x23262d, 0.0028, 0.34, 0.36, 0],
       drizzle: [0x171b23, 0.0016, 0.33, 0.4, 0.35], rain: [0x12161d, 0.002, 0.32, 0.36, 0.8], storm: [0x0d1017, 0.0022, 0.3, 0.32, 1] },
-    day: { clear: [0x6f9fcf, 0.0009, 0.8, 1.0, 0], cloudy: [0x8a95a3, 0.0014, 0.66, 0.62, 0], fog: [0xa3a8ae, 0.003, 0.62, 0.5, 0],
+    day: { clear: [0x6f9fcf, 0.0009, 0.6, 0.72, 0], cloudy: [0x8a95a3, 0.0014, 0.58, 0.56, 0], fog: [0xa3a8ae, 0.003, 0.56, 0.48, 0],   // a clear day stays normal, not over-exposed (owner, 2026-11-04)
       drizzle: [0x75808d, 0.0017, 0.58, 0.55, 0.35], rain: [0x5c6672, 0.0021, 0.52, 0.45, 0.8], storm: [0x3f4752, 0.0023, 0.44, 0.36, 1] },
   };
   const SKY = { live: null, force: null, kind: 'clear', day: false, cur: null, bg: new THREE.Color(), want: new THREE.Color(), rain: null, flash: [], nextFlash: 0 };

@@ -301,6 +301,7 @@ class ThumbnailTests(unittest.TestCase):
         env = self.server_actions()
         handler = Handler("/api/approve", "POST", {"name": name})
         handler.guard = lambda: True
+        handler.same_site = lambda: True
         handler.read_json = lambda: {"name": name}
         env["do_POST"](handler)
         self.assertEqual(handler.code, 200)
@@ -322,6 +323,7 @@ class ThumbnailTests(unittest.TestCase):
         env = self.server_actions()
         handler = Handler("/api/approve", "POST", {"name": name})
         handler.guard = lambda: True
+        handler.same_site = lambda: True
         handler.read_json = lambda: {"name": name}
         env["do_POST"](handler)
         self.assertEqual(handler.code, 409)

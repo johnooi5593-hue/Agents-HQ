@@ -1405,3 +1405,39 @@ body.review-open { overflow: hidden; }
 .poster-home-copy { min-width:0; flex:1; }.poster-home-copy strong { display:block; font-size:14px; line-height:1.4; }.poster-home-copy small { display:block; margin-top:4px; color:#c2b3d2; font-size:10px; line-height:1.4; }.poster-home-arrow { flex:none; color:#c4b4dc; font-size:18px; }
 #hud:not([data-view="office"]) .poster-design-home-card, #hud.panel-open .poster-design-home-card, #hud.ask-open .poster-design-home-card, #hud.lead-open .poster-design-home-card, .poster-design-home-card[hidden] { display:none; }
 @media(max-width:760px) { .poster-design-home-card { top:calc(var(--bar-h) + 10px); left:var(--gut-l,12px); width:min(290px,calc(100vw - var(--gut-l,12px) - var(--gut-r,12px))); min-height:62px; padding:10px 12px; gap:10px; border-radius:14px; }.poster-home-icon { width:34px; height:34px; font-size:23px; }.poster-home-copy strong { font-size:14px; }.poster-home-copy small { font-size:11px; margin-top:2px; } }
+
+/* Buffer package on the posting screen (2026-11-09): download + copy links in one row */
+.pub-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.pub-links a.rv-copy { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.pub-links .rv-copy svg { width: 12px; height: 12px; }
+.pub-row.buf .pub-ok + .pub-ok { margin-left: 6px; }
+
+/* Post to (2026-11-12): each place is a card with its badge, account and state; Instagram + TikTok are one Buffer card */
+.pub-rows { display: flex; flex-direction: column; gap: 10px; }
+.pub-rows .pub-row { margin-top: 0; padding: 12px 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 16px; background: #11151d; transition: border-color .15s, background .15s; }
+.pub-rows .pub-row.on { border-color: rgba(245,200,75,.55); background: #171a20; box-shadow: 0 0 0 3px rgba(245,200,75,.1); }
+.pub-rows .pub-row.off .pub-top { opacity: .62; }
+.pub-st .pub-acc { margin-left: 0; text-align: left; }
+.pub-rows .pub-top { gap: 12px; min-height: 40px; }
+.pub-rows .pub-top input { flex: none; width: 22px; height: 22px; order: 3; margin-left: auto; }
+.pub-rows .pub-top input:disabled { opacity: .35; }
+.pub-ico { flex: none; width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; text-align: center; color: #fff; background: #2a3040; font: 800 13px/1 Inter, sans-serif; font-style: normal; }
+.pub-ico.k-facebook { background: #1877f2; font-size: 21px; }
+.pub-ico.k-instagram { background: linear-gradient(45deg, #f9a03f, #e1306c 55%, #833ab4); }
+.pub-ico.k-youtube { background: #e62117; font-size: 14px; }
+.pub-ico.k-tiktok { background: #101216; border: 1px solid rgba(255,255,255,.2); font-size: 17px; }
+.pub-ico.k-buffer { background: linear-gradient(45deg, #f9a03f, #e1306c 50%, #16181d 50%); font-size: 10.5px; letter-spacing: -.2px; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.pub-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pub-name b { color: #fff; font: 700 14.5px Inter, sans-serif; }
+.pub-name small { color: #8a93a6; font: 12px/1.35 Inter, sans-serif; overflow-wrap: anywhere; }
+.pub-st { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 9px 11px; border-radius: 11px; background: rgba(255,255,255,.04); }
+.pub-st .pub-sched, .pub-st .pub-ok, .pub-st .pub-run { flex-wrap: wrap; }
+.pub-fold { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 38px; padding: 0 2px; border: 0; border-top: 1px solid rgba(255,255,255,.06); background: none; color: #8a93a6; font: 600 12.5px Inter, sans-serif; cursor: pointer; text-align: left; }
+.pub-fold.ready { color: #6ee7a8; }
+.pub-fold span { display: inline-flex; align-items: center; gap: 6px; }
+.pub-fold svg { width: 13px; height: 13px; }
+.pub-fold em { color: #9fb6ff; font-style: normal; white-space: nowrap; }
+.pub-fold em::after { content: " ▾"; }
+.pub-fold.open em::after { content: " ▴"; }
+.pub-pkg { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.pub-pkg .pub-note { margin-top: 0; }

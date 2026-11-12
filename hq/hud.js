@@ -76,6 +76,7 @@
     shop: '<path d="M6 8h12l1 12H5Z"/><path d="M9 8a3 3 0 0 1 6 0"/>',
     dev: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5"/>',
     inbox: '<path d="M3 13h5l2 3h4l2-3h5"/><path d="M5 5h14l2 8v6H3v-6z"/>',
+    security: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   };
   const svg = (name, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ""}</svg>`;
   const teamGlyph = (t) => (t && ICON[t.key] ? svg(t.key) : esc((t && (t.icon || t.name[0])) || "•"));
@@ -809,7 +810,7 @@
   }
   function saveOpenCards() { try { localStorage.setItem("hq-open-cards", JSON.stringify([...openCards()].slice(-200))); } catch (e) { /* private window */ } }
   const postedTag = '<span class="posted-tag" title="Posted to social media">POSTED</span>';
-  const PLAT_NAME = { facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
+  const PLAT_NAME = { facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok", buffer: "Buffer" };
   // the one thing a video card asks of the owner next, named the way the button says it
   function pkgNext(pkg) {
     const s = pkg.stages.find((x) => !pkg.done[x]);
@@ -885,7 +886,7 @@
     else if (t.status === "review") { glyph = '<span class="warn">!</span>'; meta = t.subtitle || "needs your approval"; act = ["approval", "post"].includes(t.kind) ? `<button class="btn primary sm" data-approve="${esc(t.id)}">Approve</button>` : `<button class="btn sm" data-review="${esc(t.id)}">Review</button>`; cls = t.kind === "post" ? "hot" : "";
       // a plain work task (no video folder): approving it just marks it done, so it gets its own Approve next to Review
       if (!["approval", "post"].includes(t.kind) && !/(?:^|\s)out:/.test(t.note || "")) act += `<button class="btn primary sm" data-approve="${esc(t.id)}" type="button" title="Approve: this task is done">Approve</button>`; }
-    else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = (t.scheduled ? `scheduled ${schedWhen(t.scheduled)} on ${t.scheduled.platforms.map((x) => PLAT_NAME[x] || x).join(", ")} · ` : "") + ((t.posted || []).length ? "posted to " + t.posted.map((x) => ({ facebook: "Facebook", instagram: "Instagram", youtube: "YouTube" })[x] || x).join(", ") + " · " : "") + (t.subtitle || timeAgo(t.done_at || t.updated)); act = canReedit(t) ? `<button class="btn sm" data-reedit="${esc(t.id)}" type="button" title="Make changes: a new version goes back to the team">Re-edit</button>` : '<span class="chev">›</span>'; }
+    else if (t.status === "done") { glyph = `<span class="done-g">${svg("check")}</span>`; meta = (t.scheduled ? `scheduled ${schedWhen(t.scheduled)} on ${t.scheduled.platforms.map((x) => PLAT_NAME[x] || x).join(", ")} · ` : "") + ((t.posted || []).length ? "posted to " + t.posted.map((x) => PLAT_NAME[x] || x).join(", ") + " · " : "") + (t.subtitle || timeAgo(t.done_at || t.updated)); act = canReedit(t) ? `<button class="btn sm" data-reedit="${esc(t.id)}" type="button" title="Make changes: a new version goes back to the team">Re-edit</button>` : '<span class="chev">›</span>'; }
     else if (t.status === "cancelled") { glyph = '<span class="cx-g">✕</span>'; meta = "cancelled " + timeAgo(t.updated); act = `<button class="btn sm" data-move="${esc(t.id)}:todo" type="button">Restore</button>`; cls = "cancelled"; }
     else { glyph = '<span class="todo-g"></span>'; meta = t.subtitle || (t.date ? `${relDay(t.date)}${t.time ? " " + t.time : ""}` : "not started"); act = t.footage ? `<button class="btn sm blue" data-edit-footage="${esc(t.id)}" title="Edit this video now (${modelPick() === "fable" ? "Fable 5.1" : "Opus 5.5"})">Edit${modelPick() === "fable" ? " · Fable" : ""}</button>` : `<button class="btn sm blue" data-run="${esc(t.id)}">Run</button>`; }
     const title = t.date && !["done", "cancelled"].includes(t.status) && !/\d{1,2}:\d{2}/.test(t.title) && t.time ? `${taskTitle(t)} · ${relDay(t.date)} ${fmtTime(t.time)}` : taskTitle(t);
@@ -1080,9 +1081,19 @@
     const doneAll = tasks.filter((t) => t.status === "done").sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
     // four tabs (owner, 2026-11-05: "simplify it"): Needs you · Working · Posted · History; older tab names still land somewhere
     state.filter = { all: "needs", waiting: "needs", running: "working", done: "history", cancelled: "history", deleted: "history" }[state.filter] || state.filter;
-    if (!["needs", "working", "posted", "history"].includes(state.filter)) state.filter = "needs";
+    if (!["needs", "working", "scheduled", "posted", "history"].includes(state.filter)) state.filter = "needs";
     const wentOut = (t) => (t.posted || []).length || t.scheduled || (t.failed || []).length;
     const postedDone = doneAll.filter(wentOut).slice(0, 60), done = doneAll.filter((t) => !wentOut(t)).slice(0, 60);
+    // Scheduled tab (owner, 2026-11-12): a video with a post still waiting for its time is there, not under Posted, soonest first
+    // (the cards are split further down, once they are grouped: a video's tasks always move together)
+    const nowS = Date.now() / 1000, wentDone = doneAll.filter(wentOut);
+    const postTab = [...tasks.filter((t) => schedPost(t) && !asked(t)), ...wentDone.filter((t) => t.scheduled), ...wentDone.filter((t) => !t.scheduled).slice(0, 60)];
+    const whenOf = (t) => {                                  // unix seconds; no time: the end of that day; unreadable: waiting, sorted last
+      if (t.scheduled) return +t.scheduled.when || Infinity;
+      const [h, m] = String(t.time || "23:59").split(":"), v = Date.parse(`${t.date}T${pad2(+h || 0)}:${pad2(+m || 0)}`) / 1000;
+      return Number.isFinite(v) ? v : Infinity;
+    };
+    const waits = (t) => !!t.scheduled || (schedPost(t) && whenOf(t) > nowS);   // a dated post whose time has passed is not waiting any more
     const cancelled = tasks.filter((t) => t.status === "cancelled").sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // every finished folder in out/ waits for the owner: edits (edit.mp4), but also notes-only or script-only work
     const SPECIAL_OUT = ["scripts", "radar", "pulse"], outNames = new Set(st.waiting_for_approval || []);
@@ -1091,12 +1102,20 @@
     // as the single approval entry, without changing ordinary out/ cards.
     // a folder without a task: its channel is its channel.txt (none: the main channel); Delete moves it to History → Deleted.
     // Every version of one Studio project (sermon-studio-<project>-r<rev>-a<n>) is one row: the newest, the rest inside it.
+    // The same for an edited video's versions (owner, 2026-11-08: "put all versions in one task"): out/<video>, <video>-v2,
+    // <video>-v3 … are one card, the newest version on top, the older ones inside it; a task about any version joins it.
+    const famOf = (n) => n.replace(/-v\d+$/, ""), verOf = (n) => +((/-v(\d+)$/.exec(n) || [])[1] || 1), newestVer = {};
+    for (const name of outNames) {
+      if (SPECIAL_OUT.includes(name) || ssOf(name) || ((st.out || {})[name] || {}).hidden) continue;
+      const f = famOf(name); if (!newestVer[f] || verOf(name) > verOf(newestVer[f])) newestVer[f] = name;
+    }
+    const verAlias = (n) => (n && !ssOf(n) && newestVer[famOf(n)]) || n;
     const groups = {};
     for (const name of uncoveredSermonOutFolders(outNames, allTasks.filter((t) => t.status === "review"))) {
       const m = ssOf(name), info = (st.out || {})[name] || {};
       if (m && !info.hidden && newestOf[m[1]]) { (state.older[newestOf[m[1]].id] ||= []).push({ name, rev: +m[2] }); continue; }   // an older version of a task's project
-      const g = (groups[(m ? "sermon-studio-" + m[1] : name) + (info.hidden ? "#deleted" : "")] ||= { project: m ? m[1] : null, hidden: !!info.hidden, items: [] });
-      g.items.push({ name, info, rev: m ? +m[2] : 0 });
+      const g = (groups[(m ? "sermon-studio-" + m[1] : verAlias(name)) + (info.hidden ? "#deleted" : "")] ||= { project: m ? m[1] : null, hidden: !!info.hidden, items: [] });
+      g.items.push({ name, info, rev: m ? +m[2] : verOf(name) });
     }
     const outGroups = Object.values(groups).map((g) => { g.items.sort((a, b) => b.rev - a.rev || a.name.localeCompare(b.name)); return { ...g, ...g.items[0], names: g.items.map((x) => x.name) }; }).sort((a, b) => a.name.localeCompare(b.name));
     const folderIn = (g) => state.chFilter === "all" || (g.info.ch || "") === state.chFilter;
@@ -1109,10 +1128,10 @@
       return { g, folders: i < 0 ? [] : outDeleted.splice(i, 1)[0].names };
     });
     const nDeleted = deletedTasks.length + outDeleted.length;
-    const counts = { needs: review.length + outWaiting.length + todo.length, working: doing.length, posted: new Set([...tasks.filter(schedPost), ...postedDone].map((t) => t.video || t.id)).size, history: done.length + cancelled.length + nDeleted };
+    const counts = { needs: review.length + outWaiting.length + todo.length, working: doing.length, scheduled: 0, posted: 0, history: done.length + cancelled.length + nDeleted };
     const f = state.filter, show = (k) => ({ running: "working", waiting: "needs" })[k] === f;
     const sec = (title, dot, n) => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span></div>`;
-    const folderTitle = (g) => (g.project ? `Sermon poster · ${g.project.slice(0, 8)}` : g.name.replace(/[-_]+/g, " "));
+    const folderTitle = (g) => (g.project ? `Sermon poster · ${g.project.slice(0, 8)}` : famOf(g.name).replace(/[-_]+/g, " "));   // one name for every version
     const folderThumb = ({ name, info, area = "out" }) => {   // cover.jpg, else the first picture in the folder
       const pic = info.cover ? "cover.jpg" : (info.files || []).find((f) => /\.(jpe?g|png)$/i.test(f) && !f.startsWith("_"));
       return pic ? `<img class="thumb" src="${phoneImg(`/files/${area}/${encodeURIComponent(name)}/${encodeURIComponent(pic)}`)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="thumb" style="display:grid;place-items:center;color:#9aa3b2">${svg("play")}</span>`;
@@ -1122,24 +1141,28 @@
       const older = g.items.slice(1), nFiles = (info.files || []).length;
       const chOpts = chList().map((c) => `<option value="${esc(c.key)}" ${c.key === (info.ch || "") ? "selected" : ""}>${esc(c.name)}</option>`).join("");
       const versions = older.length ? `<div class="td-vers"><span class="td-l">Older versions · ${older.length}</span>${older.map((x) => `<button class="btn sm" data-rv-folder="out/${esc(x.name)}" type="button">${svg("play")} v${x.rev}</button>`).join("")}</div>` : "";
-      const detail = open ? `<div class="task-detail"><div><b>out/${esc(name)}</b> <span class="hint">· ${nFiles} files${g.project ? ` · newest is v${g.rev}` : ""}</span></div>${versions}
+      const detail = open ? `<div class="task-detail"><div><b>out/${esc(name)}</b> <span class="hint">· ${nFiles} files${older.length ? ` · newest is v${g.rev}` : ""}</span></div>${versions}
         <div class="td-grid"><span class="td-l">Channel</span><select class="field td-ch" data-out-ch="${esc(all)}" aria-label="Channel of this folder" ${fixed ? "disabled" : ""}>${chOpts}</select></div>
         <div class="hint" style="margin-top:6px">${fixed ? "A thumbnail package keeps the channel it was made for." : "The channel also picks the accounts on the posting screen."} Delete moves ${older.length ? `all ${g.names.length} versions` : "it"} to History → Deleted; the files stay in out/.</div>
         <div class="td-end"><button class="btn sm danger" data-del-out="${esc(all)}" type="button">Delete${older.length ? ` all ${g.names.length}` : ""}</button></div></div>` : "";
       const what = info.edit ? "edit ready" : `${nFiles} file${nFiles === 1 ? "" : "s"}`;
-      return `<div class="trow approval hot" data-out="${esc(name)}"><span class="g ia" data-rv-folder="out/${esc(name)}">${folderThumb(g)}</span><div class="tt ia" data-rv-folder="out/${esc(name)}"><div class="title">${esc(inGroup ? (info.edit ? "Video edit" : "Files") : folderTitle(g))}</div><div class="meta">${chPill(info.ch || "")}${tagPill("Creative")}<span>${g.project ? `v${g.rev}${older.length ? ` · +${older.length} older` : ""}` : what} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div></div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button><button class="btn sm mng ${open ? "on" : ""}" data-manage="${esc(key)}" type="button" title="Manage: channel, delete" aria-label="Manage this folder" aria-expanded="${open}">⋯</button></div></div>${detail}`;
+      return `<div class="trow approval hot" data-out="${esc(name)}"><span class="g ia" data-rv-folder="out/${esc(name)}">${folderThumb(g)}</span><div class="tt ia" data-rv-folder="out/${esc(name)}"><div class="title">${esc(inGroup ? (info.edit ? "Video edit" : "Files") : folderTitle(g))}</div><div class="meta">${chPill(info.ch || "")}${tagPill("Creative")}<span>${g.project || older.length ? `v${g.rev}${older.length ? ` · +${older.length} older` : ""}` : what} · needs your approval</span>${info.edit ? `<span class="mono" style="color:#9fb6ff">▶ watch</span>` : ""}</div>${inGroup ? versions : ""}</div><div class="act"><button class="btn primary sm" data-rv-folder="out/${esc(name)}" type="button">Review</button><button class="btn sm mng ${open ? "on" : ""}" data-manage="${esc(key)}" type="button" title="Manage: channel, delete" aria-label="Manage this folder" aria-expanded="${open}">⋯</button></div></div>${detail}`;
     };
     // One video, one card: its out/ folder and every task about it (out:<folder> in the note) sit together under the video's name
     // A video with a package (out/<name> holding an edit) is always a card: its steps, READY, and Open for the pick screen.
     // The card is the video's review, so its own folder row and its Codex "Final" tasks are not repeated inside it.
-    const byVideo = (items, wantReady) => {                  // wantReady true/false: the Waiting cards (READY or not); omitted: plain groups
-      // Tasks with the same title in one channel (one sermon title's many design projects) share one card, closed until
-      // opened. A video with its own package card keeps it.
+    const mergeTitles = (items) => {                         // safe to run twice: merged items already share one key
       const titled = {};
       for (const it of items) if (it.t && !((st.out || {})[it.key] || {}).pkg) (titled[(it.t.ch || "") + "|" + taskTitle(it.t)] ||= []).push(it);
       for (const [tk, list] of Object.entries(titled)) {
         if (list.length > 1 && new Set(list.map((it) => it.key)).size > 1) for (const it of list) { it.key = "title:" + tk; it.groupTitle = taskTitle(it.t); }
       }
+      return items;
+    };
+    const byVideo = (items, wantReady) => {                  // wantReady true/false: the Waiting cards (READY or not); omitted: plain groups
+      // Tasks with the same title in one channel (one sermon title's many design projects) share one card, closed until
+      // opened. A video with its own package card keeps it.
+      mergeTitles(items);
       const order = [], rowsOf = {}, cards = wantReady !== undefined;
       items.forEach((it, i) => { const k = it.key || "#" + i; if (!rowsOf[k]) { rowsOf[k] = []; order.push(k); } rowsOf[k].push(it); });
       return order.map((k) => {
@@ -1175,11 +1198,11 @@
     // a task without its own video (a post cover, a loose fix) joins the project whose task has the same title after the "·"
     const coreTitle = (t) => String(t.title || "").split("·").pop().replace(/\s*[（(][^)）]*[)）]?\s*$/, "").trim();
     const taskItems = (list) => {
-      const items = list.map((t) => ({ key: videoOf(t), t, row: () => taskRow(t) })), loose = (k) => !k || /^thumbnail-final-/.test(k), byCore = {};
+      const items = list.map((t) => ({ key: verAlias(videoOf(t)), t, row: () => taskRow(t) })), loose = (k) => !k || /^thumbnail-final-/.test(k), byCore = {};   // a task about v2 sits on the newest version's card
       for (const it of items) if (!loose(it.key) && coreTitle(it.t)) byCore[coreTitle(it.t)] ||= it.key;
       for (const it of items) if (loose(it.key) && byCore[coreTitle(it.t)]) it.key = byCore[coreTitle(it.t)];
       const keys = [...new Set(items.map((it) => it.key).filter(Boolean))];   // "<video>" and "<video>-cover-post" are one project
-      for (const it of items) { const longer = it.key && keys.find((k) => k.startsWith(it.key + "-")); if (longer) it.key = longer; }
+      for (const it of items) { const longer = it.key && keys.find((k) => k.startsWith(it.key + "-") && !((st.out || {})[k] || {}).edit); if (longer) it.key = longer; }   // never another cut of the video (its 16x9, a -v2)
       return items;
     };
     const folderItems = (list) => list.map((g) => ({ key: g.name, folder: g, row: (inGroup) => approvalRow(g, inGroup) }));
@@ -1194,7 +1217,14 @@
     const waitingSec = show("waiting") ? sec("Needs you", "#e4c830", review.length + outWaiting.length - nReady) + (byVideo(waitItems, false) || '<div class="hint" style="margin:2px 0 6px">Nothing needs you right now.</div>') : "";
     if (f === "needs") body += readySec + waitingSec + (todo.length ? sec("Not started · press Run or Edit", "#6b7280", todo.length) + byVideo(taskItems(todo)) : "");
     if (f === "working") body += runningSec;
-    if (f === "posted") body += byVideo(taskItems([...tasks.filter(schedPost), ...postedDone])) || '<div class="hint" style="margin:2px 0 6px">Nothing posted yet.</div>';
+    // Scheduled / Posted: grouped into cards first, then split by card, so one video is never in both and the counts are the cards
+    const postItems = mergeTitles(taskItems(postTab)), schedAt = {};
+    postItems.forEach((it, i) => { it.ck = it.key || "#" + i; if (waits(it.t)) schedAt[it.ck] = Math.min(schedAt[it.ck] ?? Infinity, whenOf(it.t)); });
+    const isSched = (it) => Object.prototype.hasOwnProperty.call(schedAt, it.ck);
+    const schedItems = postItems.filter(isSched).sort((a, b) => (schedAt[a.ck] - schedAt[b.ck]) || 0), postedItems = postItems.filter((it) => !isSched(it));
+    counts.scheduled = Object.keys(schedAt).length; counts.posted = new Set(postedItems.map((it) => it.ck)).size;
+    if (f === "scheduled") body += byVideo(schedItems) || '<div class="hint" style="margin:2px 0 6px">Nothing scheduled. Pick a time on the posting screen of a video and it waits here until it goes out.</div>';
+    if (f === "posted") body += byVideo(postedItems) || '<div class="hint" style="margin:2px 0 6px">Nothing posted yet.</div>';
     if (f === "history") {
       body += sec("Finished", "#4cceac", done.length) + (byVideo(taskItems(done)) || '<div class="hint" style="margin:2px 0 6px">Nothing finished yet.</div>')
         + (done.some(canReedit) ? '<div class="hint" style="margin:6px 0">Re-edit sends finished work back to the team as a new version; the approved one stays as it is.</div>' : "");
@@ -1210,7 +1240,7 @@
     const chRow = `<div class="chrow" role="group" aria-label="Show tasks for">${chips.map(([k, l, n]) => `<button class="chchip ${state.chFilter === k ? "active" : ""}" data-chf="${esc(k)}" type="button" style="--chc:${k === "all" ? "#7b6cf6" : k === "@office" ? "#4a5060" : hashColor("channel:" + k)}"><i></i>${esc(l)} <b>${n}</b></button>`).join("")}</div>`;
     const addCh = state.chFilter === "all" ? "auto" : state.chFilter === "@office" ? "@office" : "ch:" + state.chFilter;
     const chOpts = [["auto", "Channel: auto"], ...chList().map((c) => ["ch:" + c.key, c.name]), ["@office", "Whole office"]].map(([v, l]) => `<option value="${esc(v)}" ${v === addCh ? "selected" : ""}>${esc(l)}</option>`).join("");
-    const tabs = [["needs", "Needs you"], ["working", "Working"], ["posted", "Posted"], ["history", "History"]];
+    const tabs = [["needs", "Needs you"], ["working", "Working"], ["scheduled", "Scheduled"], ["posted", "Posted"], ["history", "History"]];
     p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">${state.chFilter === "all" ? "Whole office" : esc(chName(state.chFilter === "@office" ? null : state.chFilter))} · today${st.desk && st.desk.running ? ` · <b class="jobs">${st.desk.running} of ${st.desk.limit} jobs running</b>${st.desk.queued ? `, ${st.desk.queued} waiting` : ""}` : ""}</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
       <div class="ph-tools"><button class="${state.phAdd ? "on" : ""}" data-ph-toggle="add" type="button">${state.phAdd ? "× Close" : "+ New task"}</button><button class="${state.phDrop || state.upKind ? "on" : ""}" data-ph-toggle="drop" type="button">${state.upKind ? `Uploading ${state.upPct || 0}%` : state.phDrop ? "× Close" : "⤒ Add files"}</button></div>
       <form class="add-task ${state.phAdd ? "" : "ph-hide"}" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team" aria-label="Team"><option value="">Team: auto</option>${teamOpts}</select><select id="task-ch" aria-label="Channel">${chOpts}</select><button class="btn blue" type="submit">Add</button></form>
@@ -1723,7 +1753,7 @@
     let host = $("#review");
     if (!host) {
       host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host);
-      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
+      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.bufField && rv.bufEdit) rv.bufEdit[d.bufField] = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
       host.addEventListener("input", (e) => { if (e.target.id === "pk-mood") rv.pkgMood = e.target.value; if (e.target.id === "pk-capnote") rv.capNote = e.target.value; });
       host.addEventListener("change", (e) => { const k = e.target.dataset && e.target.dataset.pubSel; if (k) { rv.sel[k] = e.target.checked; renderReview(); } });
     }
@@ -1734,7 +1764,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
+      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1761,8 +1791,12 @@
     if (rv.open && rv.folder === folder) { rv.cover = cover; renderReview(); }
   }
   // ---- posting: the overview of what goes where, and the owner's Approve & post (the only thing that posts)
-  const PUB = [["facebook", "Facebook"], ["instagram", "Instagram"], ["youtube", "YouTube Shorts"], ["tiktok", "TikTok (drafts)"]];
+  const PUB = [["facebook", "Facebook"], ["instagram", "Instagram"], ["youtube", "YouTube Shorts"], ["tiktok", "TikTok (drafts)"], ["buffer", "Buffer · Instagram + TikTok"]];
+  const PUB_ICO = { facebook: "f", instagram: "IG", youtube: "▶", tiktok: "♪", buffer: "IG+♪" };   // a small badge per row
   const PUB_URL = "/api/" + "publish";
+  // the posting overview for the current pick: the Buffer package is made per video + thumbnail
+  const pubQuery = () => `${PUB_URL}?folder=${encodeURIComponent(pubFolder())}&video=${encodeURIComponent((rv.pick && rv.pick.video) || "")}&cover=${encodeURIComponent((rv.pick && rv.pick.cover) || "")}`;
+  const bufMaking = () => !!(rv.pub && rv.pub.buffer && rv.pub.buffer.state === "making");
   // what can be posted: the folder itself, or each topic of a long talk (a subfolder with its own post.md)
   const pubTargets = () => ((rv.data && rv.data.files) || []).filter((f) => /^post\.md$/i.test(f.name) && f.path.split("/").length <= 2).map((f) => f.path.split("/").slice(0, -1).join("/"));
   const pubFolder = () => rv.folder + (rv.pubSub ? "/" + rv.pubSub : "");
@@ -1771,23 +1805,62 @@
     if (!rv.folder || !targets.length) { rv.pub = null; return; }
     if (sub != null) rv.pubSub = sub; else if (!targets.includes(rv.pubSub)) rv.pubSub = targets[0];
     if (sub != null) { rv.sel = null; rv.edits = {}; rv.pick = {}; }
-    try { rv.pub = await getJSON(`${PUB_URL}?folder=${encodeURIComponent(pubFolder())}`); } catch (e) { rv.pub = null; }
+    const pk0 = rv.pkg;
+    if (pk0 && pk0.cover && !rv.pick.cover) rv.pick.cover = pk0.cover;                 // a package posts its Codex pick: ask for that one's Buffer package
+    try { rv.pub = await getJSON(pubQuery()); } catch (e) { rv.pub = null; }
     if (rv.pub && !rv.sel && !rv.whenVal && channelSlot(rv.pub.channel)) { rv.whenOn = true; rv.whenVal = channelSlot(rv.pub.channel); }   // its own slot is the default
-    if (rv.pub && !rv.sel) { rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && !["posted", "scheduled"].includes((rv.pub.posted[k] || {}).state); }
+    if (rv.pub && !rv.sel) {
+      rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && !["posted", "scheduled"].includes((rv.pub.posted[k] || {}).state);
+      // owner, 2026-11-09: Instagram and TikTok go through Buffer. With Buffer ready to post from here, it is ticked and the two direct ones are not
+      const bf = rv.pub.accounts.buffer || {};
+      const live = (k) => ["posted", "scheduled", "posting", "waiting", "uploading"].includes((rv.pub.posted[k] || {}).state);
+      if (bf.connected && bf.host && rv.sel.buffer) { rv.sel.instagram = false; rv.sel.tiktok = false; } else rv.sel.buffer = false;
+      if (["instagram", "tiktok"].some((k) => (bf[k] || {}).id && live(k))) rv.sel.buffer = false;   // it went out directly: Buffer would post it again
+      if (live("buffer")) { rv.sel.instagram = false; rv.sel.tiktok = false; }                       // it is in Buffer already
+    }
     const pk = rv.pkg, o = rv.pub && pk && pk.caption != null && rv.pick.caption == null && ((rv.pub.drafts || {}).options || [])[pk.caption];
     if (o) { for (const [k] of PUB) for (const [f, v] of Object.entries(o[k] || {})) rv.edits[k + "." + f] = v; rv.pick.caption = pk.caption; }   // the set picked on the card
     if (rv.pub && pk && pk.cover && !rv.pick.cover) rv.pick.cover = pk.cover;
-    if (rv.pub && rv.pub.busy) startPubPoll();
+    if (rv.pub && (rv.pub.busy || bufMaking())) startPubPoll();
     if (rv.open) renderReview();
+    autoBuffer();
+  }
+  // ---- Buffer: the package next to the approved video (cover as frame 1, one caption), made by itself once the video is approved
+  function autoBuffer() {
+    const bf = rv.pub && rv.pub.buffer, folder = pubFolder();
+    if (!bf || !bf.approved || !folder.startsWith("approved/") || !["none", "stale"].includes(bf.state)) return;
+    const key = folder + "|" + ((rv.pick.video || rv.pub.video) || "") + "|" + ((rv.pick.cover || rv.pub.cover) || "");
+    if (rv.bufAsked === key || !(rv.pick.cover || rv.pub.cover)) return;        // asked already for this pick, or no thumbnail yet
+    rv.bufAsked = key; bufferAction("make", true);
+  }
+  async function bufferAction(kind, quiet) {
+    const folder = pubFolder();
+    if (!folder.startsWith("approved/") || !rv.pub) return;
+    if (kind === "copy-caption") { copyText(pubValue("buffer", "caption")); toast("social", "Buffer", "Caption copied: paste it for Instagram and TikTok in Buffer."); return; }
+    if (kind === "copy-title") { copyText(pubValue("buffer", "title")); toast("social", "Buffer", "TikTok title copied."); return; }
+    if (kind === "change-open") {
+      const done = (rv.pub.posted || {}).buffer || {}, bf = rv.pub.buffer || {};
+      const caption = bf.caption || pubValue("buffer", "caption") || "", title = bf.title || pubValue("buffer", "title") || "";
+      rv.bufEdit = { when: done.when ? localInput(new Date(done.when * 1000)) : "", caption, title, caption0: caption, title0: title };
+      renderReview(); return;
+    }
+    if (kind === "change-close") { rv.bufEdit = null; renderReview(); return; }
+    if (kind === "change-save") { bufferChange(); return; }
+    const body = { folder, buffer: kind, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover, caption: pubValue("buffer", "caption"), title: pubValue("buffer", "title") };
+    try {
+      rv.pub = await postJSON(PUB_URL, body); renderReview();
+      if (kind === "make") startPubPoll();
+      if (!quiet) toast("social", "Buffer", kind === "done" ? "Marked as posted in Buffer." : "Making the Buffer video with your thumbnail as frame 1.");
+    } catch (e) { if (!quiet) toast("social", "Buffer", e.message || "could not do that", { bad: true }); }
   }
   function stopPubPoll() { if (rv.poll) { clearInterval(rv.poll); rv.poll = null; } }
   function startPubPoll() {
     stopPubPoll();
     rv.poll = setInterval(async () => {
       if (!rv.open || !rv.folder) return stopPubPoll();
-      try { rv.pub = await getJSON(`${PUB_URL}?folder=${encodeURIComponent(pubFolder())}`); } catch (e) { return; }
+      try { rv.pub = await getJSON(pubQuery()); } catch (e) { return; }
       renderReview();
-      if (!rv.pub.busy) {
+      if (!rv.pub.busy && !bufMaking()) {
         stopPubPoll();
         const r = rv.pub.posted || {}, ok = PUB.filter(([k]) => (r[k] || {}).state === "posted").map(([, n]) => n), bad = PUB.filter(([k]) => (r[k] || {}).state === "failed").map(([, n]) => n);
         if (ok.length) toast("social", "Posted", ok.join(", ") + (bad.length ? ` · failed: ${bad.join(", ")}` : ""));
@@ -1795,13 +1868,21 @@
       }
     }, 3000);
   }
-  const chosenPub = () => PUB.filter(([k]) => rv.pub && rv.sel && rv.sel[k] && (rv.pub.accounts[k] || {}).connected).map(([k]) => k);
+  const pubReady = (k) => { const a = (rv.pub && rv.pub.accounts[k]) || {}; return !!a.connected && (k !== "buffer" || !!a.host); };   // Buffer posts from here only with a media host
+  // owner, 2026-11-12: once Buffer posts from here, the direct Instagram and TikTok rows are gone (Buffer does both).
+  // A direct row that still has something on it (scheduled, posting, posted, failed) stays, so nothing is hidden.
+  const bufHas = (k) => (k === "instagram" || k === "tiktok") && pubReady("buffer") && !!(((rv.pub.accounts.buffer || {})[k]) || {}).id;   // Buffer posts this one from here
+  const viaBuffer = (k) => bufHas(k) && !["scheduled", "posting", "waiting", "uploading", "posted", "failed"].includes(((rv.pub.posted || {})[k] || {}).state);
+  const bufNames = () => ["instagram", "tiktok"].filter(bufHas).map((k) => PLAT_NAME[k]);
+  // a direct row Buffer has taken over is never posted to again from here: it only shows what happened (and Cancel)
+  const chosenPub = () => PUB.filter(([k]) => rv.pub && rv.sel && rv.sel[k] && pubReady(k) && !bufHas(k)).map(([k]) => k);
   function pubValue(k, f) { const key = k + "." + f; return rv.edits[key] != null ? rv.edits[key] : ((rv.pub.drafts[k] || {})[f] || ""); }
   function pickPub(kind, val) {                             // the owner picks the topic, the thumbnail, the video, or one caption for every platform
     if (kind === "topic") { stopPubPoll(); loadPub(val); return; }
     if (kind === "edit") { rv.pubEdit = !rv.pubEdit; renderReview(); return; }
+    if (kind === "pkg") { rv.pkgOpen = !rv.pkgOpen; renderReview(); return; }
     if (kind === "when") { rv.whenOn = val === "later"; if (rv.whenOn && !rv.whenVal) rv.whenVal = defaultWhen(); renderReview(); return; }
-    if (kind === "video" || kind === "cover") rv.pick[kind] = val;
+    if (kind === "video" || kind === "cover") { rv.pick[kind] = val; renderReview(); loadPub(); return; }   // the Buffer package follows the pick
     else if (kind === "caption") {
       const o = ((rv.pub.drafts || {}).options || [])[+val];
       if (o) { for (const [k] of PUB) for (const [f, v] of Object.entries(o[k] || {})) rv.edits[k + "." + f] = v; rv.pick.caption = +val; }
@@ -1821,18 +1902,37 @@
   }
   function defaultWhen() { const own = channelSlot(rv.pub && rv.pub.channel); if (own) return own; const d = new Date(Date.now() + 86400000); d.setHours(20, 0, 0, 0); return localInput(d); }
   const whenUnix = () => (rv.whenOn && rv.whenVal ? Math.floor(new Date(rv.whenVal).getTime() / 1000) : null);
+  const httpsOr = (u, fallback) => (/^https:\/\//.test(u || "") ? u : fallback);   // a link from a platform, never javascript:
   const fmtWhen = (u) => new Date(u * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   function whenSay() { const u = whenUnix(); if (!u) return ""; const m = Math.round((u * 1000 - Date.now()) / 60000); return m < 10 ? "Pick a time at least 10 minutes from now." : `Goes out ${fmtWhen(u)}.`; }
   async function cancelScheduled(k) {
-    try { rv.pub = await postJSON(PUB_URL, { folder: pubFolder(), cancel: k }); renderReview(); toast("social", "Cancelled", "The scheduled Instagram post won't go out."); }
-    catch (e) { toast("social", "Cancel", e.message || "could not cancel", { bad: true }); }
+    if (k === "buffer" && !confirm("Cancel this scheduled post? Agents HQ deletes the Instagram and TikTok posts in Buffer too, so they won't go out.")) return;
+    try {
+      rv.pub = await postJSON(PUB_URL, { folder: pubFolder(), cancel: k }); rv.bufEdit = null; renderReview();
+      const left = k === "buffer" && ((rv.pub.posted || {}).buffer || {}).state !== "cancelled";
+      toast("social", left ? "Partly cancelled" : "Cancelled", k !== "buffer" ? "The scheduled Instagram post won't go out."
+        : left ? "Not everything could be cancelled: see the Buffer row." : "Deleted in Buffer too: it won't go out on Instagram or TikTok.");
+    } catch (e) { toast("social", "Cancel", e.message || "could not cancel", { bad: true }); }
+  }
+  async function bufferChange() {
+    const folder = pubFolder(), done = ((rv.pub || {}).posted || {}).buffer || {}, f = rv.bufEdit || {};
+    const when = f.when ? Math.floor(new Date(f.when).getTime() / 1000) : null;
+    const body = { folder, buffer: "change", video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover };
+    if (when && Math.abs(when - (done.when || 0)) > 59) body.when = when;
+    if (f.caption !== f.caption0) body.caption = f.caption;
+    if (f.title !== f.title0) body.title = f.title;
+    if (!body.when && body.caption == null && body.title == null) { rv.bufEdit = null; renderReview(); return; }
+    rv.bufEdit = { ...f, busy: true }; renderReview();
+    try { rv.pub = await postJSON(PUB_URL, body); rv.bufEdit = null; renderReview(); toast("social", "Buffer", "Changed in Buffer too."); }
+    catch (e) { rv.bufEdit = { ...f, busy: false }; renderReview(); toast("social", "Buffer", e.message || "could not change it", { bad: true }); }
   }
   async function startPost() {
     const folder = pubFolder();
     if (!folder.startsWith("approved/") || !rv.pub) return;
     const platforms = {};
     for (const k of chosenPub()) {
-      platforms[k] = k === "youtube" ? { title: pubValue(k, "title"), description: pubValue(k, "description") } : { caption: pubValue(k, "caption") };
+      platforms[k] = k === "youtube" ? { title: pubValue(k, "title"), description: pubValue(k, "description") }
+        : k === "buffer" ? { caption: pubValue(k, "caption"), title: pubValue(k, "title") } : { caption: pubValue(k, "caption") };
       if (((rv.pub.posted || {})[k] || {}).state === "posted") platforms[k].again = true;
     }
     if (!Object.keys(platforms).length) return;
@@ -1874,17 +1974,43 @@
     if ((p.videos || []).length > 1) h += `<div class="pub-h">Video <span>which version to post</span></div><div class="rv-chips">${p.videos.map((n) => `<button class="rv-chip ${n === vSel ? "on" : ""}" data-pub-pick="video" data-pub-val="${esc(n)}" type="button">${n === vSel ? svg("check") : svg("play")}${esc(prettyName(n))}</button>`).join("")}</div>`;
     else if (!p.videos || !p.videos.length) h += '<div class="pub-warn">No video found in this folder yet, so there is nothing to post.</div>';
     // where it goes
-    h += `<div class="pub-h">${opts.length ? "3" : "2"} · Post to</div>`;
+    h += `<div class="pub-h">${opts.length ? "3" : "2"} · Post to <span>${bufNames().length ? esc(bufNames().join(" and ")) + (bufNames().length > 1 ? " go" : " goes") + " through Buffer" : "tick where it goes"}</span></div><div class="pub-rows">`;
+    const head = (k, name, sub, ticked, can) => `<label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${ticked ? "checked" : ""} ${can ? "" : "disabled"}><i class="pub-ico k-${k}">${PUB_ICO[k] || ""}</i><span class="pub-name"><b>${esc(name)}</b><small>${esc(sub)}</small></span></label>`;
     for (const [k, label] of PUB) {
+      if (viaBuffer(k)) continue;
       const acc = p.accounts[k] || {}, done = (p.posted || {})[k] || {}, ticked = on.includes(k);
+      const bufLinks = k === "buffer" && done.posts ? Object.entries(done.posts).filter(([, x]) => x && /^https:\/\//.test(x.link || "")).map(([s, x]) => `<a class="pub-ok" href="${esc(x.link)}" target="_blank" rel="noopener">${esc(PLAT_NAME[s] || s)} ↗</a>`).join(" ") : "";
       const st = done.state === "posted" && k === "tiktok" ? `<span class="pub-ok">${svg("check")} Sent to TikTok drafts · finish it in the TikTok app</span>`
-        : done.state === "posted" ? `<a class="pub-ok" href="${esc(done.link || "#")}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
+        : done.state === "posted" && k === "buffer" ? `<span class="pub-ok">${svg("check")} ${done.manual ? "Posted in Buffer by you" : "Published through Buffer"}</span> ${bufLinks || `<a class="pub-ok" href="${esc(httpsOr(done.link, p.buffer.dash))}" target="_blank" rel="noopener">open Buffer ↗</a>`}`
+        : done.state === "scheduled" && k === "buffer" ? `<span class="pub-sched">${svg("cal")} In Buffer, scheduled · ${esc(fmtWhen(done.when))} <a class="pub-ok" href="${esc(httpsOr(done.link, p.buffer.dash))}" target="_blank" rel="noopener">open Buffer ↗</a>${done.posts && !done.manual && !rv.bufEdit ? ' <button class="rv-copy" data-buf="change-open" type="button">Change</button> <button class="rv-copy" data-pub-cancel="buffer" type="button">Cancel</button>' : ""}</span>`
+        : done.state === "cancelled" && k === "buffer" ? `<span class="pub-acc">Schedule cancelled · deleted in Buffer</span>`
+        : done.state === "posted" ? `<a class="pub-ok" href="${esc(httpsOr(done.link, "#"))}" target="_blank" rel="noopener">${svg("check")} Posted · view</a>`
         : done.state === "failed" ? `<span class="pub-bad">Failed: ${esc(done.error || "")}</span>`
         : done.state === "scheduled" ? `<span class="pub-sched">${svg("cal")} Scheduled · ${esc(fmtWhen(done.when))}${done.job ? ` <button class="rv-copy" data-pub-cancel="${k}" type="button">Cancel</button>` : ""}</span>`
         : done.state === "cancelled" ? '<span class="pub-acc">Schedule cancelled</span>'
         : ["posting", "waiting", "uploading"].includes(done.state) ? `<span class="pub-run"><span class="spin"></span> ${({ posting: "Posting…", waiting: "Waiting…", uploading: "Uploading for the scheduled time…" })[done.state]}${done.progress != null && done.state !== "waiting" ? ` <b>${Math.round(done.progress)}%</b>${done.step ? ` · ${esc(done.step)}` : ""}` : ""}</span>${done.progress != null && done.state !== "waiting" ? `<div class="up-bar pub-bar"><i style="width:${Math.round(done.progress)}%"></i></div>` : ""}` : "";
-      h += `<div class="pub-row ${ticked ? "on" : ""}"><label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${ticked ? "checked" : ""} ${acc.connected ? "" : "disabled"}><b>${label}</b>
-        <span class="pub-acc">${acc.connected ? esc(acc.name || "connected") : acc.problem ? esc(acc.problem) : "not connected"}</span></label>${st}`;
+      if (k === "buffer") {                                 // Buffer: from here with a key + media host, or by hand from the package
+        const apiReady = pubReady(k);
+        h += `<div class="pub-row buf ${ticked ? "on" : ""}">${head("buffer", bufNames().join(" + ") || "Instagram + TikTok", (apiReady ? "through Buffer · " + (acc.name || "connected") : acc.connected ? acc.name + " · no media host yet: post by hand from the package" : "through Buffer, by hand from the package below"), ticked, apiReady)}${st ? `<div class="pub-st">${st}</div>` : ""}`;
+        if (!apiReady && done.state !== "posted") h += `<button class="rv-copy" data-rv-accounts="${esc(p.channel || "")}" type="button">${acc.connected ? "Set up the media host" : "Connect Buffer"}</button>`;
+        if (done.warning) h += `<div class="pub-warn">${esc(done.warning)}</div>`;
+        if (rv.bufEdit && done.state === "scheduled") {     // change the scheduled Buffer posts: made in Buffer too
+          const f = rv.bufEdit;
+          h += `<div class="pub-note">Change it here and Agents HQ changes the Instagram and TikTok posts in Buffer too.</div>
+            <input class="pub-in pub-when" type="datetime-local" data-buf-field="when" value="${esc(f.when)}" min="${localInput(new Date(Date.now() + 11 * 60000))}">
+            <input class="pub-in" data-buf-field="title" maxlength="90" value="${esc(f.title)}" placeholder="TikTok title">
+            <textarea class="pub-in" rows="4" data-buf-field="caption" maxlength="2200" placeholder="Caption for Instagram and TikTok">${esc(f.caption)}</textarea>
+            <div class="pub-links"><button class="rv-copy" data-buf="change-save" type="button" ${f.busy ? "disabled" : ""}>${f.busy ? '<span class="spin"></span> Saving to Buffer…' : "Save, in Buffer too"}</button><button class="rv-copy" data-buf="change-close" type="button" ${f.busy ? "disabled" : ""}>Not now</button></div>`;
+        }
+        // posting from here: the by-hand package is folded away (it opens by itself while it is being made or needs a look)
+        const bfp = p.buffer || {}, pkgForced = !apiReady || ["making", "failed", "stale"].includes(bfp.state) || (bfp.approved && bfp.state !== "ready"), pkgOpen = pkgForced || rv.pkgOpen;
+        if (apiReady && !pkgForced) h += `<button class="pub-fold ${pkgOpen ? "open" : ""} ${bfp.state === "ready" ? "ready" : ""}" data-pub-pick="pkg" type="button"><span>${bfp.state === "ready" ? svg("check") + " Buffer video ready" : bfp.approved ? "Buffer video" : "Buffer video · made right after you approve"}${bfp.state === "ready" && bfp.size ? ` · ${(bfp.size / 1048576).toFixed(1)} MB` : ""}</span><em>${pkgOpen ? "Hide" : "Post by hand instead"}</em></button>`;
+        if (pkgOpen) h += `<div class="pub-pkg">${bufferPackage(bfp, done)}</div>`;
+        if (ticked && rv.pubEdit) h += `<input class="pub-in" data-pub-field="buffer.title" maxlength="90" value="${esc(pubValue(k, "title"))}" placeholder="TikTok title"><textarea class="pub-in" rows="4" data-pub-field="buffer.caption" placeholder="Caption for Instagram and TikTok">${esc(pubValue(k, "caption"))}</textarea>`;
+        h += "</div>";
+        continue;
+      }
+      h += `<div class="pub-row ${ticked ? "on" : ""} ${acc.connected && !bufHas(k) ? "" : "off"}">${head(k, label, bufHas(k) ? "now through Buffer · this is the earlier direct post" : acc.connected ? acc.name || "connected" : acc.problem || "not connected", ticked, acc.connected && !bufHas(k))}${st ? `<div class="pub-st">${st}</div>` : ""}`;
       if (!acc.connected) h += `<button class="rv-copy" data-rv-accounts="${esc(p.channel || "")}" type="button">Connect</button>`;
       if (done.warning) h += `<div class="pub-warn">${esc(done.warning)}</div>`;
       if (k === "tiktok" && acc.connected && (ticked || done.state === "posted")) h += `<div class="pub-note">TikTok gets the video in its drafts; you add the caption and post it in the TikTok app. <button class="rv-copy" data-tt-copy="" type="button">Copy TikTok caption</button></div>`;
@@ -1893,12 +2019,27 @@
         : `<textarea class="pub-in" rows="4" data-pub-field="${k}.caption" placeholder="Caption">${esc(pubValue(k, "caption"))}</textarea>`;
       h += "</div>";
     }
+    h += "</div>";
     if (on.length) h += `<button class="rv-copy pub-edit" data-pub-pick="edit" type="button">${rv.pubEdit ? "Hide the text per platform" : "Change the text for one platform"}</button>`;
     if (on.length) {
       h += `<div class="pub-h">${opts.length ? "4" : "3"} · When</div><div class="rv-chips"><button class="rv-chip ${rv.whenOn ? "" : "on"}" data-pub-pick="when" data-pub-val="now" type="button">${rv.whenOn ? "" : svg("check")}Post now</button><button class="rv-chip ${rv.whenOn ? "on" : ""}" data-pub-pick="when" data-pub-val="later" type="button">${rv.whenOn ? svg("check") : svg("cal")}Schedule</button></div>`;
       if (rv.whenOn) h += `<input class="pub-in pub-when" type="datetime-local" data-pub-when value="${esc(rv.whenVal)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><div class="pub-note" id="pub-when-say">${esc(whenSay())}</div>${on.includes("instagram") ? '<div class="pub-note">Facebook and YouTube publish it themselves at that time. Instagram is posted by Agents HQ, so keep this computer on with Agents HQ running then; if it was off, it posts as soon as Agents HQ opens again.</div>' : ""}`;
     }
-    h += `<div class="pub-note">${rv.whenOn ? "Schedules" : "Posts"} <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} on every ticked account${rv.whenOn ? " for the time above" : " at the same time"}. TikTok: post by hand with the TikTok text below.</div></div>`;
+    h += `<div class="pub-note">${rv.whenOn ? "Schedules" : "Posts"} <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} on every ticked account${rv.whenOn ? " for the time above" : " at the same time"}. Instagram and TikTok go through Buffer: ticked, from here; otherwise by hand with the Buffer package.</div></div>`;
+    return h;
+  }
+  function bufferPackage(bf, done) {
+    const base = bf.base ? "/files/" + bf.base.split("/").map(encodeURIComponent).join("/") + "/" : "", f = bf.files || {};
+    let h = `<div class="pub-note"><b>Buffer package</b> · the video with your thumbnail as frame 1 (${bf.frames || 3} frames, a blink nobody notices), one caption for Instagram and TikTok, so both show the same cover.</div>`;
+    if (!bf.approved) return h + '<div class="pub-note">It is made by itself right after you approve the video.</div>';
+    if (bf.state === "making") h += `<span class="pub-run"><span class="spin"></span> Making the Buffer video… <b>${Math.round(bf.progress || 0)}%</b></span><div class="up-bar pub-bar"><i style="width:${Math.round(bf.progress || 0)}%"></i></div>`;
+    else if (bf.state === "failed") h += `<span class="pub-bad">Could not make it: ${esc(bf.error || "")}</span><button class="rv-copy" data-buf="make" type="button">Try again</button>`;
+    else if (bf.state === "ready" && f.video) {
+      h += `<div class="pub-ok">${svg("check")} Ready · ${esc(bf.video || "")} + ${esc(bf.cover || "")}${bf.size ? ` · ${(bf.size / 1048576).toFixed(1)} MB` : ""}${bf.hold ? ` · cover for ${bf.hold} s` : ""}</div>
+        <div class="pub-links"><a class="rv-copy" href="${esc(base + f.video)}" download>${svg("play")} Download final.mp4</a>${f.cover ? `<a class="rv-copy" href="${esc(base + f.cover)}" download>Download cover.jpg</a>` : ""}<button class="rv-copy" data-buf="copy-caption" type="button">Copy caption</button><button class="rv-copy" data-buf="copy-title" type="button">Copy TikTok title</button><a class="rv-copy" href="${esc(bf.dash || "https://publish.buffer.com")}" target="_blank" rel="noopener">Open Buffer ↗</a></div>`;
+      if (done.state !== "posted" && done.state !== "scheduled") h += `<div class="pub-note">In Buffer: New post → tick Instagram and TikTok → drop <b>final.mp4</b> → paste the caption (the same on both) → TikTok title → schedule. The thumbnail is frame 1 already. Then press:</div><button class="rv-copy" data-buf="done" type="button">${svg("check")} Posted in Buffer</button>`;
+    } else if (bf.state === "stale") h += `<div class="pub-warn">This package was made from another pick (${esc(bf.video || "")} + ${esc(bf.cover || "")}).</div><button class="rv-copy" data-buf="make" type="button">Make it again for this thumbnail</button>`;
+    else h += `<button class="rv-copy" data-buf="make" type="button">Make the Buffer video</button>`;
     return h;
   }
   // ---- accounts: connect Facebook + Instagram (one Meta app) and YouTube (one Google OAuth client), once
@@ -1956,13 +2097,19 @@
     if (kind === "meta") body = { action: "meta", app_id: v("acc-app-id"), app_secret: v("acc-app-secret"), token: v("acc-token"), page: v("acc-page") };
     else if (kind === "youtube") body = { action: "youtube", client_json: v("acc-yt-json") };
     else if (kind === "tiktok") body = { action: "tiktok", client_key: v("acc-tt-key"), client_secret: v("acc-tt-secret") };
+    else if (kind === "buffer") body = { action: "buffer", api_key: v("acc-buf-key") };
     else if (kind === "elevenlabs") body = { action: "elevenlabs", api_key: v("acc-el-key") };
+    else if (kind === "buffer-channels") body = { action: "buffer-channels", instagram: v("acc-buf-ig"), tiktok: v("acc-buf-tt") };
+    else if (kind === "media") body = { action: "media", endpoint: v("acc-md-endpoint"), bucket: v("acc-md-bucket"), access_key: v("acc-md-key"), secret_key: v("acc-md-secret"), public_url: v("acc-md-public"), region: v("acc-md-region") };
     else body = { action: "disconnect", which: kind.replace(/^off-/, "") };
     body.channel = rv.ch;
     rv.accBusy = kind; renderReview();
     try {
       const r = await postJSON("/api/accounts", body);
+      if (kind === "buffer") toast("social", "Buffer connected", `${r.channels.length} channel(s) found${r.instagram ? " · Instagram picked" : " · no Instagram channel"}${r.tiktok ? " · TikTok picked" : " · no TikTok channel"}. Check the two pickers below.`);
+      if (kind === "buffer-channels") toast("social", "Buffer", "Saved which channel is Instagram and which is TikTok.");
       if (kind === "elevenlabs" && r.elevenlabs) toast("creative", "ElevenLabs connected", `${r.elevenlabs.voices || 0} voice(s) found${r.elevenlabs.own ? `, ${r.elevenlabs.own} of them your own` : ""}. Tell the chief of staff which voice to use for voice-overs.`);
+      if (kind === "media") toast("social", "Media host works", "A test file went up and came back from " + (r.checked || "the public address") + ".");
       if (r.url) {
         window.open(r.url, "_blank");
         const who = kind === "tiktok" ? "tiktok" : "youtube";
@@ -1994,8 +2141,9 @@
       </div>`;
   }
   function accountsCard() {
-    const a = rv.acc || {}, fb = a.facebook || {}, ig = a.instagram || {}, yt = a.youtube || {}, tt = a.tiktok || {}, busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
+    const a = rv.acc || {}, fb = a.facebook || {}, ig = a.instagram || {}, yt = a.youtube || {}, tt = a.tiktok || {}, bf = a.buffer || {}, busy = (k) => (rv.accBusy === k ? '<span class="spin"></span> ' : "");
     const line = (ok, name, label) => `<div class="acc-line ${ok ? "ok" : ""}">${ok ? svg("check") : "○"} <b>${label}</b> ${ok ? esc(name || "connected") : "not connected"}</div>`;
+    const bufPick = (service, id, cur) => `<select class="pub-in" id="${id}"><option value="">— not through Buffer —</option>${(bf.channels || []).filter((c) => c.service === service).map((c) => `<option value="${esc(c.id)}" ${c.id === cur ? "selected" : ""}>${esc(c.name)}${c.problem ? " · " + esc(c.problem) : ""}</option>`).join("")}</select>`;
     return `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
         <div class="rv-title"><div class="t">Channels &amp; accounts</div><div class="s"><span>Connect once. Agents never post: only your Approve &amp; post button does.</span></div></div></div>
@@ -2044,6 +2192,36 @@
           <li><b>Scopes</b>: make sure <code>user.info.basic</code> and <code>video.upload</code> are added. Leave Direct Post off for now.</li>
           <li>Submit the app for review if TikTok asks for it; while it waits, add your own TikTok account under <b>Sandbox</b> → Target users to test.</li>
           <li>Copy the <b>Client key</b> and <b>Client secret</b> here and press <b>Connect TikTok</b> on this computer. Sign in and allow.</li></ol></details>
+      </div>
+      <div class="rv-sec acc"><div class="rv-h">Buffer <span>Instagram + TikTok: one caption, the same thumbnail</span></div>
+        ${line(bf.key, bf.name || "connected", "Buffer")}
+        <div class="pub-note">Every approved video gets a <b>Buffer package</b> on its posting screen (the video with your thumbnail as frame 1, one caption, the TikTok title): you can always post it by hand in Buffer. With an API key <b>and</b> a media host below, the Post button creates the Instagram Reel and the TikTok post in Buffer for you, now or scheduled.</div>
+        <input class="pub-in" id="acc-buf-key" type="password" placeholder="Buffer API key${bf.key ? " (leave empty to keep the current key and reread the channels)" : ""}" autocomplete="off">
+        <div class="acc-row"><button class="btn primary" data-acc="buffer" type="button">${busy("buffer")}Connect Buffer</button>${bf.key ? '<button class="btn" data-acc="off-buffer" type="button">Disconnect</button>' : ""}</div>
+        ${bf.key ? `<div class="pub-h">Which Buffer channel is which</div>
+        <div class="pub-note">Instagram</div>${bufPick("instagram", "acc-buf-ig", (bf.instagram || {}).id)}
+        <div class="pub-note">TikTok</div>${bufPick("tiktok", "acc-buf-tt", (bf.tiktok || {}).id)}
+        <div class="acc-row"><button class="btn" data-acc="buffer-channels" type="button">${busy("buffer-channels")}Save channels</button></div>` : ""}
+        <details class="acc-help"><summary>How to get the key (2 minutes)</summary><ol>
+          <li>In Buffer, connect your Instagram (professional account) and TikTok channels as usual.</li>
+          <li>Open <b>publish.buffer.com/settings/api</b> (Settings → API) and create an API key. Buffer's free plan allows one key.</li>
+          <li>Paste it here and press Connect Buffer. Agents HQ reads your channels and picks the Instagram and TikTok ones; check the two pickers.</li></ol></details>
+        <div class="pub-h">Media host <span>where Buffer fetches the video from</span></div>
+        ${line(bf.host, bf.hostName, "Media host")}${bf.hostShared ? '<div class="pub-note">Using the main channel\'s media host.</div>' : ""}
+        <div class="pub-note">Buffer has no upload: it fetches the video from a public https address when it publishes, so the file must sit somewhere public until then. Any S3-compatible bucket with public reads works; <b>Cloudflare R2</b> is free for this.</div>
+        <input class="pub-in" id="acc-md-endpoint" placeholder="S3 endpoint, e.g. https://<account id>.r2.cloudflarestorage.com" autocomplete="off">
+        <input class="pub-in" id="acc-md-bucket" placeholder="Bucket name, e.g. agents-hq-media" autocomplete="off">
+        <input class="pub-in" id="acc-md-key" placeholder="Access key ID${bf.host ? " (leave empty to keep)" : ""}" autocomplete="off">
+        <input class="pub-in" id="acc-md-secret" type="password" placeholder="Secret access key${bf.host ? " (leave empty to keep)" : ""}" autocomplete="off">
+        <input class="pub-in" id="acc-md-public" placeholder="Public address of the bucket, e.g. https://pub-xxxx.r2.dev" autocomplete="off">
+        <input class="pub-in" id="acc-md-region" placeholder="Region (R2: auto; AWS: e.g. ap-southeast-1) — optional" autocomplete="off">
+        <div class="acc-row"><button class="btn primary" data-acc="media" type="button">${busy("media")}Save &amp; test the media host</button>${bf.host ? '<button class="btn" data-acc="off-media" type="button">Remove</button>' : ""}</div>
+        <div class="pub-note">Save &amp; test uploads a small file, reads it back from the public address with no password (what Buffer will see), and removes it. Nothing is posted.</div>
+        <details class="acc-help"><summary>How to set up Cloudflare R2 (about 10 minutes, once, free)</summary><ol>
+          <li>Open <b>dash.cloudflare.com</b> → R2 Object Storage → <b>Create bucket</b>, name it <b>agents-hq-media</b> (location: Asia-Pacific).</li>
+          <li>In the bucket: Settings → <b>Public access</b> → R2.dev subdomain → <b>Allow access</b>. Copy the address (https://pub-….r2.dev): that is the <b>Public address</b>.</li>
+          <li>Back on the R2 overview: <b>Manage R2 API Tokens</b> → Create API token → permission <b>Object Read &amp; Write</b>, only this bucket. Copy the <b>Access Key ID</b> and the <b>Secret Access Key</b>, and the S3 endpoint shown under it (https://&lt;account id&gt;.r2.cloudflarestorage.com).</li>
+          <li>Paste the four values here (region stays empty = auto) and press <b>Save &amp; test</b>. Videos Agents HQ puts there have unguessable addresses; delete old ones in the bucket whenever you like, once their posts are out.</li></ol></details>
       </div>
       ${elevenSec()}`}
       </div><div class="rv-actions"><button class="btn" data-rv-close type="button">Done</button></div></div>`;
@@ -2323,7 +2501,7 @@
     if (!thumbnailStage && (!pkg || (pkg.ready && pkg.stages.includes("caption")))) html += pubSection();
     if (post && (!pkg || pkg.ready)) {
       // with the posting overview above, only what you post by hand is left here (TikTok, the pinned comment)
-      const secs = postSections(post.text).map((x, i) => ({ ...x, i })).filter((x) => !/^plan\b/i.test(x.title) && !(rv.pub && /^(captions?|options?|youtube|instagram|facebook)\b/i.test(x.title)));
+      const secs = postSections(post.text).map((x, i) => ({ ...x, i })).filter((x) => !/^plan\b/i.test(x.title) && !(rv.pub && /^(captions?|options?|youtube|instagram|facebook|tiktok)\b/i.test(x.title)));   // TikTok gets Instagram's words now: an old ## TikTok section is not shown
       if (secs.length) html += `<div class="rv-sec"><div class="rv-h">${rv.pub ? "Post by hand" : "Post copy"} <button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="all" type="button">Copy all</button></div>${secs.map((s) => `<div class="rv-post"><div class="rv-post-h"><b>${esc(s.title || "Copy")}</b><button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="${s.i}" type="button">Copy</button></div><div class="md">${mdHtml(s.body)}</div></div>`).join("")}</div>`;
     }
     if (srt) {
@@ -2418,6 +2596,7 @@
     if (more) { e.preventDefault(); e.stopPropagation(); const s = (rv.capOpen ||= new Set()), k = more.dataset.capMore; if (!s.delete(k)) s.add(k); renderReview(); return true; }
     const ct = e.target.closest("[data-copy-text]"); if (ct) { copyText(ct.dataset.copyText); toast("social", "Copied", ct.dataset.copyText); return true; }
     if (e.target.closest("[data-tt-copy]")) { copyText(pubValue("tiktok", "caption")); toast("social", "TikTok", "Caption copied. Paste it in the TikTok app."); return true; }
+    const bu = e.target.closest("[data-buf]"); if (bu) { bufferAction(bu.dataset.buf); return true; }
     const b = e.target.closest("[data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-play], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task], [data-pkg]");
     if (!b) return false;
     const d = b.dataset;

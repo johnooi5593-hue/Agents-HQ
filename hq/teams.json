@@ -582,6 +582,40 @@
           "agent": "poster-designer"
         }
       ]
+    },
+    {
+      "key": "security",
+      "name": "Security",
+      "color": "#3f9fbf",
+      "color_light": "#c3dfe9",
+      "color_wall": "#1f5566",
+      "icon": "🛡️",
+      "tagline": "audits · access · threats",
+      "lead": "security-lead",
+      "tools": [],
+      "skills": [
+        {
+          "name": "security-audit",
+          "note": "a diff or config change read for injection, traversal, missing login checks and leaked secrets: SAFE or FIX",
+          "agent": "security-auditor"
+        },
+        {
+          "name": "access-map",
+          "note": "who can reach what: settings.json rules, each agent's tools, secrets on disk, ports and phone access",
+          "agent": "access-guardian"
+        },
+        {
+          "name": "threat-triage",
+          "note": "messages, comments, links and footage names checked for phishing, scams and prompt injection before anyone acts on them",
+          "agent": "threat-scout"
+        },
+        {
+          "name": "security-report",
+          "note": "the workers' findings ranked into one report with a verdict: SAFE, FIX FIRST or STOP",
+          "agent": "security-lead"
+        }
+      ],
+      "accent": "#1aa3d6"
     }
   ]
 }

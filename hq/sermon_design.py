@@ -141,6 +141,98 @@ class SermonDesignBridge:
         self.delivery_poll_seconds, self.delivery_watch_seconds = max(.01, delivery_poll_seconds), min(1800, max(1, delivery_watch_seconds))
         self.request_impl, self.auto_start = request, auto_start
         self.engine_ready_at = 0
+        self.notification_error = None
+
+    def _notify_saved(self):
+        """A display callback cannot undo a committed, checksum-verified delivery."""
+        if not self.notify:
+            return
+        try:
+            self.notify()
+            self.notification_error = None
+        except Exception as error:
+            self.notification_error = type(error).__name__ + ": HQ display notification failed; saved delivery remains available."
+
+    @staticmethod
+    def _delivery_failure(error, job=None):
+        result = {"status": "failed", "error": str(error), "retryable": error.status not in (403, 410)}
+        # Only bind an actual successful job. A request's desired revision or
+        # the current project draft is not evidence of a finished image version.
+        if isinstance(job, dict) and job.get("status") == "succeeded" and re.fullmatch(ID, str(job.get("projectId", ""))):
+            result["projectId"] = job["projectId"]
+            revision = job.get("projectRevision")
+            if type(revision) is int and revision > 0:
+                result["projectRevision"] = revision
+        return result
+
+    def _finished_job_project(self, job, current):
+        revision, project_id = job.get("projectRevision"), job.get("projectId")
+        if job.get("status") != "succeeded" or not re.fullmatch(ID, str(project_id or "")) or type(revision) is not int or revision < 1:
+            raise DesignError("The finished job has no confirmed saved image version. Its current draft was not substituted.", 409)
+        if not isinstance(current, dict) or current.get("id") != project_id or current.get("deletedAt"):
+            raise DesignError("The finished job's saved project is unavailable or deleted.", 410)
+        if current.get("status") in ("cancelled", "canceled", "failed"):
+            raise DesignError("A cancelled or failed project cannot be collected by an older successful job.", 409)
+        frozen = current
+        if current.get("revision") != revision or current.get("lastExport", {}).get("projectRevision") != revision:
+            code, _, raw = self._request("GET", BASE + "/projects/" + project_id + "?revision=" + str(revision))
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError) as error:
+                raise DesignError("The exact finished image version returned invalid metadata. No newer artwork was substituted.", 502) from error
+            frozen = payload.get("project") if isinstance(payload, dict) else None
+            if code != 200 or not isinstance(frozen, dict) or frozen.get("id") != project_id or frozen.get("revision") != revision:
+                raise DesignError("The exact finished image version is unavailable. No newer artwork was substituted.", 409)
+        if frozen.get("lastExport", {}).get("projectRevision") != revision:
+            raise DesignError("The finished job's saved version has no verified export.", 409)
+        return frozen
+
+    def _acknowledge_job_delivery(self, job, delivery):
+        """Reconcile an explicitly verified delivery without reviving failed work."""
+        job_id = job.get("id")
+        if not re.fullmatch(ID, str(job_id or "")):
+            return
+        with self.watch_lock:
+            pending = self._pending(); row = pending["jobs"].get(job_id)
+            if not row or row.get("projectId") != job.get("projectId") or row.get("status") not in ("watching", "delivery-error", "expired", "delivered"):
+                return
+            row.update(status="delivered", taskId=delivery["taskId"], projectRevision=job["projectRevision"], lastCheckedAt=time.time())
+            row.pop("lastError", None)
+            self._save_pending(pending)
+
+    def _job_payload(self, payload, expected_job_id):
+        if not isinstance(payload, dict):
+            raise DesignError("The saved job returned invalid metadata. No result was collected.", 502)
+        job, current = payload.get("job"), payload.get("project")
+        if not isinstance(job, dict) or job.get("id") != expected_job_id or not re.fullmatch(ID, str(job.get("projectId", ""))) or not isinstance(current, dict) or current.get("id") != job["projectId"]:
+            raise DesignError("The saved job returned a different project identity. No result was collected.", 409)
+        if job.get("status") != "succeeded":
+            # A running/failed old request must never collect a previous export.
+            return self.adapt(payload, register=False)
+        try:
+            frozen = self._finished_job_project(job, current)
+            delivery = self.register(frozen)
+            if not delivery:
+                raise DesignError("The finished job has no verified export delivery.", 409)
+            status = {"status": "delivered", "projectId": job["projectId"], "projectRevision": job["projectRevision"], "taskId": delivery["taskId"], "retryable": False, "warnings": list(delivery.get("warnings", []))}
+            # Delivery is committed already. A ledger/display issue is distinct
+            # from collection; a later explicit refresh can reconcile it again.
+            try:
+                self._acknowledge_job_delivery(job, delivery)
+            except (DesignError, OSError, ValueError, TypeError) as error:
+                status["warnings"].append("The saved delivery is ready; its background status ledger needs another refresh.")
+        except DesignError as error:
+            status = self._delivery_failure(error, job)
+        except (OSError, http.client.HTTPException, ValueError, TypeError, AttributeError) as error:
+            status = self._delivery_failure(DesignError("The finished image version could not be collected. Retry delivery; no images were regenerated.", 502), job)
+        result = self.adapt(payload, register=False)
+        result["delivery"] = status; result["job"]["delivery"] = status
+        if status["status"] == "delivered":
+            result["hqTaskId"] = status["taskId"]
+            if current.get("revision") == status["projectRevision"]:
+                result["project"]["hqTaskId"] = status["taskId"]
+                result["project"]["hqReviewUrl"] = "/?task=" + quote(status["taskId"])
+        return result
 
     def _request(self, method, route, data=None, headers=None):
         if self.request_impl:
@@ -374,14 +466,7 @@ class SermonDesignBridge:
                 self._record_watch(job_id)
                 return
             revision = job.get("projectRevision")
-            if not isinstance(project, dict) or project.get("id") != item["projectId"] or not isinstance(revision, int):
-                raise DesignError("The finished job has incomplete project provenance.")
-            if project.get("revision") != revision or project.get("lastExport", {}).get("projectRevision") != revision:
-                code, _, body = self._request("GET", BASE + "/projects/" + item["projectId"] + "?revision=" + str(revision))
-                historical = json.loads(body)
-                project = historical.get("project") if isinstance(historical, dict) else None
-                if code != 200 or not isinstance(project, dict) or project.get("id") != item["projectId"] or project.get("revision") != revision or project.get("lastExport", {}).get("projectRevision") != revision:
-                    raise DesignError("The exact finished project revision is unavailable. No newer revision was substituted.")
+            project = self._finished_job_project(job, project)
             delivery = self.register(project)
             if not delivery:
                 raise DesignError("The finished job has no verified export delivery.")
@@ -459,7 +544,14 @@ class SermonDesignBridge:
             raise DesignError("The design delivery file list is invalid.", 502)
         seen, total = set(), 0
         for item in rows:
-            if not isinstance(item, dict) or not isinstance(item.get("size"), int) or not 0 < item["size"] <= 512 * 1024 * 1024 or not re.fullmatch(r"[a-f0-9]{64}", str(item.get("sha256", ""))):
+            # A complete ZIP stays on the engine when delivery uses pictures-first mode.
+            archive = project["lastExport"].get("zip")
+            is_source_zip = (isinstance(item, dict) and item == archive
+                             and item.get("role") == "complete-package"
+                             and item.get("mimeType") == "application/zip"
+                             and str(item.get("name", "")).lower().endswith(".zip"))
+            item_limit = SOURCE_LIMIT if is_source_zip else 512 * 1024 * 1024
+            if not isinstance(item, dict) or not isinstance(item.get("size"), int) or not 0 < item["size"] <= item_limit or not re.fullmatch(r"[a-f0-9]{64}", str(item.get("sha256", ""))):
                 raise DesignError("The design delivery metadata is invalid or exceeds bounded source limits.", 502)
             name = str(item.get("name", "")).replace("\\", "/")
             if not name or name.startswith("/") or ":" in name or any(part in ("", ".", "..") for part in name.split("/")) or name.casefold() in seen:
@@ -589,8 +681,7 @@ class SermonDesignBridge:
                 "deliveryMode": "pictures-first" if source_rows else "full-package", "warnings": warnings,
                 "sourceFiles": [{"path": str(Path(item["path"]).relative_to(self.runtime_root)).replace("\\", "/"), "name": item["name"], "sha256": item["sha256"], "size": item["size"]} for item in source_rows]}
             index["deliveries"][key] = delivery; self._save_index(index)
-            if self.notify:
-                self.notify()
+            self._notify_saved()
             return delivery
 
     def adapt(self, payload, register=True):
@@ -622,7 +713,7 @@ class SermonDesignBridge:
         """Collect a frozen saved export only; never generates, renders or approves."""
         if set(body) - {"deliveryAction", "expectedRevision", "projectRevision", "jobId"} or body.get("deliveryAction", "retry") != "retry":
             raise DesignError("Use delivery retry by itself. Generation, editing and export fields are not accepted.", 400)
-        if not re.fullmatch(ID, str(project_id)) or not isinstance(body.get("expectedRevision"), int) or not isinstance(body.get("projectRevision"), int):
+        if not re.fullmatch(ID, str(project_id)) or type(body.get("expectedRevision")) is not int or type(body.get("projectRevision")) is not int:
             raise DesignError("Delivery retry needs a saved project and its current revision.", 400)
         code, _, raw = self._request("GET", BASE + "/projects/" + project_id)
         payload = json.loads(raw)
@@ -642,7 +733,7 @@ class SermonDesignBridge:
                 raise DesignError("Choose the exact completed image job.", 400)
             code, _, raw = self._request("GET", BASE + "/jobs/" + job_id)
             accepted = json.loads(raw); job = accepted.get("job") if isinstance(accepted, dict) else None
-            if code != 200 or not isinstance(job, dict) or job.get("id") != job_id or job.get("projectId") != project_id or job.get("status") != "succeeded" or job.get("projectRevision") != revision:
+            if code != 200 or not isinstance(job, dict) or job.get("id") != job_id or job.get("projectId") != project_id or job.get("status") != "succeeded" or type(job.get("projectRevision")) is not int or job["projectRevision"] < 1 or job["projectRevision"] != revision:
                 raise DesignError("The assigned image job is running, failed, cancelled or unknown. Its earlier artwork was not substituted.", 409)
         elif any(row.get("projectId") == project_id and row.get("status") == "watching" for row in self._pending()["jobs"].values()):
             raise DesignError("This project has an unresolved image job. Check its status before collecting a frozen export.", 409)
@@ -655,14 +746,28 @@ class SermonDesignBridge:
                 raise DesignError("The exact finished artwork revision is unavailable; no newer artwork was substituted.", 409)
         if frozen.get("lastExport", {}).get("projectRevision") != revision:
             raise DesignError("The selected revision has no verified completed export.", 409)
-        delivery = self.register(frozen)
-        if not delivery:
-            raise DesignError("The saved project has no completed export to deliver.", 409)
-        status = {"status": "delivered", "projectId": project_id, "projectRevision": revision, "taskId": delivery["taskId"], "warnings": delivery.get("warnings", []), "retryable": False}
+        binding = {"id": job_id, "status": "succeeded", "projectId": project_id, "projectRevision": revision}
+        try:
+            delivery = self.register(frozen)
+            if not delivery:
+                raise DesignError("The saved project has no completed export to deliver.", 409)
+        except DesignError as error:
+            error.delivery = self._delivery_failure(error, binding)
+            raise
+        except (OSError, http.client.HTTPException, ValueError, TypeError, AttributeError) as error:
+            failure = DesignError("The finished image version could not be collected. Retry delivery; no images were regenerated.", 502)
+            failure.delivery = self._delivery_failure(failure, binding)
+            raise failure from error
+        status = {"status": "delivered", "projectId": project_id, "projectRevision": revision, "taskId": delivery["taskId"], "warnings": list(delivery.get("warnings", [])), "retryable": False}
+        try:
+            self._acknowledge_job_delivery(binding, delivery)
+        except (DesignError, OSError, ValueError, TypeError):
+            status["warnings"].append("The saved delivery is ready; its background status ledger needs another refresh.")
         result = self.adapt({"project": current}, register=False)
         result.update({"hqTaskId": delivery["taskId"], "delivery": status})
-        result["project"]["hqTaskId"] = delivery["taskId"]
-        result["project"]["hqReviewUrl"] = "/?task=" + quote(delivery["taskId"])
+        if current.get("revision") == revision:
+            result["project"]["hqTaskId"] = delivery["taskId"]
+            result["project"]["hqReviewUrl"] = "/?task=" + quote(delivery["taskId"])
         return result
 
     def _download(self, handler, query, head=False):
@@ -835,16 +940,11 @@ class SermonDesignBridge:
                         if not isinstance(payload.get("job"), dict) or payload["job"].get("projectId") != path.split("/")[-2]:
                             raise DesignError("The accepted job does not match its assigned project. No different task was watched.", 502)
                         self._track_job(payload.get("job"))
-                    try:
+                    job_match = re.fullmatch(BASE + r"/jobs/(" + ID + r")", path) if method == "GET" else None
+                    if job_match:
+                        payload = self._job_payload(payload, job_match[1])
+                    else:
                         payload = self.adapt(payload, register=not (method == "GET" and "revision" in parse_qs(url.query)))
-                    except DesignError as error:
-                        job = payload.get("job") if isinstance(payload, dict) else None
-                        if method == "GET" and path.startswith(BASE + "/jobs/") and isinstance(job, dict) and job.get("status") == "succeeded":
-                            delivery = {"status": "failed", "error": str(error), "retryable": error.status not in (403, 410), "projectId": job.get("projectId"), "projectRevision": job.get("projectRevision")}
-                            payload = self.adapt(payload, register=False)
-                            payload["delivery"] = delivery; payload["job"]["delivery"] = delivery
-                        else:
-                            raise
                 handler._sermon_response_started = True
                 handler.send_json(payload, code); return True
             handler._sermon_response_started = True
@@ -861,7 +961,7 @@ class SermonDesignBridge:
                 handler.close_connection = True
             else:
                 try:
-                    handler.send_json({"error": str(error), "delivery": {"status": "failed", "error": str(error), "retryable": error.status not in (403, 410)}}, error.status)
+                    handler.send_json({"error": str(error), "delivery": getattr(error, "delivery", self._delivery_failure(error))}, error.status)
                 except OSError:
                     handler.close_connection = True
             return True
