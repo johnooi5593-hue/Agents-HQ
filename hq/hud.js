@@ -1266,7 +1266,7 @@
     const chOpts = [["auto", "Channel: auto"], ...chList().map((c) => ["ch:" + c.key, c.name]), ["@office", "Whole office"]].map(([v, l]) => `<option value="${esc(v)}" ${v === addCh ? "selected" : ""}>${esc(l)}</option>`).join("");
     const tabs = [["needs", "Needs you"], ["working", "Working"], ["scheduled", "Scheduled"], ["posted", "Posted"], ["history", "History"]];
     p.innerHTML = `<div class="ph"><span class="picon">${svg("list")}</span><div class="tt"><h2>Task status</h2><div class="sub">${state.chFilter === "all" ? "Whole office" : esc(chName(state.chFilter === "@office" ? null : state.chFilter))} · today${st.desk && st.desk.running ? ` · <b class="jobs">${st.desk.running} of ${st.desk.limit} jobs running</b>${st.desk.queued ? `, ${st.desk.queued} waiting` : ""}` : ""}</div></div><button class="xbtn" data-close type="button">${svg("close")}</button></div>
-      <div class="ph-tools"><button class="${state.phAdd ? "on" : ""}" data-ph-toggle="add" type="button">${state.phAdd ? "× Close" : "+ New task"}</button><button class="${state.phDrop || state.upKind ? "on" : ""}" data-ph-toggle="drop" type="button">${state.upKind ? `Uploading ${state.upPct || 0}%` : state.phDrop ? "× Close" : "⤒ Add files"}</button></div>
+      <div class="ph-tools"><button class="${state.phAdd ? "on" : ""}" data-ph-toggle="add" type="button">${state.phAdd ? "× Close" : "+ New task"}</button><button data-ready-open type="button">▶ Post a video</button><button class="${state.phDrop || state.upKind ? "on" : ""}" data-ph-toggle="drop" type="button">${state.upKind ? `Uploading ${state.upPct || 0}%` : state.phDrop ? "× Close" : "⤒ Add files"}</button></div>
       <form class="add-task ${state.phAdd ? "" : "ph-hide"}" id="add-task"><input id="task-title" type="text" placeholder="New task, for example: write the listing for the new hoodie" required><select id="task-team" aria-label="Team"><option value="">Team: auto</option>${teamOpts}</select><select id="task-ch" aria-label="Channel">${chOpts}</select><button class="btn blue" type="submit">Add</button></form>
       ${chRow}
       <div class="ftabs">${tabs.map(([k, l]) => `<button class="ftab ${f === k ? "active" : ""}" data-filter="${k}" type="button">${l} <b>${counts[k]}</b></button>`).join("")}</div>
@@ -1788,7 +1788,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
+      accounts: !!accounts, ready: null, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -2298,9 +2298,124 @@
       ${elevenSec()}`}
       </div><div class="rv-actions"><button class="btn" data-rv-close type="button">Done</button></div></div>`;
   }
+  // ---- Post a video (owner, 2026-11-13): a ready-made video skips the editors. One screen, four steps: the video, your
+  // thumbnail (a picture, or the frame the video is paused on), your title and caption, then the usual posting screen.
+  const readyName = (file, fallback) => {                  // a plain file name the server takes (letters, digits, space . _ ( ) -)
+    const dot = file.name.lastIndexOf("."), ext = dot > 0 ? file.name.slice(dot).toLowerCase().replace(/[^.a-z0-9]/g, "") : "";
+    const stem = (dot > 0 ? file.name.slice(0, dot) : file.name).replace(/[^A-Za-z0-9 _()\-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "").slice(0, 80);
+    return (stem || fallback) + ext;
+  };
+  function openReady(name) {
+    const host = ensureReviewHost(), f = state.chFilter;
+    stopPubPoll();
+    Object.assign(rv, { open: true, folder: null, taskId: null, accounts: false, data: null, pub: null, mode: null,
+      ready: { st: null, up: null, busy: "", err: "", resume: !!name, title: "", caption: "", ch: f && f !== "all" && f !== "@office" ? f : "" } });
+    if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
+    host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
+    renderReady();
+    if (name) readyCall({ name }, "opening");
+  }
+  function renderReady() {
+    const host = $("#review"); if (!host || !rv.open || !rv.ready) return;
+    const old = $("#rdy-player"), at = old ? old.currentTime : 0;
+    host.innerHTML = readyCard();
+    const fresh = $("#rdy-player");
+    if (fresh && old && fresh.getAttribute("src") === old.getAttribute("src")) { fresh.replaceWith(old); }
+    else if (fresh && at) { try { fresh.currentTime = at; } catch (e) { /* not loaded yet */ } }
+  }
+  function readyTake(st, r) { if (!r || rv.ready !== r) return; r.st = st; if (!r.title) r.title = st.title || ""; if (!r.caption) r.caption = st.caption || ""; }
+  async function readyCall(body, busy) {
+    const r = rv.ready; if (!r || r.busy) return false;
+    r.busy = busy; r.err = ""; renderReady();
+    try { readyTake(await postJSON("/api/ready", body), r); return rv.ready === r; }
+    catch (e) { if (rv.ready === r) r.err = e.message || "that did not work"; return false; }
+    finally { if (rv.ready === r) { r.busy = ""; renderReady(); } }
+  }
+  async function readyUpload(kind, file) {
+    const r = rv.ready; if (!r || r.busy || !file) return;
+    const url = kind === "video" ? "/api/ready/video/" + encodeURIComponent(readyName(file, "video")) + (r.ch ? "?channel=" + encodeURIComponent(r.ch) : "")
+      : "/api/ready/cover/" + encodeURIComponent(r.st.name) + "/" + encodeURIComponent(readyName(file, "thumbnail"));
+    r.busy = kind; r.up = 0; r.err = ""; renderReady();
+    try {
+      readyTake(await putFile(url, file, (sent, total) => {
+        r.up = total ? Math.min(100, Math.round((sent / total) * 100)) : 0;
+        if (rv.ready !== r) return;
+        const bar = $("#rdy-bar"), say = $("#rdy-pct"); if (bar) bar.style.width = r.up + "%"; if (say) say.textContent = r.up + "%";
+      }), r);
+      if (kind === "video") refresh();                      // its card shows on the board
+    } catch (e) { if (rv.ready === r) r.err = e.message || "the upload failed"; }
+    finally { if (rv.ready === r) { r.busy = ""; r.up = null; renderReady(); } }
+  }
+  async function readyNext() {
+    const r = rv.ready; if (!r || !r.st) return;
+    if (!(await readyCall({ name: r.st.name, title: r.title, caption: r.caption }, "saving")) || rv.ready !== r || !rv.open) return;
+    const st = r.st; rv.ready = null;
+    openReview({ folder: st.folder, taskId: st.task || undefined });
+  }
+  function readyCard() {
+    const r = rv.ready, st = r.st, chans = chList(), base = st ? `/files/approved/${encodeURIComponent(st.name)}/` : "";
+    const stepNo = (n, ok) => `<span class="rdy-n ${ok ? "ok" : ""}">${ok ? svg("check") : n}</span>`;
+    const working = (what) => `<span class="pub-run"><span class="spin"></span> ${what}</span>`;
+    const missing = [!st && "the video", st && !st.cover && "a thumbnail", !r.title.trim() && "a title", !r.caption.trim() && "a caption"].filter(Boolean);
+    let h = `<div class="rv-card rdy">
+      <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
+        <div class="rv-title"><div class="t">Post a video</div><div class="s"><span>Your own finished video: add a thumbnail and a caption, then post. It skips the editors.</span></div></div></div>
+      <div class="rv-body">`;
+    if (r.err) h += `<div class="pub-warn" role="alert">${esc(r.err)}</div>`;
+    // 1 · the video
+    h += `<div class="rv-sec rdy-step"><div class="rdy-h">${stepNo(1, !!st)}<b>Video</b><span>${st ? esc(st.source || st.video) : "mp4 or mov, already edited"}</span></div>`;
+    if (st) h += `<video class="rdy-video" id="rdy-player" src="${esc(base + encodeURIComponent(st.video))}" controls playsinline preload="metadata"></video>`;
+    else if (r.busy === "video") h += `<div class="rdy-up"><div class="rdy-track"><div class="rdy-fill" id="rdy-bar" style="width:${r.up || 0}%"></div></div><span>Uploading <b id="rdy-pct">${r.up || 0}%</b> · keep this screen open</span></div>`;
+    else if (r.busy === "opening") h += working("Opening…");
+    else if (r.resume) h += '<div class="pub-note">This video can\'t be opened here. Go back and open it from its card.</div>';
+    else h += `${chans.length > 1 ? `<label class="rdy-lbl">Channel<select class="pub-in" data-ready-field="ch">${chans.map((c) => `<option value="${esc(c.key)}" ${c.key === r.ch ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>` : ""}
+      <label class="btn primary rdy-pick">Choose the video<input type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" data-ready-file="video" hidden></label>`;
+    h += "</div>";
+    // 2 · the thumbnail
+    h += `<div class="rv-sec rdy-step ${st ? "" : "off"}"><div class="rdy-h">${stepNo(2, !!(st && st.cover))}<b>Thumbnail</b><span>your picture, or a frame of the video</span></div>`;
+    if (st) {
+      h += `<div class="rdy-thumb">${st.cover ? `<img src="${esc(base + st.cover + "?v=" + st.coverAt)}" alt="Your thumbnail">` : '<div class="rdy-nothumb">No thumbnail yet</div>'}
+        <div class="rdy-acts">${r.busy === "cover" ? working(`Uploading ${r.up || 0}%…`) : r.busy === "frame" ? working("Taking the frame…")
+          : `<label class="rv-copy rdy-pick">Upload a picture<input type="file" accept="image/jpeg,image/png" data-ready-file="cover" hidden></label>
+             <button class="rv-copy" data-ready="frame" type="button">Use the frame the video is paused on</button>`}
+          <div class="pub-note">Best: a 1080 × 1920 picture. Nothing is posted without a thumbnail.</div></div></div>`;
+    }
+    h += "</div>";
+    // 3 · the caption
+    h += `<div class="rv-sec rdy-step ${st ? "" : "off"}"><div class="rdy-h">${stepNo(3, !!(r.title.trim() && r.caption.trim()))}<b>Caption</b><span>the same words on every platform</span></div>`;
+    if (st) h += `<input class="pub-in" data-ready-field="title" maxlength="100" value="${esc(r.title)}" placeholder="Title (YouTube and TikTok show it)">
+      <textarea class="pub-in" rows="6" data-ready-field="caption" maxlength="2200" placeholder="Caption, with your #hashtags at the end">${esc(r.caption)}</textarea>
+      <div class="pub-note"><span id="rdy-count">${r.caption.length}</span> of 2,200 characters (Instagram's limit)</div>`;
+    h += "</div>";
+    // 4 · where and when
+    h += `<div class="rv-sec rdy-step ${st ? "" : "off"}"><div class="rdy-h">${stepNo(4, false)}<b>Where and when</b><span>Facebook, YouTube, Instagram and TikTok</span></div>
+      ${st ? `<button class="btn primary" data-ready="next" type="button" id="rdy-next" ${missing.length || r.busy ? "disabled" : ""}>${r.busy === "saving" ? '<span class="spin"></span> Saving…' : "Next: where and when"}</button>
+        <div class="pub-note" id="rdy-miss">${missing.length ? "Still needed: " + esc(missing.join(", ")) + "." : "The next screen is the usual posting screen. Nothing is posted until you press Post there."}</div>` : ""}</div>`;
+    return h + "</div></div>";
+  }
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest ? e.target.closest("[data-ready-open], [data-ready]") : null; if (!t) return;
+    if (t.dataset.readyOpen != null) { openReady(t.dataset.readyOpen || ""); return; }
+    const r = rv.ready; if (!r || !r.st) return;
+    if (t.dataset.ready === "frame") { const v = $("#rdy-player"); const end = v && Number.isFinite(v.duration) ? Math.max(0, v.duration - 0.15) : Infinity; readyCall({ name: r.st.name, frame: v ? +Math.max(0, Math.min(v.currentTime || 0, end)).toFixed(2) : 0 }, "frame"); }
+    if (t.dataset.ready === "next") readyNext();
+  });
+  document.addEventListener("change", (e) => {
+    const d = (e.target && e.target.dataset) || {};
+    if (d.readyFile && rv.ready) { const f = e.target.files && e.target.files[0]; e.target.value = ""; readyUpload(d.readyFile, f); }
+  });
+  document.addEventListener("input", (e) => {
+    const d = (e.target && e.target.dataset) || {}, r = rv.ready; if (!d.readyField || !r) return;
+    r[d.readyField] = e.target.value;
+    if (d.readyField === "ch") return;
+    const miss = [!r.st && "the video", r.st && !r.st.cover && "a thumbnail", !r.title.trim() && "a title", !r.caption.trim() && "a caption"].filter(Boolean);
+    const n = $("#rdy-count"), b = $("#rdy-next"), m = $("#rdy-miss");
+    if (n) n.textContent = r.caption.length; if (b) b.disabled = !!miss.length || !!r.busy;
+    if (m) m.textContent = miss.length ? "Still needed: " + miss.join(", ") + "." : "The next screen is the usual posting screen. Nothing is posted until you press Post there.";
+  });
   function closeReview(fromHistory) {
     if (!rv.open) return;
-    rv.open = false; stopPubPoll();
+    rv.open = false; rv.ready = null; stopPubPoll();
     const host = $("#review");
     if (host) { host.querySelectorAll("video").forEach((v) => { try { v.pause(); } catch (e) { /* gone */ } }); host.hidden = true; host.innerHTML = ""; }
     document.body.classList.remove("review-open");
@@ -2528,6 +2643,7 @@
   const phoneImg = (u) => (u && isPhone() && /^\/(files|api\/thumbnail-design)\//.test(u) ? u + (u.includes("?") ? "&" : "?") + "phone=1" : u);
   function renderReview() {
     const host = $("#review"); if (!host || !rv.open) return;
+    if (rv.ready) { if (!$("#review .rdy")) renderReady(); return; }   // Post a video: only its own actions redraw it (typing is never wiped)
     if (rv.accounts) { host.innerHTML = accountsCard(); return; }
     const st = state.status || {}, task = rv.taskId ? (st.tasks || []).find((t) => t.id === rv.taskId) : null;
     const name = rv.folder ? rv.folder.split("/").slice(1).join("/") : "";
@@ -2540,7 +2656,7 @@
     const post = byName(/^post\.md$/i), notes = byName(/^notes\.md$/i), plan = byName(/^plan\.md$/i), srt = byName(/\.srt$/i);
     const shown = new Set([post, notes, plan, srt].filter(Boolean).map((f) => f.path));
     const others = files.filter((f) => !vids.includes(f) && !imgs.includes(f) && !shown.has(f.path));
-    const area = rv.folder ? rv.folder.split("/")[0] : "", canApprove = area === "out" || (task && task.status === "review");
+    const area = rv.folder ? rv.folder.split("/")[0] : "", canApprove = (area === "out" || (task && task.status === "review")) && !(area === "approved" && files.some((f) => f.path === "ready.json"));   // not for the owner's own uploaded video
     const studioProject = /^(?:out|approved)\/sermon-studio-([A-Za-z0-9][A-Za-z0-9_-]{0,99})-r\d+-a\d+$/.exec(rv.folder || "");
     const thumbnailRequest = /^out\/thumbnail-final-([a-zA-Z0-9_-]+)$/.exec(rv.folder || "");
     const thumbnailEdit = thumbnailRequest ? `<a class="btn" href="/thumbnail-studio.html?job=${encodeURIComponent(thumbnailRequest[1])}">修改 Codex 封面 / New version</a>` : "";
@@ -2567,6 +2683,7 @@
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
         <div class="rv-title"><div class="t">${esc(title)}</div><div class="s">${tagPill(task ? task.team : "Creative")}<span>${area === "approved" ? "approved" : task && task.status !== "review" ? esc(task.status) : "waiting for your OK"}${files.length ? ` · ${files.length} file${files.length === 1 ? "" : "s"}` : ""}</span></div></div></div>${tabBar}
       <div class="rv-body">`;
+    if (area === "approved" && files.some((f) => f.path === "ready.json")) html += `<div class="rdy-strip"><span>Your own video</span><button class="rv-copy" data-ready-open="${esc(name)}" type="button">Change thumbnail or caption</button></div>`;
     if (loading) html += '<div class="rv-empty"><span class="spin"></span> Opening…</div>';
     else if (rv.data && rv.data.error) html += `<div class="rv-empty">${esc(rv.data.error)}. The folder may have been approved or moved.</div>`;
     mark("watch");

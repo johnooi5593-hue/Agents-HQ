@@ -38,6 +38,7 @@ from status import CLIP_EXT, brain_entities, brain_notes, collect, files  # noqa
 import channels as channels_mod  # noqa: E402
 import activity  # noqa: E402  (watches every Claude Code session on this computer)
 import publish  # noqa: E402  (posts approved work, only when the owner presses Post)
+import ready_post  # noqa: E402  (Post a video: the owner's own ready-made video, thumbnail and caption)
 import elevenlabs  # noqa: E402  (the owner's ElevenLabs key for the voice-over step; never shown or posted anywhere)
 import webpush  # noqa: E402  (phone notifications for the installed app)
 from sermon_design import SermonDesignBridge  # noqa: E402  (native renderer; no Claude execution)
@@ -2113,6 +2114,7 @@ def phone_state(d):
     return got or ({"making": True} if phone_jobs.making(d) else None)
 
 
+ready = ready_post.ReadyPosts(ROOT, task_action, channel_ok=lambda key: bool(channels.get(key)), max_upload=MAX_UPLOAD, load_tasks=load_tasks)
 packages = Packages(ROOT, thumbnail_design, task_action, approve_folder, load_tasks, lambda prompt: desk.start(prompt),
                     lambda prefix: desk.progress_of(prefix),   # a job for it: its estimated %, or None when none runs
                     valid=media_check.readable_nowait, phone=phone_state,   # never ffprobe inside a status request (A7)
@@ -2612,6 +2614,7 @@ class Handler(BaseHTTPRequestHandler):
                         publisher.buffer_make(d, video, cover, caption, title)
                     else:
                         publisher.buffer_done(d, video, cover, caption, title)
+                        ready.posting(d)                         # an uploaded ready-made video posted by hand: its card is done too
                     notifier.refresh()
                     return self.send_json(publisher.payload(d, video, cover))
                 chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
@@ -2619,7 +2622,13 @@ class Handler(BaseHTTPRequestHandler):
                                           str(body.get("coverIg") or ""))
             except publish.PostError as e:
                 return self.send_json({"error": str(e)}, 400)
+            ready.posting(d)                                 # an uploaded ready-made video: its card is done once it is posting
             return self.send_json({"started": started, **publisher.payload(d)}, 202)
+        if path == "/api/ready":                           # Post a video: a frame as the thumbnail, the title and caption
+            try:
+                return self.send_json(ready.action(self.read_json()))
+            except ready_post.ReadyError as e:
+                return self.send_json({"error": str(e)}, e.status)
         if path == "/api/channels":
             code, payload = channels_action(self.read_json())
             return self.send_json(payload, code)
@@ -2662,6 +2671,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if thumbnail_design.handle(self) or sermon_design.handle(self):
             return
+        m = re.match(r"^/api/ready/(video|cover)/([^/]+)(?:/([^/]+))?$", path)
+        if m:                                               # Post a video: the owner's ready-made video, or its thumbnail
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            try:
+                if m[1] == "video" and not m[3]:
+                    out = ready.save_video(m[2], (parse_qs(urlparse(self.path).query).get("channel") or [""])[0], n, self.rfile)
+                elif m[1] == "cover" and m[3]:
+                    out = ready.save_cover(m[2], m[3], n, self.rfile)
+                else:
+                    return self.send_json({"error": "not found"}, 404)
+            except ready_post.ReadyError as e:
+                return self.send_json({"error": str(e)}, e.status)
+            return self.send_json(out, 201)
         m = re.match(r"^/api/inbox/(clips|radar|stats|messages)/([^/]+)$", path)
         if not m:
             return self.send_json({"error": "not found"}, 404)
