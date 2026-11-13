@@ -1488,3 +1488,43 @@ body.review-open { overflow: hidden; }
 .rdy-nothumb { display: flex; align-items: center; justify-content: center; text-align: center; padding: 6px; color: #8a93a6; font: 12px Inter, sans-serif; border: 1px dashed rgba(255, 255, 255, 0.18); }
 .rdy-acts { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
 .rdy-strip { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); color: #8a93a6; font: 12.5px Inter, sans-serif; }
+
+/* Needs you (owner, 2026-11-13): look-alike cards in one group of small tiles; Select, then one Delete */
+.sec .sel-btn { font: 600 12px Inter, sans-serif; letter-spacing: 0; text-transform: none; height: 26px; }
+.sec .sel-btn.on { border-color: #4f7cff; background: #22305a; color: #fff; }
+.pgroup { border-radius: 14px; background: rgba(255, 255, 255, 0.025); border: 1px solid var(--card-line); margin-bottom: 10px; overflow: hidden; }
+.pg-head { display: flex; align-items: center; gap: 8px; padding-right: 12px; }
+.pg-head > .btn { flex: none; }
+.pg-tog { all: unset; box-sizing: border-box; flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 12px 4px 12px 12px; cursor: pointer; }
+.pg-tog:focus-visible, .ptile:focus-visible, .selwrap:focus-visible { outline: 2px solid #4f7cff; outline-offset: -2px; border-radius: 12px; }
+.pg-chev { color: #6a7080; font-size: 18px; width: 16px; text-align: center; transform: rotate(90deg); transition: transform 0.15s; }
+.pgroup.shut .pg-chev { transform: none; }
+.pg-title { font-weight: 700; font-size: 14px; color: #ecf0fc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-title { flex: none; max-width: 60%; }
+.pg-n { flex: 1; min-width: 0; font: 12px Inter, sans-serif; color: #8a93a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 10px 10px; }
+.ptile { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 48px; padding: 6px 8px; border-radius: 10px; background: var(--card); border: 1px solid var(--card-line); cursor: pointer; }
+.ptile:hover { border-color: #4a5165; }
+.ptile .thumb { width: 34px; height: 34px; flex: none; border-radius: 7px; }
+.ptile .pt-ic { display: grid; place-items: center; color: #9aa3b2; }
+.ptile .pt-ic .i { width: 16px; height: 16px; }
+.pt-tt { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.pt-tt b { font: 600 12.5px Inter, sans-serif; color: #e6eaf5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pt-tt small { font: 11px Inter, sans-serif; color: #8a93a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.selwrap { display: flex; align-items: center; gap: 10px; cursor: pointer; border-radius: 14px; user-select: none; -webkit-user-select: none; }
+#hud .selwrap *, .selwrap * { pointer-events: none; }
+.selwrap > .selbody { flex: 1; min-width: 0; }
+.selwrap > .selbody > :last-child { margin-bottom: 0; }
+.selwrap:not(.ptile) { margin-bottom: 10px; }
+.selbox { flex: none; width: 22px; height: 22px; border-radius: 7px; border: 1.5px solid #5a6170; background: #1b1f2b; display: grid; place-items: center; color: #fff; }
+.selbox .i { width: 14px; height: 14px; }
+.selwrap.on > .selbox { background: #4f7cff; border-color: #4f7cff; }
+.selwrap.on > .selbody > *, .ptile.selwrap.on { border-color: #4f7cff; box-shadow: 0 0 0 1px #4f7cff inset; }
+.ptile.selwrap { gap: 8px; }
+.ptile.selwrap > .selbox { width: 20px; height: 20px; }
+.selbar { position: sticky; bottom: -20px; z-index: 3; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px -6px 0; padding: 10px 12px; border-radius: 14px; background: #1a2238; border: 1px solid #34436e; box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45); }
+.selbar .sb-n { flex: 1; min-width: 70px; white-space: nowrap; font: 13px Inter, sans-serif; color: #c9d4f5; }
+.selbar .sb-n b { color: #fff; }
+.selbar .btn.danger .i { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+.selbar .btn[disabled] { opacity: 0.45; cursor: default; }
+@media (max-width: 700px) { .pg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .selbar .btn { height: 34px; } }

@@ -833,6 +833,33 @@
     return state.openCards;
   }
   function saveOpenCards() { try { localStorage.setItem("hq-open-cards", JSON.stringify([...openCards()].slice(-200))); } catch (e) { /* private window */ } }
+  // Needs you (owner, 2026-11-13): look-alike cards (sermon posters, meeting notes) fold into one group of small tiles
+  function shutGroups() {
+    if (!state.shutGroups) { let saved = []; try { saved = JSON.parse(localStorage.getItem("hq-shut-groups") || "[]"); } catch (e) { /* private window */ } state.shutGroups = new Set(Array.isArray(saved) ? saved : []); }
+    return state.shutGroups;
+  }
+  function saveShutGroups() { try { localStorage.setItem("hq-shut-groups", JSON.stringify([...shutGroups()].slice(-20))); } catch (e) { /* private window */ } }
+  // Select: tick several cards, one Delete. The same safe delete as a card's own: tasks to History → Deleted, folders
+  // off the board, a sermon poster's Studio project to the Studio's Trash (never cleaned for good from here); no file is touched
+  const selSig = (u) => (u ? u.ids.join(",") + "|" + u.folders.join(",") : "");
+  function selTick(k, on) {                                 // on: true ticks, false clears, undefined flips
+    const s = (state.sel ||= new Set()), sig = (state.selSig ||= {});
+    if (on === undefined) on = !s.has(k);
+    if (on && (state.selUnits || {})[k]) { s.add(k); sig[k] = selSig(state.selUnits[k]); } else { s.delete(k); delete sig[k]; }
+  }
+  function deleteSelected() {
+    const units = [...(state.sel || [])].map((k) => (state.selUnits || {})[k]).filter(Boolean), n = units.length;
+    if (!n) return;
+    const ids = [...new Set(units.flatMap((u) => u.ids))], folders = [...new Set(units.flatMap((u) => u.folders))], studio = units.some((u) => u.studio);
+    const names = units.slice(0, 5).map((u) => "• " + shortTask(u.title, 48)).join("\n") + (n > 5 ? `\n• and ${n - 5} more` : "");
+    if (!confirm(`Delete ${n} card${n === 1 ? "" : "s"}?\n\n${names}\n\nThey go to History → Deleted (Restore brings them back). No file is touched.` + (studio ? "\nThe sermon posters' Codex Studio projects go to the Studio's Trash." : ""))) return;
+    postJSON("/api/tasks", { action: "remove-group", ids, folders, studio }).then((r) => {
+      state.sel = null;
+      toast("chief", "Deleted", `${n} card${n === 1 ? "" : "s"} moved to History → Deleted${studio ? `, ${r.studioTrashed} Studio project${r.studioTrashed === 1 ? "" : "s"} to the Studio's Trash` : ""}. No file was touched.`
+        + (r.studioFailed ? ` ${r.studioFailed} Studio project${r.studioFailed === 1 ? "" : "s"} couldn't be trashed (is the Studio running?).` : ""), r.studioFailed ? { bad: true } : {});
+      refresh();
+    }).catch((e) => toast("chief", "Delete", e.message || "could not delete", { bad: true }));
+  }
   const postedTag = '<span class="posted-tag" title="Posted to social media">POSTED</span>';
   const PLAT_NAME = { facebook: "Facebook", instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok", buffer: "Buffer" };
   // the one thing a video card asks of the owner next, named the way the button says it
@@ -1106,6 +1133,21 @@
     // four tabs (owner, 2026-11-05: "simplify it"): Needs you · Working · Posted · History; older tab names still land somewhere
     state.filter = { all: "needs", waiting: "needs", running: "working", done: "history", cancelled: "history", deleted: "history" }[state.filter] || state.filter;
     if (!["needs", "working", "scheduled", "posted", "history"].includes(state.filter)) state.filter = "needs";
+    if (state.filter !== "needs") state.sel = null;
+    const selecting = !!state.sel, selGroups = {}; state.selUnits = {};
+    // what one tick stands for: a row's task with its older versions, a folder with every version, or a whole card
+    const unitOf = (it) => {
+      if (it.folder) return { ids: [], folders: it.folder.names || [it.folder.name], title: folderTitle(it.folder), studio: !!it.folder.project };
+      const older = (state.older || {})[it.t.id] || [];
+      return { ids: [it.t.id, ...older.filter((x) => x.task).map((x) => x.task)], folders: older.filter((x) => !x.task).map((x) => x.name), title: taskTitle(it.t), studio: /sermon-studio-/.test(it.t.note || "") };
+    };
+    const keyOf = (it) => (it.t ? "t:" + it.t.id : "f:" + it.folder.name);
+    const tick = (key, on, cls, inner) => `<div class="selwrap ${cls} ${on ? "on" : ""}" data-sel="${esc(key)}" role="checkbox" aria-checked="${on}" tabindex="0"><span class="selbox" aria-hidden="true">${on ? svg("check") : ""}</span>${inner}</div>`;
+    const selectable = (key, u, html) => {                   // work that is running now is never ticked away
+      if (state.filter !== "needs" || !u || !(u.ids.length + u.folders.length) || u.ids.some((id) => (allTasks.find((x) => x.id === id) || {}).status === "doing")) return html;
+      state.selUnits[key] = u;
+      return selecting ? tick(key, state.sel.has(key), "", `<div class="selbody" inert>${html}</div>`) : html;
+    };
     const wentOut = (t) => (t.posted || []).length || t.scheduled || (t.failed || []).length;
     const postedDone = doneAll.filter(wentOut).slice(0, 60), done = doneAll.filter((t) => !wentOut(t)).slice(0, 60);
     // Scheduled tab (owner, 2026-11-12): a video with a post still waiting for its time is there, not under Posted, soonest first
@@ -1154,7 +1196,7 @@
     const nDeleted = deletedTasks.length + outDeleted.length;
     const counts = { needs: review.length + outWaiting.length + todo.length, working: doing.length, scheduled: 0, posted: 0, history: done.length + cancelled.length + nDeleted };
     const f = state.filter, show = (k) => ({ running: "working", waiting: "needs" })[k] === f;
-    const sec = (title, dot, n) => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span></div>`;
+    const sec = (title, dot, n, extra = "") => `<div class="sec"><span class="dotl"><i class="dot" style="background:${dot};${dot === "#4cceac" || dot === "#4f8cff" ? "" : "box-shadow:none"}"></i>${title} · ${n}</span>${extra}</div>`;
     const folderTitle = (g) => (g.project ? `Sermon poster · ${g.project.slice(0, 8)}` : famOf(g.name).replace(/[-_]+/g, " "));   // one name for every version
     const folderThumb = ({ name, info, area = "out" }) => {   // cover.jpg, else the first picture in the folder
       const pic = info.cover ? "cover.jpg" : (info.files || []).find((f) => /\.(jpe?g|png)$/i.test(f) && !f.startsWith("_"));
@@ -1193,7 +1235,7 @@
         const info = (st.out || {})[k] || {}, pkg = cards && !info.hidden && info.pkg, all = rowsOf[k];
         if (cards && !!(pkg && pkg.ready) !== wantReady) return "";
         const lone = all.length < 2 && all[0].t, own = lone && approvedOf([all[0].t]);
-        if (!pkg && all.length < 2 && !(own && ((all[0].t.posted || []).length || (all[0].t.failed || []).length || all[0].t.status === "done"))) return all[0].row(false);
+        if (!pkg && all.length < 2 && !(own && ((all[0].t.posted || []).length || (all[0].t.failed || []).length || all[0].t.status === "done"))) return selectable(keyOf(all[0]), unitOf(all[0]), all[0].row(false));
         const rows = pkg ? all.filter((r) => r.t && !/(?:^|\s)thumbnail-request:/.test(r.t.note || "")) : all;
         const folder = all.find((r) => r.folder), ts = rows.filter((r) => r.t).map((r) => r.t);
         const byTitle = k.startsWith("title:"), anyReady = ts.some((t) => t.final);
@@ -1215,7 +1257,7 @@
         const folderNames = [...new Set([...(st.out && st.out[k] ? [k] : []), ...all.filter((r) => r.folder).flatMap((r) => r.folder.names || [r.folder.name])])];
         (state.cardItems ||= {})[k] = { ids: ts.map((t) => t.id), folders: folderNames, title,
           studio: [...ts.map((t) => t.note || ""), ...folderNames].some((x) => /sermon-studio-/.test(x)) };
-        return `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${posted ? "is-posted" : ""} ${sched ? "is-sched" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : sched ? schedTag(sched) : posted ? postedTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${status}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? `<span class="vg-det">${shut ? "Details" : "Hide"} <span class="vg-chev">›</span></span>` : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`;
+        return selectable("c:" + (wantReady === true ? "ready" : wantReady === false ? "wait" : "todo") + ":" + k, state.cardItems[k], `<div class="vgroup ${shut ? "shut" : ""} ${glow ? "is-ready" : ""} ${posted ? "is-posted" : ""} ${sched ? "is-sched" : ""} ${byTitle ? "by-title" : ""}"><div class="vg-head"><button class="vg-tog" ${rows.length ? `data-vgroup="${esc(k)}" aria-expanded="${!shut}"` : `data-rv-folder="out/${esc(k)}"`} type="button">${head}<span class="vg-tt"><span class="vg-title">${glow ? readyTag : sched ? schedTag(sched) : posted ? postedTag : ""}${esc(title)}</span>${byTitle ? `<span class="vg-meta">${chPill(ts[0].ch)}${tagPill(ts[0].team)}</span>` : ""}${status}${pkg ? `<span class="pk-steps">${pkgSteps(pkg)}</span>` : ""}${meta ? `<span class="vg-meta">${esc(meta)}</span>` : ""}</span>${rows.length ? `<span class="vg-det">${shut ? "Details" : "Hide"} <span class="vg-chev">›</span></span>` : ""}</button>${open}</div>${shut || !rows.length ? "" : `<div class="vg-rows">${rows.map((r) => r.row(true)).join("")}</div>`}</div>`);
       }).join("");
     };
     const videoOf = (t) => { const m = /source-task:(\S+)/.exec(t.note || ""), src = m && allTasks.find((x) => x.id === m[1]); return (src && (src.video || outOf(src))) || t.video || outOf(t); };   // a thumbnail package joins its video
@@ -1235,11 +1277,45 @@
     const teamOpts = state.teams.map((t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
     let body = "";
     const runningSec = show("running") ? sec("Working", "#4f8cff", doing.length) + (byVideo(taskItems(doing)) || '<div class="hint" style="margin:2px 0 6px">Nothing running. Press Run on a task or send a brief.</div>') : "";
-    const waitItems = [...folderItems(outWaiting), ...taskItems(review)], readyCards = show("waiting") ? byVideo(waitItems, true) : "";
+    const waitItems = mergeTitles([...folderItems(outWaiting), ...taskItems(review)]), readyCards = show("waiting") ? byVideo(waitItems, true) : "";
+    // look-alike single rows fold into one group of small tiles (three or more of a kind): sermon posters, meeting notes.
+    // A row that asks the owner something, is blocked, or already sits on a card with others stays where it is.
+    const keyN = {}; for (const it of waitItems) if (it.key) keyN[it.key] = (keyN[it.key] || 0) + 1;
+    const single = (it) => (!it.key || keyN[it.key] === 1) && !((st.out || {})[it.key] || {}).pkg
+      && (it.folder ? state.openDetail !== "out:" + it.folder.name : it.t.status === "review" && !it.t.asks && !it.t.scripts && !/(?:^|\s)Blocked:/.test(it.t.note || "") && state.openDetail !== it.t.id && state.editPick !== it.t.id);
+    const GROUPS = [["posters", "Sermon posters", (it) => (it.folder ? !!it.folder.project : !!ssOf(outOf(it.t)))], ["meetings", "Meeting notes", (it) => !!it.t && it.t.kind === "meeting"]];
+    const grouped = new Map(), groupList = {};
+    for (const it of waitItems) { if (!single(it)) continue; const g = GROUPS.find((x) => x[2](it)); if (g) (groupList[g[0]] ||= []).push(it); }
+    for (const [gk, list] of Object.entries(groupList)) if (list.length >= 3) for (const it of list) grouped.set(it, gk);
+    const dayShort = (s) => { const d = new Date(s + "T12:00"); return isNaN(d) ? s : d.toLocaleDateString(undefined, { day: "numeric", month: "short" }); };
+    const tile = (it) => {
+      const t = it.t, g = it.folder, key = keyOf(it), name = t ? outOf(t) : g.name, m = ssOf(name), meeting = t && t.kind === "meeting";
+      const nOld = t ? ((state.older || {})[t.id] || []).length : g.items.length - 1, day = meeting && /(\d{4}-\d{2}-\d{2})/.exec(t.title);
+      const label = meeting ? (day ? dayShort(day[1]) : taskTitle(t)) : t ? taskTitle(t).split("·").pop().trim() : g.project ? g.project.slice(0, 8) : folderTitle(g);
+      const sub = [m && `v${m[2]}`, nOld && `+${nOld} older`, meeting && (day ? relDay(day[1]) : "notes")].filter(Boolean).join(" · ") || "needs you";
+      const pic = meeting ? `<span class="thumb pt-ic">${svg("list")}</span>` : folderThumb({ name, info: (st.out || {})[name] || (g && g.info) || {} });
+      const inner = `${pic}<span class="pt-tt"><b>${esc(label)}</b><small>${esc(sub)}</small></span>`;
+      return selecting ? tick(key, state.sel.has(key), "ptile", inner) : `<button class="ptile" type="button" ${t ? `data-open="${esc(t.id)}"` : `data-rv-folder="out/${esc(name)}"`} title="${esc(t ? taskTitle(t) : folderTitle(g))}">${inner}</button>`;
+    };
+    const groupsHtml = !show("waiting") ? "" : GROUPS.map(([gk, title]) => {
+      const list = waitItems.filter((it) => grouped.get(it) === gk); if (!list.length) return "";
+      for (const it of list) state.selUnits[keyOf(it)] = unitOf(it);
+      const keys = selGroups[gk] = list.map(keyOf), shut = shutGroups().has(gk), nSel = selecting ? keys.filter((k) => state.sel.has(k)).length : 0;
+      return `<div class="pgroup ${shut ? "shut" : ""}"><div class="pg-head"><button class="pg-tog" data-pgroup="${gk}" aria-expanded="${!shut}" type="button"><span class="pg-chev">›</span><span class="pg-title">${title}</span><span class="pg-n">${selecting ? `${nSel} of ${list.length} selected` : `${list.length} waiting`}</span></button><button class="btn sm" data-sel-group="${gk}" type="button" aria-label="${nSel === list.length ? "Clear" : "Select all"} ${list.length} ${title.toLowerCase()}">${nSel === list.length ? "Clear" : selecting ? `All ${list.length}` : `Select all ${list.length}`}</button></div>${shut ? "" : `<div class="pg-grid">${list.map(tile).join("")}</div>`}</div>`;
+    }).join("");
+    const waitRest = waitItems.filter((it) => !grouped.has(it));
+    const selBtn = `<button class="btn sm sel-btn ${selecting ? "on" : ""}" data-sel-mode type="button" title="Tick several cards, then delete them in one go">${selecting ? "Done" : "Select"}</button>`;
     const nReady = outWaiting.filter((g) => g.info.pkg && g.info.pkg.ready).length;
     const readySec = readyCards ? sec("Ready to post", "#3ddc97", nReady) + readyCards : "";
-    const waitingSec = show("waiting") ? sec("Needs you", "#e4c830", review.length + outWaiting.length - nReady) + (byVideo(waitItems, false) || '<div class="hint" style="margin:2px 0 6px">Nothing needs you right now.</div>') : "";
+    const waitingSec = show("waiting") ? sec("Needs you", "#e4c830", review.length + outWaiting.length - nReady, selBtn) + ((groupsHtml + byVideo(waitRest, false)) || '<div class="hint" style="margin:2px 0 6px">Nothing needs you right now.</div>') : "";
     if (f === "needs") body += readySec + waitingSec + (todo.length ? sec("Not started · press Run or Edit", "#6b7280", todo.length) + byVideo(taskItems(todo)) : "");
+    state.groupKeys = selGroups;
+    if (selecting) {                                         // a ticked card that left the list is not ticked any more
+      const gone = [...state.sel].filter((k) => !state.selUnits[k] || selSig(state.selUnits[k]) !== (state.selSig || {})[k]);   // or it changed since it was ticked
+      if (gone.length) { for (const k of gone) selTick(k, false); return drawBoard(); }
+      const nSel = state.sel.size, nAll = Object.keys(state.selUnits).length;
+      body += `<div class="selbar" role="toolbar" aria-label="Selected cards"><span class="sb-n"><b>${nSel}</b> selected</span><button class="btn sm" data-sel-all type="button" aria-label="${nAll && nSel === nAll ? "Clear the selection" : "Select all " + nAll}">${nAll && nSel === nAll ? "Clear" : `All ${nAll}`}</button><button class="btn sm danger" data-sel-del type="button" ${nSel ? "" : "disabled"}>${svg("trash")} Delete${nSel ? " " + nSel : ""}</button><button class="btn sm" data-sel-mode type="button">Done</button></div>`;
+    }
     if (f === "working") body += runningSec;
     // Scheduled / Posted: grouped into cards first, then split by card, so one video is never in both and the counts are the cards
     const postItems = mergeTitles(taskItems(postTab)), schedAt = {};
@@ -1392,6 +1468,7 @@
     let sw = null;
     const target = (e) => e.target.closest && e.target.closest("#task-board .vgroup > .vg-head, #task-board .trow");
     document.addEventListener("touchstart", (e) => {
+      if (state.sel || e.target.closest(".selwrap")) { sw = null; return; }   // Select is on: a swipe never deletes or approves
       const el = target(e); if (!el || e.touches.length !== 1 || e.target.closest("input, textarea, select")) { sw = null; return; }
       sw = { el, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, on: false };
     }, { passive: true });
@@ -2858,7 +2935,10 @@
 
   // ---------- events ----------
   function wire() {
+    document.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && e.target.matches && e.target.matches("[data-sel]")) { e.preventDefault(); e.target.click(); } });
     document.addEventListener("click", (e) => {
+      const sw = state.sel && !rv.open && e.target.closest("[data-sel]");   // Select is on: a tap ticks the card, nothing opens
+      if (sw) { e.preventDefault(); const k = sw.dataset.sel; selTick(k); renderBoard(); const again = $$("[data-sel]").find((x) => x.dataset.sel === k); if (again && e.detail === 0) again.focus(); return; }
       if (e.target.closest(".ch-sw")) return;              // the card's channel picker: choosing never opens the task
       if (reviewClick(e)) return;                          // the review screen and everything that opens it
       if (rv.open) return;
@@ -2905,6 +2985,23 @@
       if (d.ptab) { state.panelTab = d.ptab; renderTeamPanel(); return; }
       if (d.filter) { state.filter = d.filter; renderBoard(); return; }
       if (d.chf != null) { state.chFilter = d.chf; state.openDetail = null; renderBoard(); return; }
+      if (d.selMode != null) { state.sel = state.sel ? null : new Set(); state.selSig = {}; state.openDetail = null; state.editPick = null; renderBoard(); return; }
+      if (d.selAll != null) {                               // All: every group opens first, so nothing is ticked out of sight
+        const all = Object.keys(state.selUnits || {}), on = !(state.sel && all.length && state.sel.size === all.length);
+        for (const k of all) selTick(k, on);
+        if (on && shutGroups().size) { shutGroups().clear(); saveShutGroups(); }
+        renderBoard(); return;
+      }
+      if (d.selDel != null) { deleteSelected(); return; }
+      if (d.selGroup) {                                     // a group's own "Select all": turns Select on, ticks (or clears) its tiles
+        const keys = (state.groupKeys || {})[d.selGroup] || [];
+        if (!state.sel) { state.sel = new Set(); state.selSig = {}; } state.openDetail = null;
+        const on = !(keys.length && keys.every((k) => state.sel.has(k)));
+        for (const k of keys) selTick(k, on);
+        if (shutGroups().delete(d.selGroup)) saveShutGroups();
+        renderBoard(); return;
+      }
+      if (d.pgroup) { const s = shutGroups(); if (!s.delete(d.pgroup)) s.add(d.pgroup); saveShutGroups(); renderBoard(); return; }
       if (d.vgroup != null) { const s = openCards(); if (!s.delete(d.vgroup)) s.add(d.vgroup); saveOpenCards(); renderBoard(); return; }
       if (d.manage) { state.openDetail = state.openDetail === d.manage ? null : d.manage; if (state.view === "tasks") renderBoard(); else renderTeamPanel(); return; }
       if (d.cancel) { taskAction({ action: "move", id: d.cancel, status: "cancelled" }, "Task cancelled. It is in History → Cancelled if you want it back."); return; }
