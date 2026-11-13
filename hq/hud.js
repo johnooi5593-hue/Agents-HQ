@@ -237,7 +237,31 @@
     if (!r.ok) throw Object.assign(new Error(j.error || r.statusText || "request failed"), { status: r.status, body: j });
     return j;
   }
-  const postJSON = (url, body) => getJSON(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // owner, 2026-11-13: a button that needs the server shows it is loading. The button just pressed gets a spinner and
+  // can't be pressed twice until the request is back; a thin bar runs along the top for as long as anything is on its way.
+  let pressed = null, loadingN = 0;
+  document.addEventListener("click", (e) => { pressed = e.target.closest ? e.target.closest("button, .btn, [role=button]") : null; setTimeout(() => { pressed = null; }, 0); }, true);
+  const loadBar = (d) => {
+    loadingN = Math.max(0, loadingN + d);
+    let bar = document.getElementById("hq-loadbar");
+    if (!bar) { bar = document.createElement("div"); bar.id = "hq-loadbar"; bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", "Loading"); document.body.appendChild(bar); }
+    bar.classList.toggle("on", loadingN > 0);
+  };
+  const postJSON = (url, body) => {
+    const p = getJSON(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), b = pressed;
+    if (!b) return p;                                       // not from a press (a background save): no loading look
+    pressed = null;                                         // one press, one request: a timer in the same tick is not it
+    b.hqLoading = (b.hqLoading || 0) + 1;
+    b.classList.add("is-loading"); b.setAttribute("aria-busy", "true"); loadBar(1);
+    let over = false;
+    const done = () => {
+      if (over) return; over = true; clearTimeout(giveUp); loadBar(-1);
+      if (--b.hqLoading <= 0) { b.classList.remove("is-loading"); b.removeAttribute("aria-busy"); }
+    };
+    const giveUp = setTimeout(done, 60000);                 // a request that never answers must not leave the bar running
+    p.then(done, done);
+    return p;
+  };
 
   async function refresh() {                               // every 4 s: status + teams (agents once, brain now and then)
     try {
@@ -1753,7 +1777,7 @@
     let host = $("#review");
     if (!host) {
       host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host);
-      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.bufField && rv.bufEdit) rv.bufEdit[d.bufField] = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
+      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.bufField && rv.bufEdit) rv.bufEdit[d.bufField] = e.target.value; if (d.resched != null && rv.resched) rv.resched.when = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
       host.addEventListener("input", (e) => { if (e.target.id === "pk-mood") rv.pkgMood = e.target.value; if (e.target.id === "pk-capnote") rv.capNote = e.target.value; });
       host.addEventListener("change", (e) => { const k = e.target.dataset && e.target.dataset.pubSel; if (k) { rv.sel[k] = e.target.checked; renderReview(); } });
     }
@@ -1764,7 +1788,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
+      accounts: !!accounts, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1880,6 +1904,10 @@
   function pickPub(kind, val) {                             // the owner picks the topic, the thumbnail, the video, or one caption for every platform
     if (kind === "topic") { stopPubPoll(); loadPub(val); return; }
     if (kind === "edit") { rv.pubEdit = !rv.pubEdit; renderReview(); return; }
+    if (kind === "picks") { rv.pickOpen = !rv.pickOpen; renderReview(); return; }
+    if (kind === "resched-open") { rv.resched = rv.resched ? null : { when: localInput(new Date(schedBase() * 1000)) }; renderReview(); return; }
+    if (kind === "resched-add") { const d = new Date(schedBase() * 1000); d.setDate(d.getDate() + (+val || 1)); reschedule(Math.floor(d.getTime() / 1000)); return; }
+    if (kind === "resched-save") { const u = rv.resched && rv.resched.when ? Math.floor(new Date(rv.resched.when).getTime() / 1000) : 0; if (u) reschedule(u); return; }
     if (kind === "pkg") { rv.pkgOpen = !rv.pkgOpen; renderReview(); return; }
     if (kind === "when") { rv.whenOn = val === "later"; if (rv.whenOn && !rv.whenVal) rv.whenVal = defaultWhen(); renderReview(); return; }
     if (kind === "video" || kind === "cover") { rv.pick[kind] = val; renderReview(); loadPub(); return; }   // the Buffer package follows the pick
@@ -1914,6 +1942,22 @@
         : left ? "Not everything could be cancelled: see the Buffer row." : "Deleted in Buffer too: it won't go out on Instagram or TikTok.");
     } catch (e) { toast("social", "Cancel", e.message || "could not cancel", { bad: true }); }
   }
+  // owner, 2026-11-13: one click moves every scheduled post of this video (Facebook, YouTube, Buffer, Instagram) to a new time
+  const schedRows = () => PUB.map(([k]) => k).filter((k) => rv.pub && ((rv.pub.posted || {})[k] || {}).state === "scheduled" && rv.pub.posted[k].when);
+  const schedBase = () => Math.min(...schedRows().map((k) => rv.pub.posted[k].when));
+  async function reschedule(u) {
+    if (rv.reschedBusy || !schedRows().length) return;
+    if (u * 1000 < Date.now() + 10 * 60000) { toast("social", "Reschedule", "Pick a time at least 10 minutes from now.", { bad: true }); return; }
+    rv.reschedBusy = true; renderReview();
+    const names = (ks) => ks.map((k) => (k === "buffer" ? bufNames().join(" + ") || "Buffer" : PLAT_NAME[k] || k)).join(", ");
+    try {
+      const r = await postJSON(PUB_URL, { folder: pubFolder(), reschedule: u, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover });
+      const res = r.rescheduled || {}, kept = Object.keys(res.kept || {});
+      rv.pub = r; rv.resched = null; rv.bufEdit = null;
+      toast("social", kept.length ? "Partly rescheduled" : "Rescheduled", `${names(res.moved || [])} · ${fmtWhen(u)}` + (kept.length ? ` · not changed: ${names(kept)} (see its row)` : ""), kept.length ? { bad: true } : undefined);
+    } catch (e) { toast("social", "Reschedule", e.message || "could not reschedule", { bad: true }); }
+    finally { rv.reschedBusy = false; renderReview(); }
+  }
   async function bufferChange() {
     const folder = pubFolder(), done = ((rv.pub || {}).posted || {}).buffer || {}, f = rv.bufEdit || {};
     const when = f.when ? Math.floor(new Date(f.when).getTime() / 1000) : null;
@@ -1943,6 +1987,17 @@
     try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", when ? "Scheduled" : "Posting", when ? `${names} · ${fmtWhen(when)}` : names); }
     catch (e) { toast("social", "Post", e.message || "could not post", { bad: true }); }
   }
+  function socialPlan() {                                  // the "## Plan" part of post.md for the open topic
+    const files = (rv.data && rv.data.files) || [], sub = rv.pubSub || "";
+    const post = files.find((f) => f.path === (sub ? sub + "/" : "") + "post.md");
+    return (post && post.text != null && postSections(post.text).find((x) => /^plan\b/i.test(x.title))) || null;
+  }
+  function planShort(body) {                               // the first three points, each cut to its first sentence
+    const items = body.split(/\n(?=[-*] )/).filter((x) => /^[-*] /.test(x));
+    if (items.length <= 3) return null;
+    const clip = (x) => { const one = x.replace(/\s+/g, " ").trim(), m = /^(.{30,170}?[.。])(\s|$)/.exec(one); return m ? m[1] : one.length > 170 ? one.slice(0, 168) + "…" : one; };
+    return { text: items.slice(0, 3).map(clip).join("\n"), n: items.length };
+  }
   function pubSection() {
     const p = rv.pub; if (!p) return "";
     const sub = rv.pubSub || "", files = (rv.data && rv.data.files) || [];
@@ -1953,7 +2008,9 @@
     const opts = (p.drafts && p.drafts.options) || [], targets = pubTargets(), on = chosenPub();
     let h = `<div class="rv-sec pub"><div class="rv-h">Posting overview <span>${p.channel ? "for " + esc(p.channel_name || p.channel) + " · " : ""}prepared by Social</span><button class="rv-copy" data-rv-accounts="${esc(p.channel || "")}" type="button">Accounts</button></div>`;
     if (targets.length > 1) h += `<div class="pub-h">Topic <span>each topic is its own post</span></div><div class="rv-chips">${targets.map((t) => `<button class="rv-chip ${t === sub ? "on" : ""}" data-pub-pick="topic" data-pub-val="${esc(t)}" type="button">${esc(prettyName(t || "main"))}</button>`).join("")}</div>`;
-    if (plan) h += `<div class="md pub-plan">${mdHtml(plan.body)}</div>`;
+    const short = plan && rv.tabbed ? planShort(plan.body) : null;
+    if (short) h += `<div class="md pub-plan">${mdHtml(short.text)}</div><button class="rv-copy pub-more" data-rv-tab="details" type="button">All ${short.n} points</button>`;
+    else if (plan) h += `<div class="md pub-plan">${mdHtml(plan.body)}</div>`;
     // the final check: the three parts of the post, each ticked when it is there, and the video itself to play
     const vf = vSel ? fileOf(vSel) : null, vUrl = vf ? vf.url : vSel && (p.linked || []).includes(vSel) ? "/files/" + vSel.split("/").map(encodeURIComponent).join("/") : "";
     const cf = cSel ? fileOf(cSel) : null, capText = opts.length ? ((opts[cap] || opts[0]).caption || (opts[cap] || opts[0]).title || "") : "";
@@ -1962,7 +2019,12 @@
     const tick = (ok, label, what) => `<span class="fin-item ${ok ? "ok" : "no"}">${ok ? svg("check") : "!"}<b>${label}</b><span>${esc(what)}</span></span>`;
     h += `<div class="pub-final ${rv.ready ? "ready" : ""}"><div class="fin-h">${rv.ready ? "Final · ready to post" : "Final · not ready yet"}</div>
       <div class="fin-items">${tick(ready.video, "Video", ready.video ? prettyName(vSel) : "missing")}${tick(ready.thumb, "Thumbnail", ready.thumb ? prettyName(cSel) : "missing")}${tick(ready.caption, "Caption", ready.caption ? "option " + (cap + 1) : "missing")}</div>
-      ${vUrl ? `<video class="fin-video" src="${esc(phoneSrc(vUrl))}" ${cf ? `poster="${esc(cf.url)}"` : ""} controls playsinline preload="metadata"></video>` : ""}</div>`;
+      ${vUrl && rv.tabbed ? `<button class="rv-copy fin-watch" data-rv-tab="watch" type="button">${svg("play")} Watch the video</button>` : vUrl ? `<video class="fin-video" src="${esc(phoneSrc(vUrl))}" ${cf ? `poster="${esc(cf.url)}"` : ""} controls playsinline preload="metadata"></video>` : ""}</div>`;
+    // Once the video is scheduled or out, the thumbnail and caption pickers fold away (tabs only): the ticks above name the picks
+    const settled = rv.tabbed && PUB.some(([k]) => ["scheduled", "posted", "posting", "waiting", "uploading"].includes(((p.posted || {})[k] || {}).state))
+      && !PUB.some(([k]) => ((p.posted || {})[k] || {}).state === "failed");
+    if (settled) h += `<button class="rv-copy pub-more" data-pub-pick="picks" type="button">${rv.pickOpen ? "Hide thumbnail and caption" : "Change thumbnail or caption"}</button>`;
+    const pickAt = h.length;
     // 1. the thumbnail: one for every platform
     const covers = (p.covers || []).filter((n) => !(rv.pkg && rv.pkg.cover) || n === rv.pkg.cover).map((n) => ({ n, f: fileOf(n) })).filter((x) => x.f);   // a package posts the Codex pick
     const igCover = rv.pkg && rv.pkg.coverIg && fileOf(rv.pkg.coverIg);    // a package's 3:4 cover goes to Instagram
@@ -1973,8 +2035,18 @@
     // 3. the video: only when there is more than one version
     if ((p.videos || []).length > 1) h += `<div class="pub-h">Video <span>which version to post</span></div><div class="rv-chips">${p.videos.map((n) => `<button class="rv-chip ${n === vSel ? "on" : ""}" data-pub-pick="video" data-pub-val="${esc(n)}" type="button">${n === vSel ? svg("check") : svg("play")}${esc(prettyName(n))}</button>`).join("")}</div>`;
     else if (!p.videos || !p.videos.length) h += '<div class="pub-warn">No video found in this folder yet, so there is nothing to post.</div>';
+    if (settled && !rv.pickOpen) h = h.slice(0, pickAt);
     // where it goes
-    h += `<div class="pub-h">${opts.length ? "3" : "2"} · Post to <span>${bufNames().length ? esc(bufNames().join(" and ")) + (bufNames().length > 1 ? " go" : " goes") + " through Buffer" : "tick where it goes"}</span></div><div class="pub-rows">`;
+    h += `<div class="pub-h">${settled && !rv.pickOpen ? "Where and when" : (opts.length ? "3" : "2") + " · Post to"} <span>${bufNames().length ? esc(bufNames().join(" and ")) + (bufNames().length > 1 ? " go" : " goes") + " through Buffer" : "tick where it goes"}</span></div>`;
+    if (schedRows().length) {                               // every scheduled post of this video moves together
+      const whens = [...new Set(schedRows().map((k) => fmtWhen(rv.pub.posted[k].when)))], busy = rv.reschedBusy, off = busy ? "disabled" : "";
+      const together = Math.max(...schedRows().map((k) => rv.pub.posted[k].when)) - schedBase() < 60;
+      h += `<div class="pub-resched"><span class="pub-sched">${svg("cal")} Scheduled · ${esc(whens.join(" / "))}</span>
+        <span class="pub-resched-go">${busy ? '<span class="pub-run"><span class="spin"></span> Rescheduling…</span>' : `${together ? `<button class="rv-copy" data-pub-pick="resched-add" data-pub-val="1" type="button" ${off}>+1 day</button><button class="rv-copy" data-pub-pick="resched-add" data-pub-val="7" type="button" ${off}>+1 week</button>` : ""}<button class="rv-copy ${rv.resched ? "on" : ""}" data-pub-pick="resched-open" type="button" ${off}>Pick a time</button>`}</span>
+        ${rv.resched && !busy ? `<div class="pub-resched-pick"><input class="pub-in pub-when" type="datetime-local" data-resched value="${esc(rv.resched.when)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><button class="rv-copy" data-pub-pick="resched-save" type="button">Reschedule all</button><button class="rv-copy" data-pub-pick="resched-open" type="button">Not now</button></div>` : ""}
+        <div class="pub-note">${together ? "One tap moves" : "They have different times now. Pick a time to move"} ${esc(schedRows().map((k) => (k === "buffer" ? bufNames().join(" + ") || "Buffer" : PLAT_NAME[k] || k)).join(", "))} together.</div></div>`;
+    }
+    h += `<div class="pub-rows">`;
     const head = (k, name, sub, ticked, can) => `<label class="pub-top"><input type="checkbox" data-pub-sel="${k}" ${ticked ? "checked" : ""} ${can ? "" : "disabled"}><i class="pub-ico k-${k}">${PUB_ICO[k] || ""}</i><span class="pub-name"><b>${esc(name)}</b><small>${esc(sub)}</small></span></label>`;
     for (const [k, label] of PUB) {
       if (viaBuffer(k)) continue;
@@ -2479,18 +2551,33 @@
     const pkg = livePkg || null;                            // the pick screen; after approval rv.pkg keeps the picks for posting
     const thumbnailStage = !pkg && area === "out" && vids.length > 0 && !/^out\/thumbnail-final-/.test(rv.folder || "") && rv.cover !== false;
     const thumbnailLink = thumbnailStudioHref(rv.folder, rv.taskId, v && v.path, rv.ch);
+    // Post · Watch · Details (owner, 2026-11-13): once a video has its posting overview, the screen is three short tabs
+    // instead of one long page. Anything else (artwork, a folder still being picked, notes only) stays one page.
+    const showPub = !thumbnailStage && (!pkg || (pkg.ready && pkg.stages.includes("caption")));
+    const wasTabbed = rv.tabbed, tabbed = rv.tabbed = !!(v && rv.pub && showPub);
+    if (tabbed && !wasTabbed) {                             // the posting overview just arrived: one page becomes tabs
+      const playing = $("#rv-player");
+      if (playing && !playing.paused) rv.tab = "watch";     // never cut off a video that is playing
+      else queueMicrotask(() => { const body = $("#review .rv-body"); if (body) body.scrollTop = 0; });
+    }
+    if (!["post", "watch", "details"].includes(rv.tab)) rv.tab = "post";
+    const tabBar = tabbed ? `<div class="rv-tabs" role="tablist">${[["post", "Post"], ["watch", "Watch"], ["details", "Details"]].map(([k, l]) => `<button class="rv-tab ${rv.tab === k ? "on" : ""}" role="tab" aria-selected="${rv.tab === k}" data-rv-tab="${k}" type="button">${l}</button>`).join("")}</div>` : "";
+    const marks = [], mark = (tab) => marks.push([tab, html.length]);   // where each tab's sections start in html
     let html = `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
-        <div class="rv-title"><div class="t">${esc(title)}</div><div class="s">${tagPill(task ? task.team : "Creative")}<span>${area === "approved" ? "approved" : task && task.status !== "review" ? esc(task.status) : "waiting for your OK"}${files.length ? ` · ${files.length} file${files.length === 1 ? "" : "s"}` : ""}</span></div></div></div>
+        <div class="rv-title"><div class="t">${esc(title)}</div><div class="s">${tagPill(task ? task.team : "Creative")}<span>${area === "approved" ? "approved" : task && task.status !== "review" ? esc(task.status) : "waiting for your OK"}${files.length ? ` · ${files.length} file${files.length === 1 ? "" : "s"}` : ""}</span></div></div></div>${tabBar}
       <div class="rv-body">`;
     if (loading) html += '<div class="rv-empty"><span class="spin"></span> Opening…</div>';
     else if (rv.data && rv.data.error) html += `<div class="rv-empty">${esc(rv.data.error)}. The folder may have been approved or moved.</div>`;
+    mark("watch");
     if (v) {
       html += `<div class="rv-sec"><div class="rv-video"><video src="${esc(phoneSrc(v.url))}" ${poster ? `poster="${esc(poster.url)}"` : ""} controls playsinline preload="metadata" id="rv-player"></video><button class="rv-play" data-rv-play type="button" aria-label="Play the video">${svg("play")}</button></div>`;
       if (vids.length > 1) html += `<div class="rv-chips">${vids.map((x, i) => `<button class="rv-chip ${x === v ? "on" : ""}" data-rv-vid="${i}" type="button">${svg("play")}${esc(prettyName(x.path))}</button>`).join("")}</div>`;
       html += "</div>";
     }
+    mark("post");
     if (pkg) html += pkgPanel(pkg);
+    mark("watch");
     if (imgs.length && !pkg) html += `<div class="rv-sec"><div class="rv-h">${artwork.native ? "Finished artwork" : "Covers and images"} <span>${imgs.length}</span></div><div class="rv-imgs">${imgs.map((i) => {
       if (!artwork.native) return `<button class="rv-img" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(phoneImg(i.url))}" alt="" loading="lazy"><span>${esc(prettyName(i.path))}</span></button>`;
       const options = [i, ...(artwork.alternatives[i.path] || [])];
@@ -2498,21 +2585,30 @@
       return `<div><button class="rv-img" style="width:100%" data-rv-img="${esc(i.url)}" type="button"><img src="${esc(phoneImg(i.url))}" alt="${esc(prettyName(i.path))}" style="aspect-ratio:${ratio};object-fit:contain" loading="lazy"><span>${esc(prettyName(i.path))}</span></button><div style="display:flex;flex-wrap:wrap;gap:12px;padding:2px 4px">${options.map(file => `<a class="rv-dl" href="${esc(file.url)}" download="${esc(file.name)}">↓ ${/\.png$/i.test(file.path) ? "PNG" : "JPG"}</a>`).join("")}</div></div>`;
     }).join("")}</div></div>`;
     else if (artwork.native && !loading && files.length) html += '<div class="rv-sec"><div class="rv-empty">No finished artwork was found in this delivery. Supporting files are available below.</div></div>';
-    if (!thumbnailStage && (!pkg || (pkg.ready && pkg.stages.includes("caption")))) html += pubSection();
+    mark("post");
+    if (showPub) html += pubSection();
     if (post && (!pkg || pkg.ready)) {
       // with the posting overview above, only what you post by hand is left here (TikTok, the pinned comment)
       const secs = postSections(post.text).map((x, i) => ({ ...x, i })).filter((x) => !/^plan\b/i.test(x.title) && !(rv.pub && /^(captions?|options?|youtube|instagram|facebook|tiktok)\b/i.test(x.title)));   // TikTok gets Instagram's words now: an old ## TikTok section is not shown
       if (secs.length) html += `<div class="rv-sec"><div class="rv-h">${rv.pub ? "Post by hand" : "Post copy"} <button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="all" type="button">Copy all</button></div>${secs.map((s) => `<div class="rv-post"><div class="rv-post-h"><b>${esc(s.title || "Copy")}</b><button class="rv-copy" data-rv-copy="${esc(post.path)}" data-rv-part="${s.i}" type="button">Copy</button></div><div class="md">${mdHtml(s.body)}</div></div>`).join("")}</div>`;
     }
+    mark("watch");
     if (srt) {
       const cues = parseSrt(srt.text);
       if (cues.length) html += `<div class="rv-sec"><div class="rv-h">Captions <span>${cues.length} lines · tap a line to jump there</span></div><div class="rv-cues">${cues.map((c) => `<button class="rv-cue" data-rv-seek="${c.t.toFixed(2)}" type="button"><span class="ts">${Math.floor(c.t / 60)}:${pad2(Math.floor(c.t % 60))}</span>${esc(c.text)}</button>`).join("")}</div></div>`;
     }
-    if (notes) html += `<div class="rv-sec"><div class="rv-h">Notes</div><div class="md">${mdHtml(notes.text)}</div></div>`;
+    mark("details");
+    if (tabbed && socialPlan()) html += `<div class="rv-sec"><div class="rv-h">Social's plan <span>the full posting plan</span></div><div class="md">${mdHtml(socialPlan().body)}</div></div>`;
+    if (notes) html += `<div class="rv-sec"><div class="rv-h">${tabbed ? "Editor's notes" : "Notes"}</div><div class="md">${mdHtml(notes.text)}</div></div>`;
     if (plan) html += `<details class="rv-sec rv-more"><summary class="rv-h">Planning page (企划页)</summary><div class="md">${mdHtml(plan.text)}</div></details>`;
     if (task && task.note && !/^out:\S+$/.test(task.note.trim())) html += `<div class="rv-sec"><div class="rv-h">Note on the task</div><div class="md">${mdHtml(task.note)}</div></div>`;
     if (others.length) html += `<details class="rv-sec rv-more"><summary class="rv-h">Other files <span>${others.length}</span></summary>${others.map((f) => `<div class="rv-file"><span class="nm">${esc(f.path)}</span><span class="sz">${fmtBytes(f.size)}</span>${f.text != null ? `<button class="rv-copy" data-rv-copy="${esc(f.path)}" data-rv-part="raw" type="button">Copy</button>` : ""}<a class="rv-dl" href="${esc(f.url)}" download="${esc(f.name)}">Save</a></div>`).join("")}</details>`;
     if (!loading && !files.length && !task) html += '<div class="rv-empty">Nothing in this folder yet.</div>';
+    if (tabbed) {                                           // keep only the open tab's sections
+      const piece = (i) => html.slice(marks[i][1], i + 1 < marks.length ? marks[i + 1][1] : html.length);
+      const mine = marks.map(([t], i) => (t === rv.tab ? piece(i) : "")).join("");
+      html = html.slice(0, marks[0][1]) + (mine || '<div class="rv-empty">Nothing here for this video.</div>');
+    }
     if (!rv.folder && task) html += `<div class="rv-sec"><div class="rv-h">Details</div><div class="md">${mdHtml([task.subtitle, task.agent ? "By " + task.agent : "", task.date ? "Date: " + task.date + (task.time ? " " + task.time : "") : "", "Created " + timeAgo(task.created)].filter(Boolean).join("\n"))}</div></div>`;
     html += "</div>";
     if (rv.mode === "changes") html += `<form class="rv-changes" id="rv-changes"><textarea id="rv-change-text" rows="3" placeholder="What should change? For example: make the yellow words bigger, cut the first sentence. Type / to pick an editing style." required></textarea><div class="row"><button class="btn" type="button" data-rv-mode="">Cancel</button><button class="btn blue" type="submit">Send to the team</button></div></form>`;
@@ -2534,7 +2630,9 @@
     }
     html += "</div>";
     if (rv.img) html += `<div class="rv-light" data-rv-img=""><img src="${esc(rv.img)}" alt=""><button class="rv-back" data-rv-img="" type="button">${svg("close")}<span>Close</span></button></div>`;
-    const oldPlayer = $("#rv-player");
+    let oldPlayer = $("#rv-player");
+    if (oldPlayer && tabbed && rv.tab !== "watch") { oldPlayer.pause(); rv.keptPlayer = oldPlayer; }   // leaving Watch: kept, paused, at its place
+    if (!oldPlayer && rv.keptPlayer) oldPlayer = rv.keptPlayer;
     const keepTime = oldPlayer && oldPlayer.getAttribute("src") === (v && phoneSrc(v.url)) ? oldPlayer.currentTime : null;
     const scroll = host.querySelector(".rv-body") ? host.querySelector(".rv-body").scrollTop : 0;
     const typingId = document.activeElement && ["pk-mood", "pk-capnote"].includes(document.activeElement.id) ? document.activeElement.id : null;
@@ -2597,7 +2695,7 @@
     const ct = e.target.closest("[data-copy-text]"); if (ct) { copyText(ct.dataset.copyText); toast("social", "Copied", ct.dataset.copyText); return true; }
     if (e.target.closest("[data-tt-copy]")) { copyText(pubValue("tiktok", "caption")); toast("social", "TikTok", "Caption copied. Paste it in the TikTok app."); return true; }
     const bu = e.target.closest("[data-buf]"); if (bu) { bufferAction(bu.dataset.buf); return true; }
-    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-img], [data-rv-play], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task], [data-pkg]");
+    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-tab], [data-rv-img], [data-rv-play], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task], [data-pkg]");
     if (!b) return false;
     const d = b.dataset;
     if (d.pkg === "ref") { pickReference(); return true; }
@@ -2623,6 +2721,7 @@
     if (d.rvTask) { openReview({ taskId: d.rvTask }); return true; }
     if (d.rvClose != null) { closeReview(); return true; }
     if (d.rvVid != null) { rv.vid = +d.rvVid; renderReview(); return true; }
+    if (d.rvTab) { rv.tab = d.rvTab; renderReview(); const body = $("#review .rv-body"); if (body) body.scrollTop = 0; return true; }
     if (d.rvImg != null) { rv.img = d.rvImg || null; renderReview(); return true; }
     if (d.rvPlay != null) { const p = $("#rv-player"); if (p) p.play().catch((e) => toast("creative", "Video", "It would not play here: " + (e.message || e.name), { bad: true })); return true; }
     if (d.rvSeek != null) { const p = $("#rv-player"); if (p) { p.currentTime = +d.rvSeek; p.play().catch(() => {}); p.scrollIntoView({ block: "nearest", behavior: "smooth" }); } return true; }

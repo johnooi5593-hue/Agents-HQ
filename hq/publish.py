@@ -20,7 +20,7 @@ office folder: on this computer only, never committed, never read by the agents 
 
 Stdlib only. Every post writes approved/<name>/posted.json as it goes, so the app shows progress and links.
 """
-import json, math, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+import calendar, json, math, os, re, secrets, shutil, subprocess, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 import buffer_post
 from channels import folder_channel
@@ -41,6 +41,10 @@ COVER_IG = "cover-codex-ig.png"                                # Instagram's 3:4
 
 class PostError(Exception):
     pass
+
+
+class Unconfirmed(PostError):
+    """The platform took a change but did not read it back: it may or may not have happened."""
 
 
 class IgRefused(PostError):
@@ -628,6 +632,21 @@ SCHEDULE_MIN, SCHEDULE_MAX = 10 * 60, 28 * 86400              # Facebook wants 1
 NATIVE_SCHEDULE = ("facebook", "youtube", "buffer")           # these publish at the time by themselves; Instagram is posted by us
 
 
+RESCHEDULE_GUARD = 120                                          # a post this close to its time is never moved
+
+
+def fb_time(v):
+    """Facebook's scheduled_publish_time (unix seconds, or an ISO time) as unix seconds; 0 when it has none."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return calendar.timegm(time.strptime(str(v)[:19], "%Y-%m-%dT%H:%M:%S")) if str(v)[19:] in ("+0000", "Z", "+00:00") else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def check_when(when):
     """A scheduled time the owner picked, as an int: at least 10 minutes and at most 4 weeks ahead."""
     try:
@@ -878,12 +897,121 @@ class Publisher:
         Facebook and YouTube already hold theirs."""
         if platform == "buffer":
             return self.buffer_cancel(folder)
-        r = self.record(folder).get(platform) or {}
-        if r.get("state") != "scheduled" or not r.get("job"):
-            raise PostError("only a scheduled Instagram or Buffer post can be cancelled here; "
-                            "cancel Facebook in Meta Business Suite and YouTube in YouTube Studio")
-        self.note(folder, platform, state="cancelled", job=None)
+        self.claim(folder)                                      # never while the scheduler is about to post it
+        try:
+            r = self.record(folder).get(platform) or {}
+            if r.get("state") != "scheduled" or not r.get("job"):
+                raise PostError("only a scheduled Instagram or Buffer post can be cancelled here; "
+                                "cancel Facebook in Meta Business Suite and YouTube in YouTube Studio")
+            self.note(folder, platform, state="cancelled", job=None)
+        finally:
+            self.busy.discard(folder)
         self.check_finished(folder)
+
+    def reschedule(self, folder, when):
+        """One new time for every post of this video that is still scheduled (owner, 2026-11-13): the Buffer posts (changed
+        in Buffer), Facebook's and YouTube's (changed there, they hold the post) and an Instagram post waiting here.
+        A post whose time has come is never touched. A platform that does not take the new time, or that does not confirm
+        it, keeps its old one and says so on its row. Returns {"moved": [platforms], "kept": {platform: why}}; raises
+        when nothing moved."""
+        when = check_when(when)
+        self.claim(folder)                                      # one claim for all of it: nothing is posted meanwhile
+        moved, kept = [], {}
+        try:
+            r = self.record(folder)
+            todo = [p for p in PLATFORMS if (r.get(p) or {}).get("state") == "scheduled"]
+            if not todo:
+                raise PostError("nothing is scheduled for this video")
+            channel, now = folder_channel(folder), time.time()
+            for p in todo:
+                e = self.record(folder).get(p) or {}
+                if e.get("state") != "scheduled":
+                    continue
+                at = int(e.get("when") or 0)
+                if at <= now + RESCHEDULE_GUARD:                # it is going out (or is out): never pulled back
+                    kept[p] = "its time has come, so it stays as it is"
+                    continue
+                try:
+                    if p == "buffer":
+                        self.buffer_change(folder, when, held=True)
+                        e2 = self.record(folder).get("buffer") or {}
+                        if e2.get("when") != when:
+                            raise PostError(e2.get("warning") or "Buffer changed only one of the two posts")
+                    else:
+                        if e.get("job"):
+                            pass                                # it waits here: the scheduler posts it at the new time
+                        elif p == "facebook":
+                            self.move_facebook(e, when, channel)
+                        elif p == "youtube":
+                            self.move_youtube(e, when, channel)
+                        else:
+                            raise PostError("this post is held by the platform: change the time there")
+                        keep = e.get("warning") or ""
+                        stale = e.get("job") or keep.startswith("Still set for") or "may have moved" in keep   # said the old time
+                        self.note(folder, p, when=when, warning="" if stale else keep)
+                    moved.append(p)
+                except Exception as ex:                         # one platform never stops the others
+                    why = (str(ex) if isinstance(ex, PostError) else type(ex).__name__)[:300]
+                    kept[p] = why
+                    if p != "buffer":                           # the Buffer row says its own
+                        where = {"facebook": "Meta Business Suite", "youtube": "YouTube Studio"}.get(p, "its own app")
+                        old = time.strftime("%a %d %b %H:%M", time.localtime(at))
+                        if isinstance(ex, Unconfirmed):
+                            self.note(folder, p, warning=f"{PLATFORM_NAMES[p]} may have moved to the new time but did not confirm it "
+                                                         f"(here it still shows {old}). Check the time in {where}.")
+                        else:
+                            self.note(folder, p, warning=f"Still set for {old}: {PLATFORM_NAMES[p]} did not take the new time "
+                                                         f"({why.rstrip('.')}). Change it in {where}.")
+        finally:
+            self.busy.discard(folder)
+        if not moved:
+            raise PostError("nothing was rescheduled. " + "; ".join(f"{PLATFORM_NAMES[p]}: {why}" for p, why in kept.items()))
+        self.moved(folder, when)
+        return {"moved": moved, "kept": kept}
+
+    def move_facebook(self, e, when, channel=""):
+        """A Reel Facebook holds as scheduled: a new publish time on the same video. Only a video Facebook itself says is
+        still scheduled is changed, and it counts as moved only when Facebook reads the new time back."""
+        m = re.fullmatch(r"https://www\.facebook\.com/reel/(\d{5,25})", e.get("link") or "")
+        if not m:
+            raise PostError("no Facebook video id on this post")
+        vid, tok = m.group(1), self.accounts.get("meta", channel)["page_token"]
+        ask = f"{GRAPH}/{vid}?fields=scheduled_publish_time,published&access_token={urllib.parse.quote(tok)}"
+        try:
+            _, _, j = http("GET", ask)
+            if j.get("published") is not False or fb_time(j.get("scheduled_publish_time")) <= time.time() + RESCHEDULE_GUARD:
+                raise PostError("Facebook no longer holds it as scheduled")       # by Facebook's own time, not ours
+            http("POST", f"{GRAPH}/{vid}", data={"scheduled_publish_time": str(int(when)), "access_token": tok})
+        except PostError as ex:
+            raise meta_error(ex) from None
+        try:
+            _, _, j = http("GET", ask)
+        except (PostError, OSError):
+            raise Unconfirmed("Facebook did not confirm the new time") from None
+        if abs(fb_time(j.get("scheduled_publish_time")) - int(when)) > 60:
+            raise Unconfirmed("Facebook did not confirm the new time")
+
+    YT_STATUS = ("privacyStatus", "publishAt", "license", "embeddable", "publicStatsViewable", "selfDeclaredMadeForKids", "containsSyntheticMedia")
+
+    def move_youtube(self, e, when, channel=""):
+        """A Short YouTube holds as private with a publish time: a new publish time on the same video, its other settings
+        as they are. A video that is already public (or has no publish time) is never touched."""
+        m = re.fullmatch(r"https://(?:www\.)?youtube\.com/shorts/([A-Za-z0-9_-]{6,20})", e.get("link") or "")
+        if not m:
+            raise PostError("no YouTube video id on this post")
+        vid, auth = m.group(1), {"Authorization": "Bearer " + self.accounts.youtube_token(channel)}
+        _, _, j = http("GET", f"https://www.googleapis.com/youtube/v3/videos?part=status&id={vid}", headers=auth)
+        status = ((j.get("items") or [{}])[0] or {}).get("status") or {}
+        if status.get("privacyStatus") != "private" or fb_time(str(status.get("publishAt") or "")[:19] + "Z") <= time.time() + RESCHEDULE_GUARD:
+            raise PostError("YouTube no longer holds it as scheduled")            # by YouTube's own time, not ours
+        want = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(when)))
+        status = {k: v for k, v in status.items() if k in self.YT_STATUS}
+        status.update(privacyStatus="private", publishAt=want + "Z")
+        _, _, v = http("PUT", "https://www.googleapis.com/youtube/v3/videos?part=status", body=json.dumps({"id": vid, "status": status}).encode(),
+                       headers=dict(auth, **{"Content-Type": "application/json; charset=UTF-8"}))
+        got = (v.get("status") or {})
+        if got.get("privacyStatus") != "private" or str(got.get("publishAt") or "")[:19] != want:
+            raise Unconfirmed("YouTube did not confirm the new time")
 
     # A Buffer post scheduled from here stays in step with Buffer: a change or a cancel here is made in Buffer too,
     # and a change made in Buffer (a new time, a deleted post) shows here at the next status check.
@@ -938,14 +1066,16 @@ class Publisher:
                 raise PostError("still posting this one")
             self.busy.add(folder)
 
-    def buffer_change(self, folder, when=None, caption=None, title=None):
-        """New time, caption or TikTok title for the scheduled Buffer posts: changed in Buffer first, then here."""
+    def buffer_change(self, folder, when=None, caption=None, title=None, held=False):
+        """New time, caption or TikTok title for the scheduled Buffer posts: changed in Buffer first, then here.
+        held: the caller already claimed the folder (reschedule moves every platform under one claim)."""
         if when is None and caption is None and title is None:
             raise PostError("nothing to change")
         when = check_when(when) if when is not None else None
         if caption is not None and len(caption) > buffer_post.IG_CAPTION:
             raise PostError(f"the caption is longer than Instagram's {buffer_post.IG_CAPTION} characters")
-        self.claim(folder)
+        if not held:
+            self.claim(folder)
         try:
             r, api = self.buffer_scheduled(folder)
             posts = {s: dict(p) for s, p in r["posts"].items()}
@@ -981,7 +1111,8 @@ class Publisher:
             if caption is not None or title is not None:      # caption.txt / title.txt next to the posted video match Buffer
                 self.covers.texts(self.package_folder(folder, r.get("video")), caption, title)
         finally:
-            self.busy.discard(folder)
+            if not held:
+                self.busy.discard(folder)
         if upd.get("when"):
             self.moved(folder, when)
         if out["state"] in ("posted", "failed", "cancelled"):
@@ -1087,32 +1218,38 @@ class Publisher:
                 print("buffer status:", e)
             finally:
                 self.busy.discard(folder)
-            r = self.record(folder)
-            for p in PLATFORMS:
-                e = r.get(p) or {}
-                if p == "buffer" or e.get("state") != "scheduled" or not e.get("when") or e["when"] > now:
-                    continue
-                if not e.get("job"):                            # the platform published it by itself
-                    self.note(folder, p, state="posted")
-                    continue
-                job = e["job"]
-                self.note(folder, p, state="posting", job=None, progress=0, step="starting")
-                PROGRESS.report = self.reporter(folder, p)
-                try:
-                    video = os.path.join(folder, job["video"])
-                    if not os.path.isfile(video) and office_root(folder):
-                        video = os.path.join(office_root(folder), job["video"])
-                    cover = os.path.join(folder, job["cover"]) if job.get("cover") else None
-                    link, extra = self.send(p, video, cover, job["text"], None, folder_channel(folder))
-                    late = now - e["when"] > 15 * 60
-                    self.note(folder, p, state="posted", link=link, error="",
-                              warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late and not job.get("tries") else ""), **extra)
-                except IgRefused as ex:
-                    self.later(folder, p, job, ex, now)
-                except Exception as ex:
-                    self.note(folder, p, state="failed", error=str(ex)[:600])
-                finally:
-                    PROGRESS.report = None
+            try:
+                self.claim(folder)                              # a reschedule or cancel waits, and the other way round
+            except PostError:
+                continue
+            try:
+                for p in PLATFORMS:
+                    e = self.record(folder).get(p) or {}     # fresh: a reschedule may just have moved it
+                    if p == "buffer" or e.get("state") != "scheduled" or not e.get("when") or e["when"] > now:
+                        continue
+                    if not e.get("job"):                            # the platform published it by itself
+                        self.note(folder, p, state="posted")
+                        continue
+                    job = e["job"]
+                    self.note(folder, p, state="posting", job=None, progress=0, step="starting")
+                    PROGRESS.report = self.reporter(folder, p)
+                    try:
+                        video = os.path.join(folder, job["video"])
+                        if not os.path.isfile(video) and office_root(folder):
+                            video = os.path.join(office_root(folder), job["video"])
+                        cover = os.path.join(folder, job["cover"]) if job.get("cover") else None
+                        link, extra = self.send(p, video, cover, job["text"], None, folder_channel(folder))
+                        late = now - e["when"] > 15 * 60
+                        self.note(folder, p, state="posted", link=link, error="",
+                                  warning=("Posted late: the computer or Agents HQ was off at the scheduled time." if late and not job.get("tries") else ""), **extra)
+                    except IgRefused as ex:
+                        self.later(folder, p, job, ex, now)
+                    except Exception as ex:
+                        self.note(folder, p, state="failed", error=str(ex)[:600])
+                    finally:
+                        PROGRESS.report = None
+            finally:
+                self.busy.discard(folder)
             self.check_finished(folder)
 
     def interrupted(self):

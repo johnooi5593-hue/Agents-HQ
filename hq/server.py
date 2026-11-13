@@ -2589,6 +2589,10 @@ class Handler(BaseHTTPRequestHandler):
             if not d:
                 return self.send_json({"error": "only approved work can be posted"}, 404)
             try:
+                if body.get("reschedule") is not None:           # one new time for every post of this video that is still scheduled
+                    res = publisher.reschedule(d, body.get("reschedule"))
+                    notifier.refresh()
+                    return self.send_json({**publisher.payload(d, str(body.get("video") or ""), str(body.get("cover") or "")), "rescheduled": res})
                 if body.get("cancel") in publish.PLATFORMS:      # cancel a scheduled Instagram post here, or Buffer's (deleted in Buffer)
                     publisher.cancel(d, body["cancel"])
                     notifier.refresh()
