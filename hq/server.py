@@ -730,6 +730,15 @@ def after_run(run):
         return
     res = next((e for e in reversed(run.events) if e.get("type") == "result"), None)
     err = next((e for e in reversed(run.events) if e.get("type") == "error"), None)
+    if getattr(run, "switched", ""):                    # the Fable limit ran out: the Opus 5.5 job takes over, nothing to answer
+        with TASK_LOCK:
+            db = load_tasks()
+            for t in db["tasks"]:
+                if t.get("id") in run.tasks:
+                    add_chat(t, "lead", f"The Fable limit ran out (it resets {run.switched}). Carrying on with Opus 5.5 from where it stopped; nothing is started over.")
+                    t["asks"], t["updated"] = False, now_iso()
+            save_tasks(db)
+        return
     if getattr(run, "stopped", False):
         with TASK_LOCK:
             db = load_tasks()
@@ -1652,7 +1661,16 @@ FABLE_ASK = re.compile(r"\b(use|with|on|switch to)\s+fable\b|^\s*fable\s*[:,]|^\
 
 MODEL_CHOICES = ("opus", "fable")                                   # the app's picker (t208): Opus 5.5 | Fable 5.1
 FABLE_NOTE = ("(The owner picked Fable 5.1 for this request in the app's model picker: pass model: \"fable\" to every sub-agent "
-              "you start for it, and go back to Opus 5.5 afterwards.)")
+              "you start for it, and go back to Opus 5.5 afterwards. If a sub-agent stops because the Fable limit ran out, start it "
+              "again at once without a model (Opus 5.5) to carry on from its files; never wait for the reset.)")
+# owner, 2026-11-15: when the Fable limit runs out, the job carries on with Opus 5.5 by itself (once, from where it stopped)
+FABLE_LIMIT = re.compile(r"^\s*you(?:'|\u2019)ve hit your fable limit\b", re.I)           # Claude Code's own words, as the job's last result
+FABLE_429 = re.compile(r"\b429\b[^\n]{0,300}claude-fable|claude-fable[^\n]{0,300}\b429\b", re.I)   # the API's refusal, on the job's stderr
+FABLE_RESET = re.compile(r"\bresets?\s+(?:at\s+)?([^\s·][^·\n]{0,40}?)(?=\s*(?:[·;]|\.(?:\s|$)|switch\b|$))", re.I)
+SWITCH_NOTE = ("(Switched to Opus 5.5 by itself: this request ran on Fable and the Fable limit ran out; it resets {reset}. Carry on "
+               "from where the Fable run stopped: read its board tasks and their work folders first, keep everything already made, "
+               "start nothing over, and run every sub-agent on Opus 5.5. Never repeat a post, upload, message or other outside step "
+               "the Fable run may already have done: check posted.json and the board first.)")
 OPUS_NOTE = "(The owner picked Opus 5.5 for this request in the app's model picker: every sub-agent runs on Opus 5.5, not Fable.)"
 
 
@@ -1674,6 +1692,24 @@ def model_for(prompt, choice=None):
     if choice == "opus":
         return DEFAULT_MODEL
     return FABLE_MODEL if FABLE_ASK.search(prompt or "") else DEFAULT_MODEL
+
+
+def fable_limit_hit(run):
+    """Why a Fable job should carry on with Opus 5.5: the reset time ("2am (Asia/Kuala_Lumpur)", or "later") when it ended
+    because the Fable limit ran out; "" otherwise (an Opus job, the owner's Stop, a job that finished, or one already switched)."""
+    if not run.fable or run.stopped or getattr(run, "switched_from", None):
+        return ""
+    events = run.events[-40:]
+    res = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    hit = ""
+    if res and FABLE_LIMIT.match(str(res.get("text") or "")):         # whatever is_error says: the job ended on the limit
+        hit = str(res.get("text"))
+    elif not run.ok and not res:                                     # no result at all: the API refused it (stderr)
+        hit = next((str(e.get("text")) for e in reversed(events) if e.get("type") == "error" and FABLE_429.search(str(e.get("text") or ""))), "")
+    if not hit:
+        return ""
+    m = FABLE_RESET.search(hit)
+    return m.group(1).strip() if m else "later"
 
 
 TASK_REF = re.compile(r"hq/tasks\.js\"?\s+(?:move|progress|note|channel)\s+(t\d+)|\"added\":\s*\{\s*\"id\":\s*\"(t\d+)\"|\bboard task (t\d+)\b")
@@ -1722,7 +1758,8 @@ class Run:
 
     def summary(self):
         return {"id": self.id, "prompt": self.prompt, "done": self.done, "ok": self.ok, "events": len(self.events),
-                "tasks": self.tasks, "queued": not self.started and not self.done, "model": "fable" if self.fable else "opus"}
+                "tasks": self.tasks, "queued": not self.started and not self.done, "model": "fable" if self.fable else "opus",
+                "switched_from": getattr(self, "switched_from", None), "switched": getattr(self, "switched", "")}
 
 
 class RunTimes:
@@ -1790,7 +1827,26 @@ class Desk:
         self.session_id, self.resumable, self.runs, self.order, self.current = str(uuid.uuid4()), False, {}, [], None
         self.last_at, self.spent, self.context = 0.0, 0.0, 0
         self.queue, self.on_done = [], None              # messages waiting for the lead to finish; on_done(run) after each
+        self.on_new = None                               # on_new(run): a job this desk started by itself (the Opus switch)
         self.lock = threading.Lock()
+
+    def switch_to_opus(self, run, reset):
+        """The Fable limit ran out: the same request goes first in line on Opus 5.5, told to carry on, not start over."""
+        nxt = Run(SWITCH_NOTE.format(reset=reset) + " The request was: " + run.prompt, run.tasks, "opus")
+        nxt.switched_from = run.id
+        nxt.add({"type": "system", "text": f"Fable limit reached (resets {reset}): carrying on with Opus 5.5"})
+        with self.lock:
+            if run.stopped:                              # the owner pressed Stop just as it ended: nothing carries on
+                return None
+            if not self.resumable:                       # the Fable run never got a session going: the Opus one starts its own
+                self.session_id = str(uuid.uuid4())
+            self.runs[nxt.id] = nxt
+            self.order.append(nxt.id)
+            self.queue.insert(0, nxt)
+            run.switched = reset
+        if self.on_new:
+            self.on_new(nxt)
+        return nxt
 
     def fresh_reason(self):
         if not self.resumable:
@@ -1838,6 +1894,12 @@ class Desk:
                 self.gate.release()
             if run.ok:
                 run_times.add(self.name, time.time() - run.started_at)
+            try:
+                reset = fable_limit_hit(run)
+                if reset:
+                    self.switch_to_opus(run, reset)       # sets run.switched only when it really lines one up
+            except Exception as e:                        # the switch never stops the line
+                sys.stderr.write(f"opus switch after {run.id}: {e}\n")
             if self.on_done:
                 try:
                     self.on_done(run)
@@ -2040,7 +2102,13 @@ class Desks:
             if key not in self.lanes:
                 d = self.lanes[key] = Desk(self.gate, key)
                 d.on_done = lambda run: self.on_done and self.on_done(run)
+                d.on_new = self._register
             return self.lanes[key]
+
+    def _register(self, run):
+        with self.lock:
+            self.runs[run.id] = run
+            self.order.append(run.id)
 
     def start(self, prompt, tasks=(), model=None):
         run = self.lane(lane_of(list(tasks))).start(prompt, tasks, model)
@@ -2051,7 +2119,7 @@ class Desks:
 
     def stop(self, task=None, run=None, everything=False):
         """The owner's Stop: one task's jobs, one job, or everything the lead is doing. Returns the jobs stopped."""
-        match = lambda r: everything or (run and r.id == run) or (task and task in r.tasks)
+        match = lambda r: everything or (run and run in (r.id, getattr(r, "switched_from", None))) or (task and task in r.tasks)
         out = []
         for d in list(self.lanes.values()):
             out += d.stop(match)
