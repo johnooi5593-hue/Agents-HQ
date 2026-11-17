@@ -1865,7 +1865,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, ready: null, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
+      accounts: !!accounts, ready: null, finalOk: null, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -2099,9 +2099,10 @@
     const vf = vSel ? fileOf(vSel) : null, vUrl = vf ? vf.url : vSel && (p.linked || []).includes(vSel) ? "/files/" + vSel.split("/").map(encodeURIComponent).join("/") : "";
     const cf = cSel ? fileOf(cSel) : null, capText = opts.length ? ((opts[cap] || opts[0]).caption || (opts[cap] || opts[0]).title || "") : "";
     const ready = { video: !!vUrl, thumb: !!cf, caption: !!String(capText).trim() };
-    rv.ready = ready.video && ready.thumb && ready.caption;
+    // its own name: rv.ready is the "Post a video" screen, and a true here made the app draw that screen and crash (2026-11-17)
+    rv.finalOk = ready.video && ready.thumb && ready.caption;
     const tick = (ok, label, what) => `<span class="fin-item ${ok ? "ok" : "no"}">${ok ? svg("check") : "!"}<b>${label}</b><span>${esc(what)}</span></span>`;
-    h += `<div class="pub-final ${rv.ready ? "ready" : ""}"><div class="fin-h">${rv.ready ? "Final · ready to post" : "Final · not ready yet"}</div>
+    h += `<div class="pub-final ${rv.finalOk ? "ready" : ""}"><div class="fin-h">${rv.finalOk ? "Final · ready to post" : "Final · not ready yet"}</div>
       <div class="fin-items">${tick(ready.video, "Video", ready.video ? prettyName(vSel) : "missing")}${tick(ready.thumb, "Thumbnail", ready.thumb ? prettyName(cSel) : "missing")}${tick(ready.caption, "Caption", ready.caption ? "option " + (cap + 1) : "missing")}</div>
       ${vUrl && rv.tabbed ? `<button class="rv-copy fin-watch" data-rv-tab="watch" type="button">${svg("play")} Watch the video</button>` : vUrl ? `<video class="fin-video" src="${esc(phoneSrc(vUrl))}" ${cf ? `poster="${esc(cf.url)}"` : ""} controls playsinline preload="metadata"></video>` : ""}</div>`;
     // Once the video is scheduled or out, the thumbnail and caption pickers fold away (tabs only): the ticks above name the picks
@@ -2821,7 +2822,7 @@
     }
     else if (rv.mode === "approved") html +=`<div class="rv-actions done"><div class="msg">${svg("check")} Approved${rv.pub && rv.pub.busy ? " and posting" : ""}. It's in <b>approved/</b>. Teach the team from this one?</div><button class="btn" data-rv-close type="button">Done</button><button class="btn blue" data-rv-retro type="button">Run a retro</button></div>`;
     else {
-      const n = thumbnailStage || rv.ready === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
+      const n = thumbnailStage || rv.finalOk === false ? 0 : chosenPub().length, busyPub = rv.pub && rv.pub.busy;   // nothing to post until the final check is ready
       const verb = rv.whenOn ? "schedule" : "post";
       const postBtn = n ? `<button class="btn primary" data-rv-approve="post" type="button">${area === "approved" ? (rv.whenOn ? "Schedule" : "Post now") : `Approve &amp; ${verb}`} (${n})</button>` : "";
       if (pkg && !pkg.ready) html += '<div class="rv-actions"><span class="hint" style="margin-right:auto">Finish the steps above: the video gets READY.</span><button class="btn" data-rv-close type="button">Close</button></div>';
