@@ -599,6 +599,130 @@ class PublisherBufferTests(BufferPublisherBase):
         self.assertEqual((self.folder / "buffer" / "caption.txt").read_text(encoding="utf-8"), "final words\n")
 
 
+class BufferInstagramCoverTests(BufferPublisherBase):
+    """Owner, 2026-11-17: "tik tok thumbnail shud be using instagram thumbnail". The Buffer package (Instagram + TikTok)
+    starts with Instagram's thumbnail when there is one; YouTube and Facebook keep the 9:16 pick."""
+
+    def meta(self):
+        return json.loads((self.folder / "buffer" / "package.json").read_text(encoding="utf-8"))
+
+    def made(self):
+        self.pub.covers.jobs[str(self.folder)]["done"].wait(120)
+
+    def codex_pair(self):
+        make_cover(str(self.folder / "cover-codex.png"), f"{W}x{H}", "0x3030E0")       # the 9:16 Codex pick
+        make_cover(str(self.folder / "cover-codex-ig.png"), "540x720", "0x30B0E0")     # its 3:4 Instagram twin
+
+    def test_the_package_starts_with_the_instagram_thumbnail_and_stays_ready(self):
+        self.codex_pair()
+        self.pub.buffer_make(str(self.folder))                                        # the approve hook: no picks
+        self.made()
+        self.assertEqual(self.meta()["cover"], "cover-codex-ig.png")
+        self.assertTrue(cover_flash.verify(str(self.folder / "buffer" / "final.mp4"), str(self.folder / "cover-codex-ig.png"), 3)["ok"])
+        self.assertEqual(self.pub.payload(str(self.folder))["buffer"]["state"], "ready")
+        self.assertEqual(self.pub.payload(str(self.folder), "edit.mp4", "cover-codex.png")["buffer"]["state"], "ready")    # the posting screen's pick
+        self.assertEqual(self.pub.payload(str(self.folder), "edit.mp4", "cover-codex.png", "cover-codex-ig.png")["buffer"]["state"], "ready")
+        job = self.pub.covers.jobs[str(self.folder)]
+        self.pub.buffer_make(str(self.folder), "edit.mp4", "cover-codex.png", "c", "t", "cover-codex-ig.png")
+        self.assertIs(self.pub.covers.jobs[str(self.folder)], job)                    # ready already: not made again
+
+    def test_without_an_instagram_thumbnail_the_package_uses_the_9x16_one(self):
+        self.pub.buffer_make(str(self.folder))
+        self.made()
+        self.assertEqual(self.meta()["cover"], "cover.jpg")
+        self.assertEqual(self.pub.payload(str(self.folder))["buffer"]["state"], "ready")
+
+    def test_another_picture_picked_goes_to_buffer_as_it_does_to_instagram(self):
+        self.codex_pair()
+        self.pub.buffer_make(str(self.folder), "", "cover.jpg")                       # not the Codex pick: no 3:4 twin
+        self.made()
+        self.assertEqual(self.meta()["cover"], "cover.jpg")
+        self.assertEqual(self.pub.payload(str(self.folder), "", "cover.jpg")["buffer"]["state"], "ready")
+        self.assertEqual(self.pub.payload(str(self.folder))["buffer"]["state"], "stale")   # the default (Codex) pick wants the 3:4 one
+
+    def test_cover_ig_from_the_screen_is_honoured_for_make_and_done(self):
+        make_cover(str(self.folder / "square.png"), "540x540", "0x30E060")
+        self.pub.buffer_make(str(self.folder), "", "cover.jpg", None, None, "square.png")
+        self.made()
+        self.assertEqual(self.meta()["cover"], "square.png")
+        self.assertEqual(self.pub.payload(str(self.folder), "", "cover.jpg", "square.png")["buffer"]["state"], "ready")
+        self.pub.buffer_done(str(self.folder), "", "cover.jpg", "w", "T1", "square.png")
+        self.assertEqual(self.record()["cover"], "square.png")
+        with self.assertRaisesRegex(publish.PostError, "Instagram thumbnail is not in this folder"):
+            self.pub.buffer_make(str(self.folder), "", "", None, None, "../elsewhere.png")
+
+    def test_an_editors_cover_ig_jpg_is_instagrams_and_buffers_thumbnail(self):
+        make_cover(str(self.folder / "cover-ig.jpg"), "540x720", "0x30B0E0")
+        self.assertEqual(publish.media_files(str(self.folder))["image"][0], "cover.jpg")   # the 9:16 one stays the default pick
+        video, cover, cover_ig = self.pub.resolve(str(self.folder))
+        self.assertEqual((Path(cover).name, Path(cover_ig).name), ("cover.jpg", "cover-ig.jpg"))
+        self.assertEqual(Path(self.pub.resolve(str(self.folder), "", "cover.jpg")[2]).name, "cover-ig.jpg")
+        self.assertEqual(Path(self.pub.resolve(str(self.folder), "", "cover-ig.jpg")[1]).name, "cover-ig.jpg")   # picked itself: everywhere
+        self.pub.buffer_make(str(self.folder))
+        self.made()
+        self.assertEqual(self.meta()["cover"], "cover-ig.jpg")
+        self.assertEqual(self.pub.payload(str(self.folder), "edit.mp4", "cover.jpg")["buffer"]["state"], "ready")
+
+    def test_the_default_picked_by_name_gives_the_same_pair_as_no_pick(self):
+        """cover.jpg + cover-codex-ig.png, no cover-codex.png: the screen sends "" in its polls and "cover.jpg" on make/Post."""
+        make_cover(str(self.folder / "cover-codex-ig.png"), "540x720", "0x30B0E0")
+        self.assertEqual(publish.media_files(str(self.folder))["image"][0], "cover.jpg")
+        self.assertEqual(self.pub.resolve(str(self.folder)), self.pub.resolve(str(self.folder), "edit.mp4", "cover.jpg"))
+        self.assertEqual(Path(self.pub.resolve(str(self.folder), "", "cover.jpg")[2]).name, "cover-codex-ig.png")
+        self.pub.buffer_make(str(self.folder))                                        # the approve hook
+        self.made()
+        made_at = self.meta()["madeAt"]
+        self.assertEqual(self.meta()["cover"], "cover-codex-ig.png")
+        for pick in ("", "cover.jpg"):
+            self.assertEqual(self.pub.payload(str(self.folder), "", pick)["buffer"]["state"], "ready", pick)
+        self.pub.start(str(self.folder), {"buffer": {"caption": "w", "title": "T1"}}, "edit.mp4", "cover.jpg")
+        self.wait()
+        self.assertEqual((self.record()["state"], self.record()["cover"]), ("posted", "cover-codex-ig.png"))
+        self.assertEqual((self.meta()["madeAt"], self.meta()["cover"]), (made_at, "cover-codex-ig.png"))   # never re-baked from the 9:16
+
+    def test_a_link_pointing_outside_the_folder_is_refused(self):
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        make_cover(str(outside / "secret.png"), "540x720", "0x30B0E0")
+        try:
+            os.symlink(str(outside / "secret.png"), str(self.folder / "cover-codex-ig.png"))
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"symlinks can't be made here: {e}")
+        make_cover(str(self.folder / "cover-codex.png"), f"{W}x{H}", "0x3030E0")
+        with self.assertRaisesRegex(publish.PostError, "not inside this folder"):
+            self.pub.resolve(str(self.folder))
+        with self.assertRaisesRegex(publish.PostError, "not inside this folder"):
+            self.pub.buffer_make(str(self.folder))
+        self.assertEqual(self.pub.payload(str(self.folder))["buffer"]["state"], "none")   # the screen still opens
+        self.assertEqual(Path(self.pub.resolve(str(self.folder), "", "cover.jpg")[2]).name, "cover.jpg")   # a real file still works
+
+    def test_a_file_that_resolves_outside_the_folder_is_refused(self):
+        """The same check without real symlinks (Windows without developer mode): realpath says it lies elsewhere."""
+        self.codex_pair()
+        real = os.path.realpath
+        moved = lambda p, *a, **k: str(self.root / "elsewhere" / "x.png") if Path(p).name == "cover-codex-ig.png" else real(p, *a, **k)
+        with mock.patch.object(publish.os.path, "realpath", moved):
+            with self.assertRaisesRegex(publish.PostError, "not inside this folder"):
+                self.pub.resolve(str(self.folder))
+            self.assertEqual(Path(self.pub.resolve(str(self.folder), "", "cover.jpg")[2]).name, "cover.jpg")
+        moved_video = lambda p, *a, **k: str(self.root / "elsewhere" / "v.mp4") if Path(p).name == "edit.mp4" else real(p, *a, **k)
+        with mock.patch.object(publish.os.path, "realpath", moved_video):
+            with self.assertRaisesRegex(publish.PostError, "not inside this folder"):
+                self.pub.resolve(str(self.folder))
+
+    def test_posting_through_buffer_uses_the_ready_instagram_package(self):
+        self.codex_pair()
+        self.pub.buffer_make(str(self.folder))
+        self.made()
+        made_at = self.meta()["madeAt"]
+        self.pub.start(str(self.folder), {"buffer": {"caption": "w", "title": "T1"}}, "", "cover-codex.png", None, "cover-codex-ig.png")
+        self.wait()
+        r = self.record()
+        self.assertEqual((r["state"], r["cover"]), ("posted", "cover-codex-ig.png"))
+        self.assertEqual(self.meta()["madeAt"], made_at)                                # not made again
+        self.assertEqual(self.meta()["cover"], "cover-codex-ig.png")
+
+
 class NeverTwiceTests(BufferPublisherBase):
     """Buffer posts Instagram and TikTok itself, so the same video never goes there directly as well (or the reverse)."""
 

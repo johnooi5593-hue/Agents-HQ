@@ -1896,7 +1896,9 @@
   const PUB_ICO = { facebook: "f", instagram: "IG", youtube: "▶", tiktok: "♪", buffer: "IG+♪" };   // a small badge per row
   const PUB_URL = "/api/" + "publish";
   // the posting overview for the current pick: the Buffer package is made per video + thumbnail
-  const pubQuery = () => `${PUB_URL}?folder=${encodeURIComponent(pubFolder())}&video=${encodeURIComponent((rv.pick && rv.pick.video) || "")}&cover=${encodeURIComponent((rv.pick && rv.pick.cover) || "")}`;
+  // Instagram's own (3:4) thumbnail from the video's package; the Buffer package (Instagram + TikTok) starts with it too (owner, 2026-11-17)
+  const igPick = () => (rv.pkg && rv.pkg.coverIg && rv.pub && (rv.pub.covers || []).includes(rv.pkg.coverIg) ? rv.pkg.coverIg : "");
+  const pubQuery = () => `${PUB_URL}?folder=${encodeURIComponent(pubFolder())}&video=${encodeURIComponent((rv.pick && rv.pick.video) || "")}&cover=${encodeURIComponent((rv.pick && rv.pick.cover) || "")}` + (igPick() ? `&coverIg=${encodeURIComponent(igPick())}` : "");
   const bufMaking = () => !!(rv.pub && rv.pub.buffer && rv.pub.buffer.state === "making");
   // what can be posted: the folder itself, or each topic of a long talk (a subfolder with its own post.md)
   const pubTargets = () => ((rv.data && rv.data.files) || []).filter((f) => /^post\.md$/i.test(f.name) && f.path.split("/").length <= 2).map((f) => f.path.split("/").slice(0, -1).join("/"));
@@ -1930,7 +1932,10 @@
   function autoBuffer() {
     const bf = rv.pub && rv.pub.buffer, folder = pubFolder();
     if (!bf || !bf.approved || !folder.startsWith("approved/") || !["none", "stale"].includes(bf.state)) return;
-    const key = folder + "|" + ((rv.pick.video || rv.pub.video) || "") + "|" + ((rv.pick.cover || rv.pub.cover) || "");
+    // a video that went out (or is going out) keeps its buffer/final.mp4: opening the screen never makes it again
+    const gone = (k) => ["posted", "scheduled", "posting", "waiting", "uploading"].includes(((rv.pub.posted || {})[k] || {}).state);
+    if (gone("buffer") || (gone("instagram") && gone("tiktok"))) return;
+    const key = folder + "|" + ((rv.pick.video || rv.pub.video) || "") + "|" + ((rv.pick.cover || rv.pub.cover) || "") + "|" + igPick();
     if (rv.bufAsked === key || !(rv.pick.cover || rv.pub.cover)) return;        // asked already for this pick, or no thumbnail yet
     rv.bufAsked = key; bufferAction("make", true);
   }
@@ -1948,6 +1953,7 @@
     if (kind === "change-close") { rv.bufEdit = null; renderReview(); return; }
     if (kind === "change-save") { bufferChange(); return; }
     const body = { folder, buffer: kind, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover, caption: pubValue("buffer", "caption"), title: pubValue("buffer", "title") };
+    if (igPick()) body.coverIg = igPick();                  // the Buffer video starts with Instagram's thumbnail
     try {
       rv.pub = await postJSON(PUB_URL, body); renderReview();
       if (kind === "make") startPubPoll();
@@ -2028,7 +2034,7 @@
     rv.reschedBusy = true; renderReview();
     const names = (ks) => ks.map((k) => (k === "buffer" ? bufNames().join(" + ") || "Buffer" : PLAT_NAME[k] || k)).join(", ");
     try {
-      const r = await postJSON(PUB_URL, { folder: pubFolder(), reschedule: u, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover });
+      const r = await postJSON(PUB_URL, { folder: pubFolder(), reschedule: u, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover, ...(igPick() ? { coverIg: igPick() } : {}) });
       const res = r.rescheduled || {}, kept = Object.keys(res.kept || {});
       rv.pub = r; rv.resched = null; rv.bufEdit = null;
       toast("social", kept.length ? "Partly rescheduled" : "Rescheduled", `${names(res.moved || [])} · ${fmtWhen(u)}` + (kept.length ? ` · not changed: ${names(kept)} (see its row)` : ""), kept.length ? { bad: true } : undefined);
@@ -2039,6 +2045,7 @@
     const folder = pubFolder(), done = ((rv.pub || {}).posted || {}).buffer || {}, f = rv.bufEdit || {};
     const when = f.when ? Math.floor(new Date(f.when).getTime() / 1000) : null;
     const body = { folder, buffer: "change", video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover };
+    if (igPick()) body.coverIg = igPick();
     if (when && Math.abs(when - (done.when || 0)) > 59) body.when = when;
     if (f.caption !== f.caption0) body.caption = f.caption;
     if (f.title !== f.title0) body.title = f.title;
@@ -2059,7 +2066,7 @@
     if (!Object.keys(platforms).length) return;
     const when = whenUnix();
     const body = { folder, platforms, video: rv.pick.video || rv.pub.video, cover: rv.pick.cover || rv.pub.cover, when };
-    if (rv.pkg && rv.pkg.coverIg && (rv.pub.covers || []).includes(rv.pkg.coverIg)) body.coverIg = rv.pkg.coverIg;   // Instagram: the 3:4 one
+    if (igPick()) body.coverIg = igPick();                  // Instagram (and the Buffer video): the 3:4 one
     const names = Object.keys(platforms).map((k) => PUB.find((p) => p[0] === k)[1]).join(", ");
     try { rv.pub = await postJSON(PUB_URL, body); renderReview(); startPubPoll(); toast("social", when ? "Scheduled" : "Posting", when ? `${names} · ${fmtWhen(when)}` : names); }
     catch (e) { toast("social", "Post", e.message || "could not post", { bad: true }); }
@@ -2105,7 +2112,8 @@
     // 1. the thumbnail: one for every platform
     const covers = (p.covers || []).filter((n) => !(rv.pkg && rv.pkg.cover) || n === rv.pkg.cover).map((n) => ({ n, f: fileOf(n) })).filter((x) => x.f);   // a package posts the Codex pick
     const igCover = rv.pkg && rv.pkg.coverIg && fileOf(rv.pkg.coverIg);    // a package's 3:4 cover goes to Instagram
-    if (covers.length && igCover) h += `<div class="pub-h">1 · Thumbnails <span>9:16 on YouTube + Facebook, 3:4 on Instagram</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<div class="pub-thumb-l"><button class="pub-thumb on" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(phoneImg(f.url))}" alt="" loading="lazy"><i>${svg("check")}</i></button><span>YouTube + Facebook</span></div>`).join("")}<div class="pub-thumb-l"><button class="pub-thumb on r34" type="button" tabindex="-1"><img src="${esc(phoneImg(igCover.url))}" alt="" loading="lazy"><i>${svg("check")}</i></button><span>Instagram</span></div></div>`;
+    const igWhere = on.includes("tiktok") ? "Instagram" : "Instagram + TikTok (Buffer)";   // TikTok ticked directly keeps the 9:16
+    if (covers.length && igCover) h += `<div class="pub-h">1 · Thumbnails <span>9:16 on YouTube + Facebook${on.includes("tiktok") ? " + TikTok" : ""}, 3:4 on ${igWhere}</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<div class="pub-thumb-l"><button class="pub-thumb on" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(phoneImg(f.url))}" alt="" loading="lazy"><i>${svg("check")}</i></button><span>YouTube + Facebook${on.includes("tiktok") ? " + TikTok" : ""}</span></div>`).join("")}<div class="pub-thumb-l"><button class="pub-thumb on r34" type="button" tabindex="-1"><img src="${esc(phoneImg(igCover.url))}" alt="" loading="lazy"><i>${svg("check")}</i></button><span>${igWhere}</span></div></div>`;
     else if (covers.length) h += `<div class="pub-h">1 · Thumbnail <span>${covers.length > 1 ? "tap the one you want, it goes on every platform" : "used on every platform"}</span></div><div class="pub-pick">${covers.map(({ n, f }) => `<button class="pub-thumb ${n === cSel ? "on" : ""}" data-pub-pick="cover" data-pub-val="${esc(n)}" type="button"><img src="${esc(phoneImg(f.url))}" alt="" loading="lazy">${n === cSel ? `<i>${svg("check")}</i>` : ""}</button>`).join("")}</div>`;
     // 2. the caption: one choice fills Facebook, Instagram and YouTube
     if (opts.length) h += `<div class="pub-h">2 · Caption <span>${opts.length > 1 ? "tap one, it fills every platform" : "used on every platform"}</span></div><div class="pub-caps">${opts.map((o, i) => `<button class="pub-cap ${i === cap ? "on" : ""} ${capOpen("pub", i) ? "full" : ""}" data-pub-pick="caption" data-pub-val="${i}" type="button">${i === cap ? `<i>${svg("check")}</i>` : ""}<b>${esc(o.title || "")}</b><span>${esc(o.caption || "")}</span>${capMore("pub", i, o.caption)}</button>`).join("")}</div>`;

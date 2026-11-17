@@ -2537,7 +2537,7 @@ class Handler(BaseHTTPRequestHandler):
             d = approved_dir(qs.get("folder", [""])[0], ("approved", "out"))
             if not d:
                 return self.send_json({"error": "no such work folder"}, 404)
-            pl = publisher.payload(d, qs.get("video", [""])[0], qs.get("cover", [""])[0])
+            pl = publisher.payload(d, qs.get("video", [""])[0], qs.get("cover", [""])[0], qs.get("coverIg", [""])[0])
             return self.send_json({**pl, "channel_name": channels.name(pl["channel"])})
         if path == "/api/brain/notes":
             return self.send_json({"notes": brain_notes()})
@@ -2662,7 +2662,7 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("reschedule") is not None:           # one new time for every post of this video that is still scheduled
                     res = publisher.reschedule(d, body.get("reschedule"))
                     notifier.refresh()
-                    return self.send_json({**publisher.payload(d, str(body.get("video") or ""), str(body.get("cover") or "")), "rescheduled": res})
+                    return self.send_json({**publisher.payload(d, str(body.get("video") or ""), str(body.get("cover") or ""), str(body.get("coverIg") or "")), "rescheduled": res})
                 if body.get("cancel") in publish.PLATFORMS:      # cancel a scheduled Instagram post here, or Buffer's (deleted in Buffer)
                     publisher.cancel(d, body["cancel"])
                     notifier.refresh()
@@ -2672,19 +2672,19 @@ class Handler(BaseHTTPRequestHandler):
                     publisher.buffer_change(d, body.get("when") or None, caption if isinstance(caption, str) else None,
                                             title if isinstance(title, str) else None)
                     notifier.refresh()
-                    return self.send_json(publisher.payload(d, str(body.get("video") or ""), str(body.get("cover") or "")))
-                if body.get("buffer") in ("make", "done"):       # the Buffer package (cover as frame 1), or "I posted it in Buffer"
-                    video, cover = str(body.get("video") or ""), str(body.get("cover") or "")
+                    return self.send_json(publisher.payload(d, str(body.get("video") or ""), str(body.get("cover") or ""), str(body.get("coverIg") or "")))
+                if body.get("buffer") in ("make", "done"):       # the Buffer package (Instagram's cover as frame 1), or "I posted it in Buffer"
+                    video, cover, cover_ig = str(body.get("video") or ""), str(body.get("cover") or ""), str(body.get("coverIg") or "")
                     caption, title = body.get("caption"), body.get("title")
                     caption = caption if isinstance(caption, str) else None
                     title = title if isinstance(title, str) else None
                     if body["buffer"] == "make":
-                        publisher.buffer_make(d, video, cover, caption, title)
+                        publisher.buffer_make(d, video, cover, caption, title, cover_ig)
                     else:
-                        publisher.buffer_done(d, video, cover, caption, title)
+                        publisher.buffer_done(d, video, cover, caption, title, cover_ig)
                         ready.posting(d)                         # an uploaded ready-made video posted by hand: its card is done too
                     notifier.refresh()
-                    return self.send_json(publisher.payload(d, video, cover))
+                    return self.send_json(publisher.payload(d, video, cover, cover_ig))
                 chosen = {k: v for k, v in (body.get("platforms") or {}).items() if k in publish.PLATFORMS and isinstance(v, dict)}
                 started = publisher.start(d, chosen, str(body.get("video") or ""), str(body.get("cover") or ""), body.get("when") or None,
                                           str(body.get("coverIg") or ""))

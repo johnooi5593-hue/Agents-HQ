@@ -37,6 +37,7 @@ VIDEO_EXT = (".mp4", ".mov", ".m4v")
 # goes out. The same "phone" word video_package.NOT_FINAL skips (tests/test_phone_copy.py checks the two agree).
 PHONE_COPY = re.compile(r"(^|[-_. ])phone([-_. ]|$)", re.I)
 COVER_IG = "cover-codex-ig.png"                                # Instagram's 3:4 Codex cover, next to the 9:16 cover-codex.png
+COVER_IG_PLAIN = ("cover.jpg", "cover-ig.jpg")                  # an editor's 9:16 cover.jpg and its Instagram cover-ig.jpg (2026-11-17)
 
 
 class PostError(Exception):
@@ -616,7 +617,9 @@ def media_files(folder):
     rank = lambda n: (0 if re.fullmatch(r"(edit|final|reel)\.\w+", os.path.basename(n), re.I) else 1 if re.match(r"(edit|final|reel)\b", os.path.basename(n), re.I)
                       else 3 if re.search(r"clean|nocap|no-captions", n, re.I) else 4 if os.path.basename(n).lower().startswith("cut") else 2)
     found["video"].sort(key=rank)
-    found["image"].sort(key=lambda n: (0 if os.path.basename(n).lower() == "cover-codex.png" else 1 if "cover" in os.path.basename(n).lower() else 2, n))   # the owner's Codex pick first
+    # the owner's Codex pick first; an Instagram-only cover (cover-ig.jpg sorts before cover.jpg by name) never becomes the 9:16 default
+    found["image"].sort(key=lambda n: (0 if os.path.basename(n).lower() == "cover-codex.png" else 2 if os.path.basename(n).lower() in (COVER_IG, COVER_IG_PLAIN[1])
+                                       else 1 if "cover" in os.path.basename(n).lower() else 3, n))
     return found
 
 
@@ -719,16 +722,20 @@ class Publisher:
             self.note(folder, p, progress=pct, step=step)
         return report
 
-    def payload(self, folder, video_name="", cover_name=""):
-        """What the posting screen shows. video_name / cover_name: the owner's current pick, for the Buffer package's state."""
+    def payload(self, folder, video_name="", cover_name="", cover_ig_name=""):
+        """What the posting screen shows. video_name / cover_name / cover_ig_name: the owner's current pick, for the Buffer
+        package's state (the package starts with the Instagram thumbnail, owner 2026-11-17)."""
         f = media_files(folder)
         try:
-            video, cover, _ = self.resolve(folder, video_name, cover_name)
+            video, _, cover_ig = self.resolve(folder, video_name, cover_name, cover_ig_name)
         except PostError:
-            video, cover, _ = self.resolve(folder)
+            try:
+                video, _, cover_ig = self.resolve(folder)
+            except PostError:                                   # e.g. the default file lies outside the folder: no package state
+                video = cover_ig = None
         return {"accounts": self.accounts.summary(folder_channel(folder)), "channel": folder_channel(folder), "drafts": drafts(folder), "posted": self.record(folder),
                 "videos": f["video"], "covers": f["image"], "linked": sorted(f["abs"]), "video": (f["video"] or [""])[0], "cover": (f["image"] or [""])[0],
-                "busy": folder in self.busy, "buffer": self.buffer_state(folder, video, cover)}
+                "busy": folder in self.busy, "buffer": self.buffer_state(folder, video, cover_ig)}
 
     def buffer_state(self, folder, video, cover):
         """The Buffer package for this video + cover pick, with where its files are (relative to the office folder)."""
@@ -755,6 +762,8 @@ class Publisher:
             if cover_name not in files["image"]:
                 raise PostError("that thumbnail is not in this folder")
             cover = os.path.join(folder, cover_name)
+            if cover_name == files["image"][0]:
+                cover_name = ""                                 # the default picked by name is the default: the same pair either way
         # Instagram: the 3:4 Codex cover next to the 9:16 one (owner, 2026-10-28), unless the owner picked another picture
         cover_ig = cover
         if cover_ig_name:
@@ -763,11 +772,22 @@ class Publisher:
             cover_ig = os.path.join(folder, cover_ig_name)
         elif os.path.isfile(os.path.join(folder, COVER_IG)) and (not cover_name or cover_name == "cover-codex.png"):
             cover_ig = os.path.join(folder, COVER_IG)
+        elif cover == os.path.join(folder, COVER_IG_PLAIN[0]) and os.path.isfile(os.path.join(folder, COVER_IG_PLAIN[1])):
+            cover_ig = os.path.join(folder, COVER_IG_PLAIN[1])  # an editor's cover-ig.jpg next to its cover.jpg, the same way
+        # every picture, and a video that isn't linked (linked ones are checked against the office folder), really lies
+        # inside this folder: a symlink or junction pointing elsewhere is refused
+        inside = os.path.normcase(os.path.realpath(folder)) + os.sep
+        linked = set(files["abs"].values())
+        for path in (cover, cover_ig) + (() if video in linked else (video,)):
+            if path and not os.path.normcase(os.path.realpath(path)).startswith(inside):
+                raise PostError("that file is not inside this folder")
         return video, cover, cover_ig
 
-    def buffer_make(self, folder, video_name="", cover_name="", caption=None, title=None):
+    # The Buffer package (Instagram + TikTok) starts with Instagram's thumbnail (owner, 2026-11-17: "tik tok thumbnail
+    # shud be using instagram thumbnail"); without a separate one it is the 9:16 pick, as before.
+    def buffer_make(self, folder, video_name="", cover_name="", caption=None, title=None, cover_ig_name=""):
         """The posting screen asks for the Buffer package of the current pick (made in the background), with its texts."""
-        video, cover, _ = self.resolve(folder, video_name, cover_name)
+        video, _, cover = self.resolve(folder, video_name, cover_name, cover_ig_name)
         if not video:
             raise PostError("no video in this folder")
         if not cover:
@@ -775,9 +795,9 @@ class Publisher:
         self.covers.start(os.path.dirname(os.path.abspath(video)), video, cover, caption, title)
         return self.buffer_state(folder, video, cover)
 
-    def buffer_done(self, folder, video_name="", cover_name="", caption=None, title=None):
+    def buffer_done(self, folder, video_name="", cover_name="", caption=None, title=None, cover_ig_name=""):
         """The owner posted it in Buffer by hand: the board counts it as posted."""
-        video, cover, _ = self.resolve(folder, video_name, cover_name)
+        video, _, cover = self.resolve(folder, video_name, cover_name, cover_ig_name)
         if video:
             self.covers.texts(os.path.dirname(os.path.abspath(video)), caption, title)
         rel = lambda p: os.path.basename(p) if p else ""
@@ -792,7 +812,7 @@ class Publisher:
         video, cover, cover_ig = self.resolve(folder, video_name, cover_name, cover_ig_name)
         if not video:
             raise PostError("no video in this folder")
-        cover_of = lambda p: cover_ig if p == "instagram" else cover
+        cover_of = lambda p: cover_ig if p in ("instagram", "buffer") else cover   # Buffer: Instagram's thumbnail on TikTok too
         if when is not None:
             when = check_when(when)
         channel = folder_channel(folder)

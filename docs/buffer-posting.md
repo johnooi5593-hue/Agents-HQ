@@ -13,7 +13,13 @@ blink nobody notices, and then the edit plays exactly as it was. Frame 0 is your
 show it. `HQ_COVER_FLASH_FRAMES=2` makes it even shorter. Agents HQ reads frame 0 back after making the file and checks
 it really is the cover.
 
-A 9:16 cover fills the frame. A 3:4 cover (the Instagram Codex pick) sits whole in the middle over a blurred copy of
+**Buffer starts with the Instagram thumbnail** (owner, 2026-11-17: "tik tok thumbnail shud be using instagram
+thumbnail"), so Instagram and TikTok both show the Instagram one; YouTube Shorts and Facebook keep the 9:16 one.
+The Instagram thumbnail is the 3:4 Codex pick `cover-codex-ig.png` next to `cover-codex.png`, or an editor's
+`cover-ig.jpg` next to its `cover.jpg`. When there is no separate Instagram thumbnail, or you pick another picture on
+the posting screen, Buffer starts with the thumbnail you picked, the same one every platform gets.
+
+A 9:16 cover fills the frame. A 3:4 cover (the Instagram thumbnail) sits whole in the middle over a blurred copy of
 itself, which is what the Instagram grid shows anyway.
 
 ## What Agents HQ makes: the Buffer package
@@ -78,8 +84,10 @@ the video at publish time).
   YouTube and TikTok alike: within Instagram's 2,200 characters and 30 hashtags, hashtags inside the caption, and a `Title:`
   line under 60 characters that is the YouTube title, the thumbnail title **and** TikTok's title. There is no separate
   `## TikTok` section any more; an old one is ignored.
-- Creative delivers one `cover.jpg` at 1080×1920 with the words well inside the middle 3:4 (the Instagram grid), because
-  that picture becomes frame 1 of the video.
+- Creative delivers one `cover.jpg` at 1080×1920 with the words well inside the middle 3:4 (the Instagram grid). When it
+  also delivers the Instagram thumbnail (`cover-ig.jpg` next to `cover.jpg`, or the Codex `cover-codex-ig.png`), that
+  one becomes frame 1 of the Buffer video, so Buffer (Instagram and TikTok) starts with the Instagram thumbnail;
+  otherwise `cover.jpg` is frame 1.
 - Agents never write into `buffer/`, never call Buffer, and never read `.hq-accounts.json` (where the key and the bucket
   secret live, on this computer only). Posting stays the owner's button.
 
