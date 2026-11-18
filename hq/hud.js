@@ -2756,14 +2756,15 @@
     // Post · Watch · Details (owner, 2026-11-13): once a video has its posting overview, the screen is three short tabs
     // instead of one long page. Anything else (artwork, a folder still being picked, notes only) stays one page.
     const showPub = !thumbnailStage && (!pkg || (pkg.ready && pkg.stages.includes("caption")));
-    const wasTabbed = rv.tabbed, tabbed = rv.tabbed = !!(v && rv.pub && showPub);
+    // owner, 2026-11-18: a video card uses the tabs from its first step too (Get ready · Watch · Details), not only once READY
+    const wasTabbed = rv.tabbed, tabbed = rv.tabbed = !!(v && ((rv.pub && showPub) || (pkg && !thumbnailStage)));
     if (tabbed && !wasTabbed) {                             // the posting overview just arrived: one page becomes tabs
       const playing = $("#rv-player");
       if (playing && !playing.paused) rv.tab = "watch";     // never cut off a video that is playing
       else queueMicrotask(() => { const body = $("#review .rv-body"); if (body) body.scrollTop = 0; });
     }
     if (!["post", "watch", "details"].includes(rv.tab)) rv.tab = "post";
-    const tabBar = tabbed ? `<div class="rv-tabs" role="tablist">${[["post", "Post"], ["watch", "Watch"], ["details", "Details"]].map(([k, l]) => `<button class="rv-tab ${rv.tab === k ? "on" : ""}" role="tab" aria-selected="${rv.tab === k}" data-rv-tab="${k}" type="button">${l}</button>`).join("")}</div>` : "";
+    const tabBar = tabbed ? `<div class="rv-tabs" role="tablist">${[["post", pkg && !pkg.ready ? "Get ready" : "Post"], ["watch", "Watch"], ["details", "Details"]].map(([k, l]) => `<button class="rv-tab ${rv.tab === k ? "on" : ""}" role="tab" aria-selected="${rv.tab === k}" data-rv-tab="${k}" type="button">${l}</button>`).join("")}</div>` : "";
     const marks = [], mark = (tab) => marks.push([tab, html.length]);   // where each tab's sections start in html
     let html = `<div class="rv-card">
       <div class="rv-head"><button class="rv-back" data-rv-close type="button" aria-label="Back to the office">${svg("close")}<span>Back</span></button>
