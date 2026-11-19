@@ -1854,7 +1854,7 @@
     let host = $("#review");
     if (!host) {
       host = el('<div id="review" class="review" hidden role="dialog" aria-modal="true"></div>'); document.body.appendChild(host);
-      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.bufField && rv.bufEdit) rv.bufEdit[d.bufField] = e.target.value; if (d.resched != null && rv.resched) rv.resched.when = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); } });
+      host.addEventListener("input", (e) => { const d = e.target.dataset || {}; if (d.pubField) rv.edits[d.pubField] = e.target.value; if (d.bufField && rv.bufEdit) rv.bufEdit[d.bufField] = e.target.value; if (d.resched != null && rv.resched) rv.resched.when = e.target.value; if (d.pubWhen != null) { rv.whenVal = e.target.value; const n = $("#pub-when-say"); if (n) n.textContent = whenSay(); const c = $("#pub-cal"); if (c) c.innerHTML = calHtml(); } });
       host.addEventListener("input", (e) => { if (e.target.id === "pk-mood") rv.pkgMood = e.target.value; if (e.target.id === "pk-capnote") rv.capNote = e.target.value; });
       host.addEventListener("change", (e) => { const k = e.target.dataset && e.target.dataset.pubSel; if (k) { rv.sel[k] = e.target.checked; renderReview(); } });
     }
@@ -1865,7 +1865,7 @@
     const task = taskId ? (st.tasks || []).find((t) => t.id === taskId) : null;
     stopPubPoll();
     Object.assign(rv, { open: true, folder: accounts ? null : folder || folderOfTask(task), taskId: taskId || null, data: null, vid: 0, img: null, mode: null,
-      accounts: !!accounts, ready: null, finalOk: null, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
+      accounts: !!accounts, ready: null, finalOk: null, cal: null, acc: null, accBusy: "", ch: channel || "", chans: rv.chans || null, pub: null, pubSub: "", pubEdit: false, pkgOpen: false, tab: "post", tabbed: false, pickOpen: false, keptPlayer: null, resched: null, reschedBusy: false, whenOn: false, whenVal: "", edits: {}, sel: null, pick: {}, cover: null, pkg: null, pkgName: null, pkgBusy: null, pkgRef: null, pkgNew: false, pkgMood: "", capNew: false, capNote: "" });
     if (!rv.pushed) { try { history.pushState({ hqReview: 1 }, ""); rv.pushed = true; } catch (e) { /* no history API */ } }
     host.hidden = false; document.body.classList.add("review-open"); closeMenus(); hideAgentCard(); callScene("pause", true);
     renderReview();
@@ -1911,6 +1911,7 @@
     const pk0 = rv.pkg;
     if (pk0 && pk0.cover && !rv.pick.cover) rv.pick.cover = pk0.cover;                 // a package posts its Codex pick: ask for that one's Buffer package
     try { rv.pub = await getJSON(pubQuery()); } catch (e) { rv.pub = null; }
+    if (rv.pub) loadCal(rv.pub.channel || "");
     if (rv.pub && !rv.sel && !rv.whenVal && channelSlot(rv.pub.channel)) { rv.whenOn = true; rv.whenVal = channelSlot(rv.pub.channel); }   // its own slot is the default
     if (rv.pub && !rv.sel) {
       rv.sel = {}; for (const [k] of PUB) rv.sel[k] = !!(rv.pub.accounts[k] || {}).connected && !["posted", "scheduled"].includes((rv.pub.posted[k] || {}).state);
@@ -2015,6 +2016,53 @@
   const whenUnix = () => (rv.whenOn && rv.whenVal ? Math.floor(new Date(rv.whenVal).getTime() / 1000) : null);
   const httpsOr = (u, fallback) => (/^https:\/\//.test(u || "") ? u : fallback);   // a link from a platform, never javascript:
   const fmtWhen = (u) => new Date(u * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  // The When step's posting calendar (owner, 2026-11-19): this channel's scheduled posts and the ones that went out in
+  // the last 2 days (NLRCC for an NLRCC video, Pong for a Pong one), the next 7 days as dots, and a warning when the
+  // picked day already has a scheduled post, with the next free day one tap away
+  async function loadCal(ch) {
+    if (rv.cal && rv.cal.ch === ch && Date.now() - rv.cal.at < 60000) return;
+    let cal;
+    try { const r = await getJSON("/api/schedule?channel=" + encodeURIComponent(ch)); cal = { ch, at: Date.now(), items: r.items || [] }; }
+    catch (e) { cal = { ch, at: Date.now(), items: [], err: true }; }
+    if (!rv.open || !rv.pub || (rv.pub.channel || "") !== ch) return;   // another video opened meanwhile: its own calendar loads
+    rv.cal = cal;
+    const c = $("#pub-cal"); if (c) c.innerHTML = calHtml();
+  }
+  const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  function calHtml() {
+    if (!rv.whenOn || !rv.pub || !rv.cal || rv.cal.ch !== (rv.pub.channel || "")) return rv.whenOn ? '<div class="cal-box"><span class="spin"></span> Loading the posting calendar…</div>' : "";
+    const me = pubFolder(), u = whenUnix(), mine = u ? new Date(u * 1000) : null;
+    const items = rv.cal.items.filter((x) => x.folder !== me && !(x.state === "posted" && x.folder.startsWith(me + "/")));
+    const sched = items;                                    // a post scheduled that day, or one that already went out that day
+    const chn = chName((rv.pub && rv.pub.channel) || "");
+    const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+    const days = [...Array(7)].map((_, i) => { const d = new Date(t0); d.setDate(t0.getDate() + i); return d; });
+    const dot = (cls) => `<i class="cal-dot ${cls}"></i>`;
+    let h = `<div class="cal-box"><div class="cal-top"><b>${esc(chn)} posting calendar</b><span>next 7 days · tap a day</span></div><div class="cal-days">`;
+    h += days.map((d) => {
+      const k = dayKey(d), on = mine && dayKey(mine) === k;
+      const ds = items.filter((x) => dayKey(new Date(x.when * 1000)) === k);
+      return `<button type="button" class="cal-day ${on ? "pick" : ""}" data-cal-day="${d.getTime()}"><span class="w">${d.toLocaleDateString(undefined, { weekday: "short" })}</span><span class="n">${d.getDate()}</span><span class="dots">${ds.map((x) => dot(esc(x.state))).join("")}${on ? dot("me") : ""}</span></button>`;
+    }).join("");
+    h += `</div><div class="cal-key">${dot("scheduled")} scheduled ${dot("me")} this video ${dot("posted")} posted</div>`;
+    const tm = (s) => new Date(s * 1000).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+    const rows = items.map((x) => ({ ...x })); if (u) rows.push({ me: true, when: u, title: pubValue("youtube", "title") || pubValue("facebook", "title") || prettyName(me.split("/").pop()), platforms: chosenPub(), state: "me" });
+    rows.sort((a, b) => a.when - b.when);
+    const tag = { posted: "Posted", scheduled: "Scheduled", me: "You're picking" };
+    h += rows.map((x) => `<div class="cal-row ${x.me ? "me" : ""}"><span class="t">${esc(tm(x.when))}</span><span class="v"><b>${esc(x.title)}</b><small>${esc(x.platforms.map((p) => PLAT_NAME[p] || p).join(" · "))}</small></span><span class="cal-tag ${esc(x.state)}">${tag[x.state]}</span></div>`).join("")
+      || '<div class="cal-row"><span class="v"><small>Nothing scheduled or posted in the last 2 days.</small></span></div>';
+    if (rv.cal.err) h += '<div class="pub-note">The calendar could not be loaded. Scheduling still works.</div>';
+    h += "</div>";
+    if (mine) {
+      const clash = sched.find((x) => dayKey(new Date(x.when * 1000)) === dayKey(mine));
+      if (clash) {
+        const busy = new Set(sched.map((x) => dayKey(new Date(x.when * 1000)))), n = new Date(mine);
+        do n.setDate(n.getDate() + 1); while (busy.has(dayKey(n)));
+        h += `<div class="cal-warn">Same day as <b>${esc(clash.title)}</b> (${clash.state === "posted" ? "posted " : ""}${esc(tm(clash.when))}). Two posts on one day split the views. <button type="button" class="rv-copy" data-cal-day="${new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime()}">Use ${esc(n.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }))} instead</button></div>`;
+      } else h += `<div class="cal-ok">No other ${esc(chn)} post that day.</div>`;
+    }
+    return h;
+  }
   function whenSay() { const u = whenUnix(); if (!u) return ""; const m = Math.round((u * 1000 - Date.now()) / 60000); return m < 10 ? "Pick a time at least 10 minutes from now." : `Goes out ${fmtWhen(u)}.`; }
   async function cancelScheduled(k) {
     if (k === "buffer" && !confirm("Cancel this scheduled post? Agents HQ deletes the Instagram and TikTok posts in Buffer too, so they won't go out.")) return;
@@ -2181,7 +2229,7 @@
     if (on.length) h += `<button class="rv-copy pub-edit" data-pub-pick="edit" type="button">${rv.pubEdit ? "Hide the text per platform" : "Change the text for one platform"}</button>`;
     if (on.length) {
       h += `<div class="pub-h">${opts.length ? "4" : "3"} · When</div><div class="rv-chips"><button class="rv-chip ${rv.whenOn ? "" : "on"}" data-pub-pick="when" data-pub-val="now" type="button">${rv.whenOn ? "" : svg("check")}Post now</button><button class="rv-chip ${rv.whenOn ? "on" : ""}" data-pub-pick="when" data-pub-val="later" type="button">${rv.whenOn ? svg("check") : svg("cal")}Schedule</button></div>`;
-      if (rv.whenOn) h += `<input class="pub-in pub-when" type="datetime-local" data-pub-when value="${esc(rv.whenVal)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><div class="pub-note" id="pub-when-say">${esc(whenSay())}</div>${on.includes("instagram") ? '<div class="pub-note">Facebook and YouTube publish it themselves at that time. Instagram is posted by Agents HQ, so keep this computer on with Agents HQ running then; if it was off, it posts as soon as Agents HQ opens again.</div>' : ""}`;
+      if (rv.whenOn) h += `<input class="pub-in pub-when" type="datetime-local" data-pub-when value="${esc(rv.whenVal)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><div class="pub-note" id="pub-when-say">${esc(whenSay())}</div><div id="pub-cal">${calHtml()}</div>${on.includes("instagram") ? '<div class="pub-note">Facebook and YouTube publish it themselves at that time. Instagram is posted by Agents HQ, so keep this computer on with Agents HQ running then; if it was off, it posts as soon as Agents HQ opens again.</div>' : ""}`;
     }
     h += `<div class="pub-note">${rv.whenOn ? "Schedules" : "Posts"} <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} on every ticked account${rv.whenOn ? " for the time above" : " at the same time"}. Instagram and TikTok go through Buffer: ticked, from here; otherwise by hand with the Buffer package.</div></div>`;
     return h;
@@ -2899,7 +2947,7 @@
     const ct = e.target.closest("[data-copy-text]"); if (ct) { copyText(ct.dataset.copyText); toast("social", "Copied", ct.dataset.copyText); return true; }
     if (e.target.closest("[data-tt-copy]")) { copyText(pubValue("tiktok", "caption")); toast("social", "TikTok", "Caption copied. Paste it in the TikTok app."); return true; }
     const bu = e.target.closest("[data-buf]"); if (bu) { bufferAction(bu.dataset.buf); return true; }
-    const b = e.target.closest("[data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-tab], [data-rv-img], [data-rv-play], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task], [data-pkg]");
+    const b = e.target.closest("[data-cal-day], [data-rv-accounts], [data-acc], [data-chan], [data-chan-save], [data-pub-pick], [data-pub-cancel], [data-rv-close], [data-rv-vid], [data-rv-tab], [data-rv-img], [data-rv-play], [data-rv-seek], [data-rv-copy], [data-rv-mode], [data-rv-approve], [data-rv-retro], [data-rv-folder], [data-rv-task], [data-pkg]");
     if (!b) return false;
     const d = b.dataset;
     if (d.pkg === "ref") { pickReference(); return true; }
@@ -2936,6 +2984,11 @@
       return true;
     }
     if (d.rvMode != null) { rv.mode = d.rvMode || null; renderReview(); return true; }
+    if (d.calDay) {                                          // the posting calendar: that day, at the time already picked
+      const day = new Date(+d.calDay), was = rv.whenVal ? new Date(rv.whenVal) : null;
+      day.setHours(was && !isNaN(was) ? was.getHours() : 20, was && !isNaN(was) ? was.getMinutes() : 0, 0, 0);
+      rv.whenVal = localInput(day); renderReview(); return true;
+    }
     if (d.rvApprove === "post") { rv.mode = "confirm-post"; renderReview(); return true; }   // asks first: Cancel or Yes, post
     if (d.rvApprove != null) { if (d.rvApprove === "post-yes") rv.mode = null; reviewApprove(d.rvApprove === "post-yes"); return true; }
     if (d.rvRetro != null) { send(`/retro ${rv.folder || "board task " + rv.taskId} (the owner approved it)`); toast("chief", "Retro started", "The team is writing down what worked."); closeReview(); return true; }

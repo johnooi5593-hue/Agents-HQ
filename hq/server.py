@@ -2504,6 +2504,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"teams": teams_payload(), "brain_notes": brain_notes()})
         if path == "/api/meeting":                         # the Meeting Hall's screens and the meeting times
             return self.send_json(meeting_payload())
+        if path == "/api/schedule":                        # the When step's posting calendar for one channel
+            return self.send_json(schedule_payload((qs.get("channel") or [""])[0]))
         if path == "/api/skills":                          # the / menu in the app's chat boxes
             return self.send_json({"skills": office_slash()})
         if path == "/api/agents":
@@ -3094,6 +3096,57 @@ def latest_review():
     actions = next((v for k, v in sections.items() if re.search(r"top|action|行动", k, re.I)), [])
     teams = [{"team": re.sub(r"^improve\s*[·:-]\s*", "", k, flags=re.I), "tip": v[0]} for k, v in sections.items() if re.match(r"improve", k, re.I) and v]
     return {"date": files[-1][:10], "file": "work/meetings/" + files[-1], "actions": actions[:5], "teams": teams[:9]}
+
+
+def schedule_payload(channel):
+    """GET /api/schedule?channel=<key>: one channel's posting calendar for the posting screen's When step (owner,
+    2026-11-19): every approved video (or topic) of that channel that waits for its time, or went out in the last 2 days,
+    so a new schedule doesn't land on the same day as another post. Read-only; the main channel is ""."""
+    channel = "" if channel in ("", "main") else channel
+    if channel and not re.match(r"^[a-z0-9][a-z0-9-]{0,50}$", channel):
+        return {"error": "unknown channel", "items": []}
+    now, items = time.time(), []
+    base = os.path.join(ROOT, "approved")
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        top = os.path.join(base, name)
+        if not SAFE_NAME.match(name) or not os.path.isdir(top):
+            continue
+        for d in [top] + [os.path.join(top, s) for s in sorted(os.listdir(top)) if SAFE_NAME.match(s) and os.path.isdir(os.path.join(top, s))]:
+            if not os.path.isfile(os.path.join(d, "posted.json")) or channels_mod.folder_channel(d) != channel:
+                continue
+            try:
+                with open(os.path.join(d, "posted.json"), encoding="utf-8") as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(rec, dict):
+                continue
+            num = lambda v: int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 0   # a damaged file never breaks the calendar
+            sched = {p: num(rec[p].get("when")) for p in publish.PLATFORMS if isinstance(rec.get(p), dict)
+                     and rec[p].get("state") in ("scheduled", "uploading", "waiting")}
+            sched = {p: w for p, w in sched.items() if w > now - 3600}
+            went = {p: num(rec[p].get("when")) or num(rec[p].get("at")) for p in publish.PLATFORMS if isinstance(rec.get(p), dict) and rec[p].get("state") == "posted"}
+            went = {p: a for p, a in went.items() if a > now - 2 * 86400}
+            if not sched and not went:
+                continue
+            title = ""
+            try:
+                opts = publish.drafts(d)["options"]
+                pk = {}
+                if os.path.isfile(os.path.join(d, "package.json")):
+                    with open(os.path.join(d, "package.json"), encoding="utf-8") as f:
+                        pk = json.load(f)
+                i = pk.get("caption") if isinstance(pk.get("caption"), int) else 0
+                title = ((opts[i] if 0 <= i < len(opts) else opts[0]) if opts else {}).get("title") or ""
+            except Exception:
+                pass
+            rel = os.path.relpath(d, base).replace(os.sep, "/")
+            state = "scheduled" if sched else "posted"
+            items.append({"folder": "approved/" + rel, "name": rel, "title": title or rel.replace("-", " "), "state": state,
+                          "when": min(sched.values()) if sched else max(went.values()),
+                          "platforms": sorted(sched or went)})
+    items.sort(key=lambda x: x["when"])
+    return {"channel": channel, "items": items}
 
 
 def meeting_payload():
