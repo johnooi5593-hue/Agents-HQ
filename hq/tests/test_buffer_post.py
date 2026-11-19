@@ -193,6 +193,28 @@ class PackageTests(unittest.TestCase):
         with self.assertRaises(buffer_post.BufferError):
             self.pk.ensure(str(self.folder), self.clip, str(self.folder / "missing.png"))
 
+    def test_approve_and_post_at_once_make_one_buffer_video(self):
+        # 2026-11-19, Pong 1121: Approve's package job and Post's ensure() both wrote final.mp4 ([WinError 32])
+        made, real = [], self.pk.make
+
+        def counted(*a, **k):
+            made.append(1)
+            return real(*a, **k)
+        self.pk.make = counted
+        out = []
+        t = threading.Thread(target=lambda: out.append(self.pk.ensure(str(self.folder), self.clip, self.cover, "c", "t")))
+        t.start()
+        for _ in range(200):                                    # ensure() has registered its job
+            if self.pk.jobs.get(str(self.folder)):
+                break
+            time.sleep(0.01)
+        self.pk.start(str(self.folder), self.clip, self.cover)  # Approve's start: sees the running job, starts nothing
+        t.join(300)
+        self.assertEqual(out[0]["state"], "ready")
+        self.assertEqual(len(made), 1)
+        self.assertEqual(self.pk.ensure(str(self.folder), self.clip, self.cover)["state"], "ready")
+        self.assertEqual(len(made), 1)                          # ready already: not made again
+
 
 class DraftsTests(unittest.TestCase):
     def test_tiktok_and_buffer_get_instagrams_words_and_the_title(self):

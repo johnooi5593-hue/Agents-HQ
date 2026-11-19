@@ -509,12 +509,37 @@ class CoverPackages:
 
     def ensure(self, folder, video, cover, caption=None, title=None, progress=None, wait=1800):
         """The package for these files, made now if it isn't yet (waits for a running make). Returns its state (ready)."""
-        job = self.jobs.get(folder)
-        if job and not job["done"].is_set():
-            job["done"].wait(wait)
-        st = self.state(folder, video, cover)
-        if st["state"] != "ready":
-            self.make(folder, video, cover, caption, title, progress)
+        # one maker per folder (2026-11-19: Approve started the package while Post made its own copy of the same
+        # final.mp4, and Windows refused the second rename): wait for a running job, else register this one under the lock
+        until = time.monotonic() + wait
+        while True:
+            with self.lock:
+                job = self.jobs.get(folder)
+                if not (job and not job["done"].is_set()):
+                    st = self.state(folder, video, cover)
+                    mine = None
+                    if st["state"] != "ready":
+                        mine = {"progress": 0, "video": video, "cover": cover, "error": "", "done": threading.Event(),
+                                "caption": caption, "title": title}
+                        self.jobs[folder] = mine
+                    break
+            while not job["done"].wait(min(1.0, max(0.0, until - time.monotonic()))):   # show the running job's %
+                if progress:
+                    progress(job["progress"])
+                if time.monotonic() >= until:
+                    raise BufferError("the Buffer video is still being made; press Try again in a minute")
+        if mine:
+            def step(pct):
+                mine["progress"] = pct
+                if progress:
+                    progress(pct)
+            try:
+                self.make(folder, video, cover, caption, title, step)
+            except Exception as e:
+                mine["error"] = str(e)[:400]
+                raise
+            finally:
+                mine["done"].set()
             st = self.state(folder, video, cover)
         else:
             self.texts(folder, caption, title)

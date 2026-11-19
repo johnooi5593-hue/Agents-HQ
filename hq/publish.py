@@ -386,8 +386,15 @@ class Accounts:
         y = self.get("youtube", channel)
         if not y.get("refresh_token"):
             raise PostError("YouTube is not connected")
-        _, _, j = http("POST", "https://oauth2.googleapis.com/token", data={
-            "client_id": y["client_id"], "client_secret": y["client_secret"], "refresh_token": y["refresh_token"], "grant_type": "refresh_token"})
+        try:
+            _, _, j = http("POST", "https://oauth2.googleapis.com/token", data={
+                "client_id": y["client_id"], "client_secret": y["client_secret"], "refresh_token": y["refresh_token"], "grant_type": "refresh_token"})
+        except PostError as e:                                 # 2026-11-19: Google's "400: Bad Request" said nothing useful
+            if not str(e).startswith(("400", "401")):
+                raise
+            raise PostError(f"Google refused this channel's YouTube connection; the sign-in has most likely expired (Google said "
+                            f"{e}). Nothing was changed on YouTube. Reconnect YouTube for this channel (user menu → Accounts), "
+                            "then press Try again.") from None
         return j["access_token"]
 
     # ---------------------------------------------------------------- TikTok
