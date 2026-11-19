@@ -264,6 +264,7 @@ class MediaHost:
         self.cfg["endpoint"] = self.cfg["endpoint"].rstrip("/")
         self.cfg["public_url"] = self.cfg["public_url"].rstrip("/")
         self.opener, self.now = opener or (lambda req, timeout: _open(req, timeout)), now or time.time
+        self.sleep = time.sleep                                 # waits between tries (a test sets it to no-op)
         if not host_ready(self.cfg):
             raise BufferError("the media host needs its endpoint, bucket, access key, secret key and public address")
         if not self.cfg["endpoint"].startswith("https://") or not self.cfg["public_url"].startswith("https://"):
@@ -343,24 +344,32 @@ class MediaHost:
 
     def fetch_public(self, url, limit=1 << 20):
         """Reads up to `limit` bytes from the public address, with no credentials: what Buffer will see."""
-        req = urllib.request.Request(url, headers={"User-Agent": UA, "Range": f"bytes=0-{limit - 1}"})
-        try:
-            with self.opener(req, 60) as r:
-                return r.status, r.read(limit)
-        except urllib.error.HTTPError as e:
-            raise BufferError(f"the public address answered {e.code} ({url}). Is public access on for this bucket, and is the public address right?") from None
-        except urllib.error.URLError as e:
-            raise BufferError(f"the public address could not be reached ({e.reason})") from None
+        # A connection the network drops for a moment ([WinError 10054], a timeout) is tried again twice before the post
+        # fails (owner, 2026-11-19: CAN 1113 02's Buffer post failed on one such drop while the host was fine)
+        for attempt in range(3):
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Range": f"bytes=0-{limit - 1}"})
+            try:
+                with self.opener(req, 60 if attempt == 0 else 20) as r:     # tries 2 and 3 wait less: never minutes on a stuck host
+                    return r.status, r.read(limit)
+            except urllib.error.HTTPError as e:
+                raise BufferError(f"the public address answered {e.code} ({url}). Is public access on for this bucket, and is the public address right?") from None
+            except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+                if attempt == 2:
+                    why = getattr(e, "reason", e)
+                    raise BufferError(f"the public address could not be reached after 3 tries ({why or type(e).__name__})") from None
+                self.sleep(3 * (attempt + 1))
 
     def check(self):
         """Uploads a small text file, reads it back from the public address, removes it. Returns the public URL that worked."""
         key, body = self.key("agents-hq-check.txt"), f"Agents HQ media host check {int(self.now())}".encode()
         url = self.put_bytes(body, key)
-        _, got = self.fetch_public(url)
         try:
-            self.delete(key)
-        except BufferError:
-            pass
+            _, got = self.fetch_public(url)
+        finally:                                                # the small check file never stays in the bucket
+            try:
+                self.delete(key)
+            except BufferError:
+                pass
         if got.strip() != body:
             raise BufferError(f"the public address returned something else than the file just uploaded ({url}); check the public address and the bucket")
         return url

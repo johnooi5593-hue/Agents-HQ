@@ -1017,3 +1017,53 @@ class AccountsBufferTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublicAddressRetryTests(unittest.TestCase):
+    """A dropped connection on the public-address check is tried again (owner, 2026-11-19: CAN 1113 02 failed on one)."""
+    CFG = {"endpoint": "https://acc.r2.cloudflarestorage.com", "bucket": "b", "access_key": "AK", "secret_key": "SK", "public_url": "https://pub-abc.r2.dev"}
+
+    def host(self, fails, error=None):
+        import io, urllib.error
+        calls = []
+
+        class Resp(io.BytesIO):
+            status = 206
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def opener(req, timeout):
+            calls.append(req.full_url)
+            if len(calls) <= fails:
+                raise error() if error else urllib.error.URLError(ConnectionResetError(10054, "An existing connection was forcibly closed by the remote host"))
+            return Resp(b"hello")
+        h = buffer_post.MediaHost(self.CFG, opener=opener)
+        h.sleep = lambda s: None
+        return h, calls
+
+    def test_two_drops_then_ok(self):
+        h, calls = self.host(2)
+        self.assertEqual(h.fetch_public("https://pub-abc.r2.dev/x"), (206, b"hello"))
+        self.assertEqual(len(calls), 3)
+
+    def test_three_drops_fail_with_the_reason(self):
+        h, calls = self.host(3)
+        with self.assertRaises(buffer_post.BufferError) as e:
+            h.fetch_public("https://pub-abc.r2.dev/x")
+        self.assertIn("could not be reached", str(e.exception))
+        self.assertIn("after 3 tries", str(e.exception))
+        self.assertEqual(len(calls), 3)
+
+    def test_a_refusal_is_not_retried(self):
+        import urllib.error
+        h, calls = self.host(1, lambda: urllib.error.HTTPError("https://pub-abc.r2.dev/x", 403, "Forbidden", {}, None))
+        with self.assertRaises(buffer_post.BufferError) as e:
+            h.fetch_public("https://pub-abc.r2.dev/x")
+        self.assertIn("answered 403", str(e.exception))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_reset_or_timeout_outside_urlerror_is_retried(self):
+        for err in (lambda: ConnectionResetError(10054, "reset"), lambda: TimeoutError("timed out")):
+            h, calls = self.host(1, err)
+            self.assertEqual(h.fetch_public("https://pub-abc.r2.dev/x"), (206, b"hello"))
+            self.assertEqual(len(calls), 2)
