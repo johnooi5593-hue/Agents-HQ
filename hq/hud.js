@@ -2030,8 +2030,8 @@
   }
   const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   function calHtml() {
-    if (!rv.whenOn || !rv.pub || !rv.cal || rv.cal.ch !== (rv.pub.channel || "")) return rv.whenOn ? '<div class="cal-box"><span class="spin"></span> Loading the posting calendar…</div>' : "";
-    const me = pubFolder(), u = whenUnix(), mine = u ? new Date(u * 1000) : null;
+    if (!rv.pub || !rv.cal || rv.cal.ch !== (rv.pub.channel || "")) return rv.pub ? '<div class="cal-box"><span class="spin"></span> Loading the posting calendar…</div>' : "";
+    const me = pubFolder(), u = rv.whenOn ? whenUnix() : Math.floor(Date.now() / 1000), mine = u ? new Date(u * 1000) : null;
     const items = rv.cal.items.filter((x) => x.folder !== me && !(x.state === "posted" && x.folder.startsWith(me + "/")));
     const sched = items;                                    // a post scheduled that day, or one that already went out that day
     const chn = chName((rv.pub && rv.pub.channel) || "");
@@ -2049,7 +2049,7 @@
     const rows = items.map((x) => ({ ...x })); if (u) rows.push({ me: true, when: u, title: pubValue("youtube", "title") || pubValue("facebook", "title") || prettyName(me.split("/").pop()), platforms: chosenPub(), state: "me" });
     rows.sort((a, b) => a.when - b.when);
     const tag = { posted: "Posted", scheduled: "Scheduled", me: "You're picking" };
-    h += rows.map((x) => `<div class="cal-row ${x.me ? "me" : ""}"><span class="t">${esc(tm(x.when))}</span><span class="v"><b>${esc(x.title)}</b><small>${esc(x.platforms.map((p) => PLAT_NAME[p] || p).join(" · "))}</small></span><span class="cal-tag ${esc(x.state)}">${tag[x.state]}</span></div>`).join("")
+    h += rows.map((x) => `<div class="cal-row ${x.me ? "me" : ""}"><span class="t">${esc(x.me && !rv.whenOn ? "Now" : tm(x.when))}</span><span class="v"><b>${esc(x.title)}</b><small>${esc(x.platforms.map((p) => PLAT_NAME[p] || p).join(" · "))}</small></span><span class="cal-tag ${esc(x.state)}">${tag[x.state]}</span></div>`).join("")
       || '<div class="cal-row"><span class="v"><small>Nothing scheduled or posted in the last 2 days.</small></span></div>';
     if (rv.cal.err) h += '<div class="pub-note">The calendar could not be loaded. Scheduling still works.</div>';
     h += "</div>";
@@ -2059,7 +2059,7 @@
         const busy = new Set(sched.map((x) => dayKey(new Date(x.when * 1000)))), n = new Date(mine);
         do n.setDate(n.getDate() + 1); while (busy.has(dayKey(n)));
         h += `<div class="cal-warn">Same day as <b>${esc(clash.title)}</b> (${clash.state === "posted" ? "posted " : ""}${esc(tm(clash.when))}). Two posts on one day split the views. <button type="button" class="rv-copy" data-cal-day="${new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime()}">Use ${esc(n.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }))} instead</button></div>`;
-      } else h += `<div class="cal-ok">No other ${esc(chn)} post that day.</div>`;
+      } else h += `<div class="cal-ok">No other ${esc(chn)} post ${rv.whenOn ? "that day" : "today"}.</div>`;
     }
     return h;
   }
@@ -2229,7 +2229,8 @@
     if (on.length) h += `<button class="rv-copy pub-edit" data-pub-pick="edit" type="button">${rv.pubEdit ? "Hide the text per platform" : "Change the text for one platform"}</button>`;
     if (on.length) {
       h += `<div class="pub-h">${opts.length ? "4" : "3"} · When</div><div class="rv-chips"><button class="rv-chip ${rv.whenOn ? "" : "on"}" data-pub-pick="when" data-pub-val="now" type="button">${rv.whenOn ? "" : svg("check")}Post now</button><button class="rv-chip ${rv.whenOn ? "on" : ""}" data-pub-pick="when" data-pub-val="later" type="button">${rv.whenOn ? svg("check") : svg("cal")}Schedule</button></div>`;
-      if (rv.whenOn) h += `<input class="pub-in pub-when" type="datetime-local" data-pub-when value="${esc(rv.whenVal)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><div class="pub-note" id="pub-when-say">${esc(whenSay())}</div><div id="pub-cal">${calHtml()}</div>${on.includes("instagram") ? '<div class="pub-note">Facebook and YouTube publish it themselves at that time. Instagram is posted by Agents HQ, so keep this computer on with Agents HQ running then; if it was off, it posts as soon as Agents HQ opens again.</div>' : ""}`;
+      if (rv.whenOn) h += `<input class="pub-in pub-when" type="datetime-local" data-pub-when value="${esc(rv.whenVal)}" min="${localInput(new Date(Date.now() + 11 * 60000))}"><div class="pub-note" id="pub-when-say">${esc(whenSay())}</div>${on.includes("instagram") ? '<div class="pub-note">Facebook and YouTube publish it themselves at that time. Instagram is posted by Agents HQ, so keep this computer on with Agents HQ running then; if it was off, it posts as soon as Agents HQ opens again.</div>' : ""}`;
+      h += `<div id="pub-cal">${calHtml()}</div>`;          // the channel's posting calendar, with Post now too (owner, 2026-11-19)
     }
     h += `<div class="pub-note">${rv.whenOn ? "Schedules" : "Posts"} <b>${esc(vSel ? prettyName(vSel) : "no video")}</b>${cSel ? " with the thumbnail you picked" : ""} and caption ${opts.length ? cap + 1 : ""} on every ticked account${rv.whenOn ? " for the time above" : " at the same time"}. Instagram and TikTok go through Buffer: ticked, from here; otherwise by hand with the Buffer package.</div></div>`;
     return h;
@@ -2985,9 +2986,9 @@
     }
     if (d.rvMode != null) { rv.mode = d.rvMode || null; renderReview(); return true; }
     if (d.calDay) {                                          // the posting calendar: that day, at the time already picked
-      const day = new Date(+d.calDay), was = rv.whenVal ? new Date(rv.whenVal) : null;
+      const day = new Date(+d.calDay), was = rv.whenVal ? new Date(rv.whenVal) : rv.whenOn ? null : new Date(defaultWhen());
       day.setHours(was && !isNaN(was) ? was.getHours() : 20, was && !isNaN(was) ? was.getMinutes() : 0, 0, 0);
-      rv.whenVal = localInput(day); renderReview(); return true;
+      rv.whenOn = true; rv.whenVal = localInput(day); renderReview(); return true;
     }
     if (d.rvApprove === "post") { rv.mode = "confirm-post"; renderReview(); return true; }   // asks first: Cancel or Yes, post
     if (d.rvApprove != null) { if (d.rvApprove === "post-yes") rv.mode = null; reviewApprove(d.rvApprove === "post-yes"); return true; }
